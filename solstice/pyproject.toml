@@ -1,0 +1,26 @@
+[project]
+name = "solstice"
+version = "0.1.0"
+description = "Ray + Spark multimodal data processing framework"
+readme = "README.md"
+authors = [
+    { name = "Enwei Jiao", email = "jiaoew2011@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pyspark>=4.0.1",
+    "ray>=2.50.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.14.2",
+]
+
+[tool.uv]
+dev-groups = ["dev"]
