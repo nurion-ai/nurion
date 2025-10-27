@@ -49,6 +49,14 @@ jobs:
   lint:
     name: Code Quality Check
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' || 
+      (github.event_name == 'pull_request' && 
+       contains(github.event.pull_request.changed_files, 'aether/') ||
+       contains(github.event.pull_request.changed_files, 'solstice/') ||
+       contains(github.event.pull_request.changed_files, 'scripts/') ||
+       contains(github.event.pull_request.changed_files, 'pyproject.toml') ||
+       contains(github.event.pull_request.changed_files, 'uv.lock'))
     
     steps:
     - uses: actions/checkout@v4
@@ -79,6 +87,14 @@ jobs:
   test:
     name: Integration Tests
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' || 
+      (github.event_name == 'pull_request' && 
+       contains(github.event.pull_request.changed_files, 'aether/') ||
+       contains(github.event.pull_request.changed_files, 'solstice/') ||
+       contains(github.event.pull_request.changed_files, 'scripts/') ||
+       contains(github.event.pull_request.changed_files, 'pyproject.toml') ||
+       contains(github.event.pull_request.changed_files, 'uv.lock'))
     
     steps:
     - uses: actions/checkout@v4
