@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, FastAPI
 
-from . import health
+from . import health, lance_namespace
 
 
 def register_routes(app: FastAPI) -> None:
@@ -10,6 +10,7 @@ def register_routes(app: FastAPI) -> None:
 
     api_router = APIRouter(prefix="/api")
     api_router.include_router(health.router, tags=["health"])
+    api_router.include_router(lance_namespace.router)
 
     app.include_router(api_router)
 

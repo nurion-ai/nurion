@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: aether
+      POSTGRES_USER: aether
+      POSTGRES_PASSWORD: aether
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aether"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appnet
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aether:aether@db:5432/aether
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - appnet
+
+  tester:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aether:aether@db:5432/aether
+      LANCE_BASE_URL: http://app:8000/api/lance-namespace
+    depends_on:
+      app:
+        condition: service_started
+    networks:
+      - appnet
+    command: ["pytest", "tests/test_lance_namespace_api.py"]
+
+networks:
+  appnet:
+    driver: bridge
+

@@ -7,6 +7,8 @@ requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.17.0",
     "asyncpg>=0.30.0",
+    "lance>=0.38.2",
+    "lance-namespace>=0.0.19",
     "fastapi>=0.120.0",
     "pydantic-settings>=2.11.0",
     "sqlalchemy[asyncio]>=2.0.44",
@@ -21,8 +23,16 @@ dev = [
     "ruff>=0.14.2",
 ]
 
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["aether", "aether.*"]
+exclude = ["alembic", "alembic.*"]
+
 [tool.uv]
-dev-groups = ["dev"]
+index-url = "https://pypi.org/simple"
 
 [tool.ruff]
 line-length = 100
