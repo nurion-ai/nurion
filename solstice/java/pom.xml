@@ -1,0 +1,272 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>ai.nurion.solstice</groupId>
+    <artifactId>raydp-parent</artifactId>
+    <version>1.7.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>RayDP Parent Pom</name>
+    <url>https://github.com/oap-project/raydp.git</url>
+
+    <properties>
+        <spark.version>3.5.6</spark.version>
+        <spark340.version>3.4.3</spark340.version>
+        <spark350.version>3.5.6</spark350.version>
+        <snappy.version>1.1.10.4</snappy.version>
+        <netty.version>4.1.94.Final</netty.version>
+        <commons.text.version>1.10.0</commons.text.version>
+        <commons.compress.version>1.26.0</commons.compress.version>
+        <rhino.version>1.7.12</rhino.version>
+        <protobuf.version>4.27.1</protobuf.version>
+        <ivy.version>2.5.2</ivy.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+        <scala.version>2.12.18</scala.version>
+        <jackson.version>2.13.5</jackson.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <!-- <canoe.version>1.0.7</canoe.version> -->
+        <io.grpc.version>1.56.0</io.grpc.version>
+        <ray.version>2.47.0</ray.version>
+    </properties>
+
+    <modules>
+        <module>shims/common</module>
+        <module>shims/spark340</module>
+        <module>shims/spark350</module>
+        <module>raydp-main</module>
+    </modules>
+
+    <!-- <repositories> -->
+    <!--     <repository> -->
+    <!--         <id>nexus-tencentyun</id> -->
+    <!--         <name>Nexus tencentyun</name> -->
+    <!--         <url>http://mirrors.cloud.tencent.com/nexus/repository/maven-public/</url> -->
+    <!--         <releases> -->
+    <!--             <enabled>true</enabled> -->
+    <!--         </releases> -->
+    <!--         <snapshots> -->
+    <!--             <enabled>false</enabled> -->
+    <!--         </snapshots> -->
+    <!--         <layout>default</layout> -->
+    <!--     </repository> -->
+    <!--     <repository> -->
+    <!--         <id>nurion-repo</id> -->
+    <!--         <name>Corporate Repository</name> -->
+    <!--         <url>https://nexus.nurion.com/repository/maven-releases</url> -->
+    <!--         <releases> -->
+    <!--             <enabled>true</enabled> -->
+    <!--         </releases> -->
+    <!--         <snapshots> -->
+    <!--             <enabled>false</enabled> -->
+    <!--         </snapshots> -->
+    <!--         <layout>default</layout> -->
+    <!--     </repository> -->
+    <!--     <repository> -->
+    <!--         <id>nurion-snapshot</id> -->
+    <!--         <name>Corporate Repository</name> -->
+    <!--         <url>https://nexus.nurion.com/repository/maven-snapshots</url> -->
+    <!--         <releases> -->
+    <!--             <enabled>true</enabled> -->
+    <!--         </releases> -->
+    <!--         <snapshots> -->
+    <!--             <enabled>true</enabled> -->
+    <!--         </snapshots> -->
+    <!--         <layout>default</layout> -->
+    <!--     </repository> -->
+    <!-- </repositories> -->
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.spark</groupId>
+                <artifactId>spark-core_${scala.binary.version}</artifactId>
+                <version>${spark.version}</version>
+                <scope>provided</scope>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.xerial.snappy</groupId>
+                        <artifactId>snappy-java</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.commons</groupId>
+                        <artifactId>commons-compress</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.commons</groupId>
+                        <artifactId>commons-text</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>org.apache.ivy</groupId>
+                        <artifactId>ivy</artifactId>
+                    </exclusion>
+                    <exclusion>
+                        <groupId>log4j</groupId>
+                        <artifactId>log4j</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.spark</groupId>
+                <artifactId>spark-sql_${scala.binary.version}</artifactId>
+                <version>${spark.version}</version>
+                <scope>provided</scope>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.google.protobuf</groupId>
+                        <artifactId>protobuf-java</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.spark</groupId>
+                <artifactId>spark-connect_${scala.binary.version}</artifactId>
+                <version>${spark.version}</version>
+                <scope>provided</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.xerial.snappy</groupId>
+                <artifactId>snappy-java</artifactId>
+                <version>${snappy.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>${commons.compress.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-text</artifactId>
+                <version>${commons.text.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.ivy</groupId>
+                <artifactId>ivy</artifactId>
+                <version>${ivy.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java</artifactId>
+                <version>${protobuf.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.ray</groupId>
+                <artifactId>ray-api</artifactId>
+                <version>${ray.version}</version>
+                <scope>provided</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.ray</groupId>
+                <artifactId>ray-runtime</artifactId>
+                <version>${ray.version}</version>
+                <scope>provided</scope>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.mozilla</groupId>
+                        <artifactId>rhino</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <dependency>
+                <groupId>org.mozilla</groupId>
+                <artifactId>rhino</artifactId>
+                <version>${rhino.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>net.sf.py4j</groupId>
+                <artifactId>py4j</artifactId>
+                <version>0.10.9.2</version>
+                <scope>provided</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>3.9</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-core</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <!-- Guava is excluded because of SPARK-6149.  The Guava version referenced in this module is
+                15.0, which causes runtime incompatibility issues. -->
+            <dependency>
+                <groupId>com.fasterxml.jackson.module</groupId>
+                <artifactId>jackson-module-scala_${scala.binary.version}</artifactId>
+                <version>${jackson.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>com.google.guava</groupId>
+                        <artifactId>guava</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.module</groupId>
+                <artifactId>jackson-module-jaxb-annotations</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <!-- <dependency> -->
+            <!--     <groupId>ai.nurion.solstice</groupId> -->
+            <!--     <artifactId>canoe-metric</artifactId> -->
+            <!--     <version>${canoe.version}</version> -->
+            <!-- </dependency> -->
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-netty</artifactId>
+                <version>${io.grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-protobuf</artifactId>
+                <version>${io.grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-services</artifactId>
+                <version>${io.grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-stub</artifactId>
+                <version>${io.grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-handler</artifactId>
+                <version>${netty.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.2.0</version>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

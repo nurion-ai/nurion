@@ -8,3 +8,28 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Java/Maven build artifacts
+target/
+*.jar
+*.class
+*.log
+dependency-reduced-pom.xml
+.mvn/
+mvnw
+mvnw.cmd
+.factorypath
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.eclipse/
+.project
+.classpath
+.settings/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*

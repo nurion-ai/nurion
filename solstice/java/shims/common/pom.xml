@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>ai.nurion.solstice</groupId>
+    <artifactId>raydp-parent</artifactId>
+    <version>1.7.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>raydp-shims-common</artifactId>
+  <name>RayDP Shims Common</name>
+  <version>1.7.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <build>
+      <plugins>
+          <plugin>
+              <groupId>net.alchim31.maven</groupId>
+              <artifactId>scala-maven-plugin</artifactId>
+              <version>3.3.3</version>
+              <executions>
+                  <execution>
+                      <id>scala-compile-first</id>
+                      <phase>process-resources</phase>
+                      <goals>
+                          <goal>compile</goal>
+                      </goals>
+                  </execution>
+                  <execution>
+                      <id>scala-test-compile-first</id>
+                      <phase>process-test-resources</phase>
+                      <goals>
+                          <goal>testCompile</goal>
+                      </goals>
+                  </execution>
+              </executions>
+              <configuration>
+                  <scalaVersion>${scala.version}</scalaVersion>
+              </configuration>
+          </plugin>
+      </plugins>
+  </build>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.binary.version}</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-core_${scala.binary.version}</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.xerial.snappy</groupId>
+            <artifactId>snappy-java</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-text</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.ivy</groupId>
+            <artifactId>ivy</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+        </dependency>
+    </dependencies>
+</project>
