@@ -86,12 +86,12 @@ jobs:
     - name: Build Docker images
       run: |
         cd aether
-        docker-compose build
+        docker compose build
     
     - name: Start services and run integration tests
       run: |
         cd aether
-        docker-compose up --abort-on-container-exit --exit-code-from tester
+        docker compose up --abort-on-container-exit --exit-code-from tester
     
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4

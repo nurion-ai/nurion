@@ -11,12 +11,12 @@ echo "🎨 Running ruff formatting check..."
 uv run ruff format --check .
 
 echo "🐳 Building Docker images..."
-docker-compose build
+docker compose build
 
-echo "🚀 Running integration tests with docker-compose..."
-docker-compose up --abort-on-container-exit --exit-code-from tester
+echo "🚀 Running integration tests with docker compose..."
+docker compose up --abort-on-container-exit --exit-code-from tester
 
 echo "🧹 Cleaning up..."
-docker-compose down
+docker compose down
 
 echo "✅ All checks passed!"
