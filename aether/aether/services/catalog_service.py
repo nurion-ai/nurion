@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 import lance
 from lance.schema import schema_to_json
 from sqlalchemy import func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.store import normalized_path_and_storage_options
 from ..db.session import get_session
@@ -27,15 +29,16 @@ async def _resolve_session(db: AsyncSession | None) -> AsyncSession:
 
 async def create_namespace(
     name: str,
-    description: Optional[str] = None,
+    description: str | None = None,
     delimiter: str = ".",
-    properties: Optional[Dict[str, Any]] = None,
-    created_by: Optional[str] = None,
+    properties: dict[str, Any] | None = None,
+    created_by: str | None = None,
     db: AsyncSession | None = None,
 ) -> Namespace:
     if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name):
         raise ValueError(
-            "Namespace name must start with a letter or underscore and contain only letters, digits, and underscores."
+            "Namespace name must start with a letter or underscore and contain only "
+            "letters, digits, and underscores."
         )
 
     session = await _resolve_session(db)
@@ -79,23 +82,21 @@ async def ensure_default_namespace(db: AsyncSession | None = None) -> Namespace:
     return namespace
 
 
-async def get_namespace_by_name(
-    name: str, db: AsyncSession | None = None
-) -> Optional[Namespace]:
+async def get_namespace_by_name(name: str, db: AsyncSession | None = None) -> Namespace | None:
     session = await _resolve_session(db)
     stmt = select(Namespace).where(Namespace.name == name)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
-async def get_all_namespaces(db: AsyncSession | None = None) -> List[Namespace]:
+async def get_all_namespaces(db: AsyncSession | None = None) -> list[Namespace]:
     session = await _resolve_session(db)
     stmt = select(Namespace).order_by(Namespace.name)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
-async def get_available_namespaces(db: AsyncSession | None = None) -> List[str]:
+async def get_available_namespaces(db: AsyncSession | None = None) -> list[str]:
     session = await _resolve_session(db)
     stmt = select(Namespace.name).order_by(Namespace.name)
     result = await session.execute(stmt)
@@ -109,9 +110,7 @@ async def delete_namespace(namespace_id: int, db: AsyncSession | None = None) ->
     result = await session.execute(stmt)
     table_count = result.scalar()
     if table_count and table_count > 0:
-        raise ValueError(
-            f"Cannot delete namespace: it contains {table_count} tables"
-        )
+        raise ValueError(f"Cannot delete namespace: it contains {table_count} tables")
 
     stmt = select(Namespace).where(Namespace.id == namespace_id)
     result = await session.execute(stmt)
@@ -127,14 +126,15 @@ async def delete_namespace(namespace_id: int, db: AsyncSession | None = None) ->
 async def create_lance_table(
     lance_path: str,
     name: str,
-    storage_options: Optional[dict] = None,
-    namespace_name: Optional[str] = None,
+    storage_options: dict | None = None,
+    namespace_name: str | None = None,
     db: AsyncSession | None = None,
     **kwargs: Any,
 ) -> LanceTable:
     if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name):
         raise ValueError(
-            "Table name must start with a letter or underscore and contain only letters, digits, and underscores."
+            "Table name must start with a letter or underscore and contain only "
+            "letters, digits, and underscores."
         )
 
     session = await _resolve_session(db)
@@ -160,9 +160,7 @@ async def create_lance_table(
     result = await session.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing:
-        raise ValueError(
-            f"Table with name {name} or path {lance_path} already exists"
-        )
+        raise ValueError(f"Table with name {name} or path {lance_path} already exists")
 
     try:
         dataset = lance.dataset(normalized_path, storage_options=storage_options)
@@ -188,7 +186,7 @@ async def create_lance_table(
 
 async def get_lance_table(
     table_id_or_name: str, db: AsyncSession | None = None
-) -> Optional[LanceTable]:
+) -> LanceTable | None:
     session = await _resolve_session(db)
 
     try:
@@ -208,7 +206,7 @@ async def get_lance_table(
 
 async def get_tables_by_namespace(
     namespace: str, db: AsyncSession | None = None
-) -> List[LanceTable]:
+) -> list[LanceTable]:
     session = await _resolve_session(db)
     namespace_name = namespace if namespace not in {"", "."} else "default"
 
@@ -224,13 +222,14 @@ async def get_tables_by_namespace(
 async def create_empty_lance_table(
     table_name: str,
     location: str,
-    storage_options: Optional[dict] = None,
-    properties: Optional[Dict[str, Any]] = None,
+    storage_options: dict | None = None,
+    properties: dict[str, Any] | None = None,
     db: AsyncSession | None = None,
 ) -> LanceTable:
     if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", table_name):
         raise ValueError(
-            "Table name must start with a letter or underscore and contain only letters, digits, and underscores."
+            "Table name must start with a letter or underscore and contain only "
+            "letters, digits, and underscores."
         )
 
     session = await _resolve_session(db)
@@ -244,9 +243,7 @@ async def create_empty_lance_table(
     result = await session.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing:
-        raise ValueError(
-            f"Table with name {table_name} or path {location} already exists"
-        )
+        raise ValueError(f"Table with name {table_name} or path {location} already exists")
 
     table = LanceTable(
         name=table_name,
@@ -300,7 +297,7 @@ async def deregister_table_by_id(
 
 async def update_lance_table(
     table_id_or_name: str, db: AsyncSession | None = None, **update_data: Any
-) -> Optional[LanceTable]:
+) -> LanceTable | None:
     session = await _resolve_session(db)
     table = await get_lance_table(table_id_or_name, session)
     if not table:
@@ -322,9 +319,7 @@ async def update_lance_table(
     return table
 
 
-async def delete_lance_table(
-    table_id_or_name: str, db: AsyncSession | None = None
-) -> bool:
+async def delete_lance_table(table_id_or_name: str, db: AsyncSession | None = None) -> bool:
     session = await _resolve_session(db)
     table = await get_lance_table(table_id_or_name, session)
     if not table:
@@ -354,14 +349,14 @@ async def refresh_lance_table_metadata(
 
 async def list_table_indices(
     table_id_or_name: str, db: AsyncSession | None = None
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     session = await _resolve_session(db)
     table = await get_lance_table(table_id_or_name, session)
     if not table:
         raise ValueError("Table not found")
 
     dataset = lance.dataset(table.lance_path, storage_options=table.storage_options)
-    indices: List[Dict[str, Any]] = []
+    indices: list[dict[str, Any]] = []
     schema = dataset.schema
     for field in schema:
         if field.name.endswith("_vector") or "embedding" in field.name:
@@ -375,5 +370,3 @@ async def list_table_indices(
             )
 
     return indices
-
-

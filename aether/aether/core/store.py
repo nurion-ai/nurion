@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 
 def normalized_path_and_storage_options(
-    lance_path: str, storage_options: Optional[dict] = None
-) -> Tuple[str, dict]:
+    lance_path: str, storage_options: dict | None = None
+) -> tuple[str, dict]:
     """Return normalized path and merged storage options.
 
     For now this implementation simply returns the provided path and options.
@@ -16,5 +14,3 @@ def normalized_path_and_storage_options(
     """
 
     return lance_path, storage_options or {}
-
-

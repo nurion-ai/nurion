@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from typing import TYPE_CHECKING
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 # revision identifiers, used by Alembic.
 revision: str = "0001_create_catalog_tables"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -25,8 +29,12 @@ def upgrade() -> None:
         sa.Column("properties", sa.JSON(), nullable=True),
         sa.Column("created_by", sa.String(length=255), nullable=True),
         sa.Column("updated_by", sa.String(length=255), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
     )
     op.create_index("ix_catalog_namespaces_name", "catalog_namespaces", ["name"], unique=True)
 
@@ -42,9 +50,19 @@ def upgrade() -> None:
         sa.Column("tags", postgresql.JSONB(), nullable=True),
         sa.Column("custom_values", postgresql.JSONB(), nullable=True),
         sa.Column("last_updated_by", sa.String(length=255), nullable=True),
-        sa.Column("namespace_id", sa.Integer(), sa.ForeignKey("catalog_namespaces.id"), index=True, nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "namespace_id",
+            sa.Integer(),
+            sa.ForeignKey("catalog_namespaces.id"),
+            index=True,
+            nullable=True,
+        ),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
     )
     op.create_index("ix_catalog_lance_tables_name", "catalog_lance_tables", ["name"], unique=True)
     op.create_index(

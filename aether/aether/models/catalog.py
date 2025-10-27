@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -19,18 +18,18 @@ class Namespace(BaseModel):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    description: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True, default=None)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
     delimiter: Mapped[str] = mapped_column(String(10), default=".")
-    properties: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
+    properties: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
-    created_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, default=None)
-    updated_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, default=None)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-    tables: Mapped[list["LanceTable"]] = relationship(
+    tables: Mapped[list[LanceTable]] = relationship(
         "LanceTable",
         back_populates="namespace",
         cascade="all, delete-orphan",
@@ -44,16 +43,16 @@ class LanceTable(BaseModel):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    description: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True, default=None)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
     lance_path: Mapped[str] = mapped_column(String(255), nullable=False)
-    lance_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
-    row_count: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, default=None)
-    storage_options: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
-    tags: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
-    custom_values: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
-    last_updated_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, default=None)
+    lance_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    row_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True, default=None)
+    storage_options: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
+    custom_values: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
+    last_updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
 
-    namespace_id: Mapped[Optional[int]] = mapped_column(
+    namespace_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("catalog_namespaces.id"),
         nullable=True,
@@ -65,7 +64,7 @@ class LanceTable(BaseModel):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-    namespace: Mapped[Optional[Namespace]] = relationship("Namespace", back_populates="tables")
+    namespace: Mapped[Namespace | None] = relationship("Namespace", back_populates="tables")
 
     __table_args__ = (
         Index(
@@ -81,5 +80,3 @@ class LanceTable(BaseModel):
             postgresql_using="gin",
         ),
     )
-
-

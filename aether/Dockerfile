@@ -2,12 +2,20 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-COPY pyproject.toml .
-RUN pip install --upgrade pip
+# Install system dependencies
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
+# Install uv
+RUN pip install --upgrade pip && pip install uv
+
+# Copy dependency files
+COPY pyproject.toml uv.lock* ./
+
+# Install dependencies
+RUN uv sync --dev
+
+# Copy source code
 COPY . .
 
-RUN pip install .[dev] pytest httpx pytest-asyncio
-
-CMD ["uvicorn", "aether.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "aether.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
 

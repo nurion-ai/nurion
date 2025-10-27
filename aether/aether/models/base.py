@@ -1,9 +1,7 @@
 """Declarative base for ORM models."""
 
-from typing import Any
-
 from sqlalchemy import MetaData
-from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
+from sqlalchemy.orm import DeclarativeBase
 
 
 class BaseModel(DeclarativeBase):
@@ -17,4 +15,3 @@ class BaseModel(DeclarativeBase):
             f"{key}={value!r}" for key, value in self.__dict__.items() if not key.startswith("_")
         )
         return f"{self.__class__.__name__}({attrs})"
-

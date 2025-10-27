@@ -2,8 +2,6 @@
 
 import uvicorn
 
-from aether import create_app
-
 
 def main() -> None:
     """Run the Nurion Platform service with uvicorn."""

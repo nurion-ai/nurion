@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,17 +15,17 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-PageToken = Optional[str]
-PageLimit = Optional[int]
+PageToken = str | None
+PageLimit = int | None
 
 
 class CreateNamespaceRequest(ApiModel):
-    properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    properties: dict[str, Any] | None = Field(default_factory=dict)
 
 
 class CreateNamespaceResponse(ApiModel):
     namespace: str
-    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class DescribeNamespaceRequest(ApiModel):
@@ -32,7 +34,7 @@ class DescribeNamespaceRequest(ApiModel):
 
 class DescribeNamespaceResponse(ApiModel):
     namespace: str
-    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class DropNamespaceRequest(ApiModel):
@@ -49,59 +51,59 @@ class NamespaceExistsRequest(ApiModel):
 
 
 class ListNamespacesResponse(ApiModel):
-    namespaces: List[str]
-    next_page_token: Optional[str] = None
+    namespaces: list[str]
+    next_page_token: str | None = None
 
 
 class ListTablesResponse(ApiModel):
-    tables: List[str]
-    next_page_token: Optional[str] = None
+    tables: list[str]
+    next_page_token: str | None = None
 
 
 class RegisterTableRequest(ApiModel):
     location: str
-    properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
-    storage_options: Optional[Dict[str, Any]] = None
+    properties: dict[str, Any] | None = Field(default_factory=dict)
+    storage_options: dict[str, Any] | None = None
 
 
 class RegisterTableResponse(ApiModel):
     version: int = 1
     location: str
-    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class DropTableResponse(ApiModel):
-    id: List[str]
+    id: list[str]
     location: str
-    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeregisterTableResponse(ApiModel):
-    id: List[str]
+    id: list[str]
     location: str
-    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class GetTableStatsResponse(ApiModel):
     num_rows: int
-    num_fragments: Optional[int] = None
-    size_bytes: Optional[int] = None
+    num_fragments: int | None = None
+    size_bytes: int | None = None
 
 
 class DescribeTableResponse(ApiModel):
     version: int
     location: str
-    table_schema: Dict[str, Any] = Field(default_factory=dict, alias="schema")
-    properties: Dict[str, Any] = Field(default_factory=dict)
-    storage_options: Optional[Dict[str, Any]] = None
+    table_schema: dict[str, Any] = Field(default_factory=dict, alias="schema")
+    properties: dict[str, Any] = Field(default_factory=dict)
+    storage_options: dict[str, Any] | None = None
 
     @property
-    def schema(self) -> Dict[str, Any]:
+    def schema(self) -> dict[str, Any]:
         return self.table_schema
 
 
 class CountTableRowsRequest(ApiModel):
-    filter: Optional[str] = None
+    filter: str | None = None
 
 
 class CountTableRowsResponse(ApiModel):
@@ -110,30 +112,30 @@ class CountTableRowsResponse(ApiModel):
 
 class CreateEmptyTableRequest(ApiModel):
     location: str
-    properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
-    storage_options: Optional[Dict[str, Any]] = None
+    properties: dict[str, Any] | None = Field(default_factory=dict)
+    storage_options: dict[str, Any] | None = None
 
 
 class CreateTableResponse(ApiModel):
     version: int = 1
     location: str
-    properties: Dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class TableIndex(ApiModel):
     name: str
-    columns: List[str]
+    columns: list[str]
     type: str = "VECTOR"
     status: str = "unknown"
 
 
 class ListTableIndicesResponse(ApiModel):
-    indices: List[TableIndex] = Field(default_factory=list)
+    indices: list[TableIndex] = Field(default_factory=list)
 
 
 class ListTableTagsResponse(ApiModel):
-    tags: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    next_page_token: Optional[str] = None
+    tags: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    next_page_token: str | None = None
 
 
 class GetTableTagVersionRequest(ApiModel):
@@ -182,9 +184,9 @@ class FilterOperator(str, Enum):
 class CustomColumnDefinitionBase(ApiModel):
     name: str
     field_type: FieldType
-    default_value: Optional[Any] = None
+    default_value: Any | None = None
     required: bool = False
-    options: Optional[List[Dict[str, str]]] = None
+    options: list[dict[str, str]] | None = None
 
 
 class CustomColumnDefinitionCreate(CustomColumnDefinitionBase):
@@ -192,23 +194,23 @@ class CustomColumnDefinitionCreate(CustomColumnDefinitionBase):
 
 
 class CustomColumnDefinitionUpdate(BaseModel):
-    name: Optional[str] = None
-    field_type: Optional[FieldType] = None
-    default_value: Optional[Any] = None
-    required: Optional[bool] = None
-    display_order: Optional[int] = None
-    options: Optional[List[Dict[str, str]]] = None
+    name: str | None = None
+    field_type: FieldType | None = None
+    default_value: Any | None = None
+    required: bool | None = None
+    display_order: int | None = None
+    options: list[dict[str, str]] | None = None
 
 
 class CustomColumnDefinitionResponse(CustomColumnDefinitionBase):
     id: int
     display_order: int
     is_active: bool
-    deleted_at: Optional[datetime] = None
-    deleted_by: Optional[str] = None
+    deleted_at: datetime | None = None
+    deleted_by: str | None = None
     created_at: datetime
     updated_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
 
 
 class CustomColumnFilter(BaseModel):
@@ -220,69 +222,68 @@ class CustomColumnFilter(BaseModel):
 class TableCreate(BaseModel):
     name: str
     lance_path: str
-    description: Optional[str] = None
-    storage_options: Optional[Dict[str, Any]] = None
-    tags: Optional[List[str]] = None
-    custom_values: Optional[Dict[str, Any]] = None
+    description: str | None = None
+    storage_options: dict[str, Any] | None = None
+    tags: list[str] | None = None
+    custom_values: dict[str, Any] | None = None
 
 
 class TableUpdate(BaseModel):
-    name: Optional[str] = None
-    lance_path: Optional[str] = None
-    description: Optional[str] = None
-    storage_options: Optional[Dict[str, Any]] = None
-    tags: Optional[List[str]] = None
-    custom_values: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    lance_path: str | None = None
+    description: str | None = None
+    storage_options: dict[str, Any] | None = None
+    tags: list[str] | None = None
+    custom_values: dict[str, Any] | None = None
 
 
 class TableResponse(BaseModel):
     id: int
     lance_path: str
     name: str
-    description: Optional[str] = None
-    lance_schema: Optional[Dict[str, Any]] = None
-    row_count: Optional[int] = None
-    storage_options: Optional[Dict[str, Any]] = None
-    custom_values: Optional[Dict[str, Any]] = None
-    last_updated_by: Optional[str] = None
+    description: str | None = None
+    lance_schema: dict[str, Any] | None = None
+    row_count: int | None = None
+    storage_options: dict[str, Any] | None = None
+    custom_values: dict[str, Any] | None = None
+    last_updated_by: str | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class TablePaginatedResponse(BaseModel):
-    tables: List[TableResponse]
+    tables: list[TableResponse]
     total_count: int
 
 
 class TableSampleRequest(BaseModel):
-    select_columns: Optional[List[str]] = Field(default=None)
-    row_ids: Optional[List[int]] = Field(default=None)
-    indices: Optional[List[int]] = Field(default=None)
-    limit: Optional[int] = Field(default=10, ge=1, le=100)
+    select_columns: list[str] | None = Field(default=None)
+    row_ids: list[int] | None = Field(default=None)
+    indices: list[int] | None = Field(default=None)
+    limit: int | None = Field(default=10, ge=1, le=100)
 
 
 class TableSampleResponse(BaseModel):
     id: int
-    columns: List[str]
-    rows: List[Dict[str, Any]]
+    columns: list[str]
+    rows: list[dict[str, Any]]
     sampled_row_count: int
     total_row_count: int
 
 
 class FileSampleRequest(BaseModel):
     file_path: str
-    select_columns: Optional[List[str]] = Field(default=None)
-    indices: Optional[List[int]] = Field(default=None)
-    row_ids: Optional[List[int]] = Field(default=None)
-    limit: Optional[int] = Field(default=10, ge=1, le=100)
-    storage_options: Optional[dict] = None
+    select_columns: list[str] | None = Field(default=None)
+    indices: list[int] | None = Field(default=None)
+    row_ids: list[int] | None = Field(default=None)
+    limit: int | None = Field(default=10, ge=1, le=100)
+    storage_options: dict | None = None
     return_random_rows: bool = False
 
 
 class FileSampleResponse(BaseModel):
     file_path: str
-    columns: List[str]
-    rows: List[Dict[str, Any]]
+    columns: list[str]
+    rows: list[dict[str, Any]]
     sampled_row_count: int
     total_row_count: int
-

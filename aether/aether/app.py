@@ -21,9 +21,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(  # noqa: FBT003 - explicit bool for clarity
         title="Aether Data Platform",
-        description=(
-            "Task orchestration, Kubernetes management, and data lake catalog services."
-        ),
+        description=("Task orchestration, Kubernetes management, and data lake catalog services."),
         version="0.1.0",
     )
 
@@ -45,4 +43,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_routes(app)
 
     return app
-
