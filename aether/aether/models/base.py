@@ -6,7 +6,7 @@ from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
 
 
-class BaseModel(MappedAsDataclass, DeclarativeBase):
+class BaseModel(DeclarativeBase):
     """Base class for SQLAlchemy models using dataclass integration."""
 
     metadata = MetaData()
