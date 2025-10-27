@@ -12,9 +12,8 @@ async_engine = create_async_engine(settings.database_url, echo=False)
 async_session_factory = async_sessionmaker(async_engine, expire_on_commit=False)
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Provide a transactional scope around a series of operations."""
 
     async with async_session_factory() as session:
         yield session
-

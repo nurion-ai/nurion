@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from collections.abc import AsyncGenerator
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 import lance
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.store import normalized_path_and_storage_options
 from ...db.session import get_session
@@ -49,7 +51,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/lance-namespace/v1", tags=["lance-namespace"])
 
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session() -> AsyncGenerator[AsyncSession]:
     async for session in get_session():
         yield session
 
@@ -66,16 +68,14 @@ def _stringify_value(value: Any) -> str:
     return str(value)
 
 
-def _stringify_properties(properties: Optional[Dict[str, Any]]) -> Dict[str, str]:
+def _stringify_properties(properties: dict[str, Any] | None) -> dict[str, str]:
     return {key: _stringify_value(val) for key, val in (properties or {}).items()}
 
 
 @router.post("/namespace/{id}/create", response_model=CreateNamespaceResponse)
 async def create_namespace(
     id: str = Path(..., description="Namespace identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: CreateNamespaceRequest = Body(default_factory=CreateNamespaceRequest),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -98,7 +98,9 @@ async def create_namespace(
     response_properties = {
         "id": _stringify_value(namespace.id),
         "description": _stringify_value(namespace.description),
-        "created_at": _stringify_value(namespace.created_at.isoformat() if namespace.created_at else ""),
+        "created_at": _stringify_value(
+            namespace.created_at.isoformat() if namespace.created_at else ""
+        ),
         "delimiter": _stringify_value(namespace.delimiter),
     }
     response_properties.update(_stringify_properties(namespace.properties))
@@ -109,17 +111,13 @@ async def create_namespace(
 @router.post("/namespace/{id}/describe", response_model=DescribeNamespaceResponse)
 async def describe_namespace(
     id: str = Path(..., description="Namespace identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: DescribeNamespaceRequest = Body(default_factory=DescribeNamespaceRequest),
     db: AsyncSession = Depends(get_db_session),
 ):
     if _is_root_namespace(id, delimiter):
         namespace = await catalog_service.ensure_default_namespace(db)
-        tables_in_namespace = await catalog_service.get_tables_by_namespace(
-            namespace.name, db
-        )
+        tables_in_namespace = await catalog_service.get_tables_by_namespace(namespace.name, db)
         return DescribeNamespaceResponse(
             namespace="default",
             properties={
@@ -141,7 +139,9 @@ async def describe_namespace(
 
     namespace = await catalog_service.get_namespace_by_name(id, db)
     if not namespace:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found"
+        )
 
     tables_in_namespace = await catalog_service.get_tables_by_namespace(id, db)
     return DescribeNamespaceResponse(
@@ -166,18 +166,20 @@ async def describe_namespace(
 @router.post("/namespace/{id}/drop", response_model=DropNamespaceResponse)
 async def drop_namespace(
     id: str = Path(..., description="Namespace identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: DropNamespaceRequest = Body(default_factory=DropNamespaceRequest),
     db: AsyncSession = Depends(get_db_session),
 ):
     if id in {".", ""}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot drop root namespace")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot drop root namespace"
+        )
 
     namespace = await catalog_service.get_namespace_by_name(id, db)
     if not namespace:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found"
+        )
 
     try:
         deleted = await catalog_service.delete_namespace(namespace.id, db)
@@ -185,7 +187,10 @@ async def drop_namespace(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete namespace '{id}'")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete namespace '{id}'",
+        )
 
     return DropNamespaceResponse(namespace=id, dropped=True)
 
@@ -193,9 +198,7 @@ async def drop_namespace(
 @router.post("/namespace/{id}/exists", status_code=status.HTTP_200_OK)
 async def namespace_exists(
     id: str = Path(..., description="Namespace identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: NamespaceExistsRequest = Body(default_factory=NamespaceExistsRequest),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -205,17 +208,17 @@ async def namespace_exists(
 
     namespace = await catalog_service.get_namespace_by_name(id, db)
     if not namespace:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found"
+        )
 
 
 @router.get("/namespace/{id}/list", response_model=ListNamespacesResponse)
 async def list_namespaces(
     id: str = Path(..., description="Parent namespace identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
-    page_token: Optional[int] = Query(None, description="Page token for pagination"),
-    limit: Optional[int] = Query(None, description="Maximum number of results to return"),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
+    page_token: int | None = Query(None, description="Page token for pagination"),
+    limit: int | None = Query(None, description="Maximum number of results to return"),
     db: AsyncSession = Depends(get_db_session),
 ):
     if _is_root_namespace(id, delimiter):
@@ -223,7 +226,9 @@ async def list_namespaces(
         namespaces = await catalog_service.get_available_namespaces(db)
     else:
         all_namespaces = await catalog_service.get_all_namespaces(db)
-        namespaces = [namespace.name for namespace in all_namespaces if namespace.name.startswith(id)]
+        namespaces = [
+            namespace.name for namespace in all_namespaces if namespace.name.startswith(id)
+        ]
 
     if page_token is not None or limit is not None:
         start_idx = page_token or 0
@@ -240,11 +245,9 @@ async def list_namespaces(
 @router.get("/namespace/{id}/table/list", response_model=ListTablesResponse)
 async def list_tables(
     id: str = Path(..., description="Parent namespace identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
-    page_token: Optional[int] = Query(None, description="Page token for pagination"),
-    limit: Optional[int] = Query(None, description="Maximum number of results to return"),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
+    page_token: int | None = Query(None, description="Page token for pagination"),
+    limit: int | None = Query(None, description="Maximum number of results to return"),
     db: AsyncSession = Depends(get_db_session),
 ):
     tables = await catalog_service.get_tables_by_namespace(id, db)
@@ -265,9 +268,7 @@ async def list_tables(
 @router.post("/table/{id}/register", response_model=RegisterTableResponse)
 async def register_table(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: RegisterTableRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -307,9 +308,7 @@ async def register_table(
 @router.post("/table/{id}/drop", response_model=DropTableResponse)
 async def drop_table(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -331,9 +330,7 @@ async def drop_table(
 @router.post("/table/{id}/deregister", response_model=DeregisterTableResponse)
 async def deregister_table(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
@@ -355,9 +352,7 @@ async def deregister_table(
 @router.post("/table/{id}/stats", response_model=GetTableStatsResponse)
 async def get_table_stats(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
     table_info = await catalog_service.get_lance_table(id, db)
@@ -384,9 +379,7 @@ async def get_table_stats(
 @router.post("/table/{id}/describe", response_model=DescribeTableResponse)
 async def describe_table(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
     table_info = await catalog_service.get_lance_table(id, db)
@@ -422,9 +415,7 @@ async def describe_table(
 @router.post("/table/{id}/exists", status_code=status.HTTP_200_OK)
 async def table_exists(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
     table_info = await catalog_service.get_lance_table(id, db)
@@ -441,9 +432,7 @@ async def table_exists(
 @router.post("/table/{id}/count_rows", response_model=CountTableRowsResponse)
 async def count_table_rows(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: CountTableRowsRequest = Body(default_factory=CountTableRowsRequest),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -477,9 +466,7 @@ async def count_table_rows(
 @router.post("/table/{id}/create-empty", response_model=CreateTableResponse)
 async def create_empty_table(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: CreateEmptyTableRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -511,9 +498,7 @@ async def create_empty_table(
 @router.post("/table/{id}/index/list", response_model=ListTableIndicesResponse)
 async def list_table_indices_endpoint(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
     table_info = await catalog_service.get_lance_table(id, db)
@@ -533,11 +518,9 @@ async def list_table_indices_endpoint(
 @router.get("/table/{id}/tags/list", response_model=ListTableTagsResponse)
 async def list_table_tags(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
-    page_token: Optional[str] = Query(None, description="Page token for pagination"),
-    limit: Optional[int] = Query(None, description="Maximum number of results to return"),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
+    page_token: str | None = Query(None, description="Page token for pagination"),
+    limit: int | None = Query(None, description="Maximum number of results to return"),
     db: AsyncSession = Depends(get_db_session),
 ):
     table_info = await catalog_service.get_lance_table(id, db)
@@ -573,9 +556,7 @@ async def list_table_tags(
 @router.post("/table/{id}/tags/version", response_model=GetTableTagVersionResponse)
 async def get_table_tag_version(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: GetTableTagVersionRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -592,15 +573,15 @@ async def get_table_tag_version(
     if request.tag in {"latest", "stable"}:
         return GetTableTagVersionResponse(version=1)
 
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tag '{request.tag}' not found")
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail=f"Tag '{request.tag}' not found"
+    )
 
 
 @router.post("/table/{id}/tags/create", status_code=status.HTTP_201_CREATED)
 async def create_table_tag(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: CreateTableTagRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -620,9 +601,7 @@ async def create_table_tag(
 @router.post("/table/{id}/tags/update", status_code=status.HTTP_200_OK)
 async def update_table_tag(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: UpdateTableTagRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -637,7 +616,9 @@ async def update_table_tag(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
 
     if request.tag not in {"latest", "stable"}:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tag '{request.tag}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Tag '{request.tag}' not found"
+        )
 
     return None
 
@@ -645,9 +626,7 @@ async def update_table_tag(
 @router.post("/table/{id}/tags/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_table_tag(
     id: str = Path(..., description="Table identifier"),
-    delimiter: str = Query(
-        ".", description="Delimiter used to parse object string identifiers"
-    ),
+    delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     request: DeleteTableTagRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -662,7 +641,9 @@ async def delete_table_tag(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
 
     if request.tag not in {"latest", "stable"}:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tag '{request.tag}' not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Tag '{request.tag}' not found"
+        )
 
     return None
 
@@ -670,5 +651,3 @@ async def delete_table_tag(
 @router.get("/health", response_model=HealthCheckResponse)
 async def health_check() -> HealthCheckResponse:
     return HealthCheckResponse(status="healthy", service="lance-namespace-catalog", version="1.0.0")
-
-

@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter, status
 
-
 router = APIRouter()
 
 
@@ -11,4 +10,3 @@ async def healthcheck() -> dict[str, str]:
     """Return a basic health indicator."""
 
     return {"status": "ok"}
-

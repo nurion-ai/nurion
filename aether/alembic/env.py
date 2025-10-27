@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import MetaData, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
-from sqlalchemy import MetaData
-
-from alembic import context
 
 from aether.core.settings import get_settings
-from aether.models.base import BaseModel
 from aether.models import catalog  # noqa: F401 - ensure models are imported
+from aether.models.base import BaseModel
+from alembic import context
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
