@@ -61,12 +61,13 @@ def extract_last_column_id(schema_data: dict[str, Any] | list[dict[str, Any]] | 
     """Extract last-column-id from Iceberg schema."""
     if not schema_data:
         return 0
-    
+
     if isinstance(schema_data, dict):
         if "fields" in schema_data:
             # Schema is in Iceberg JSON format
             field_ids = [
-                field.get("id", 0) for field in schema_data.get("fields", [])
+                field.get("id", 0)
+                for field in schema_data.get("fields", [])
                 if isinstance(field, dict) and "id" in field
             ]
             return max(field_ids) if field_ids else 0
@@ -76,11 +77,10 @@ def extract_last_column_id(schema_data: dict[str, Any] | list[dict[str, Any]] | 
     elif isinstance(schema_data, list):
         # List of fields
         field_ids = [
-            field.get("id", 0) for field in schema_data
-            if isinstance(field, dict) and "id" in field
+            field.get("id", 0) for field in schema_data if isinstance(field, dict) and "id" in field
         ]
         return max(field_ids) if field_ids else 0
-    
+
     return 0
 
 
@@ -129,9 +129,7 @@ async def list_namespaces(
     if parent:
         parent_list = parse_namespace(parent)
         namespace_list = [
-            [ns.name]
-            for ns in namespaces
-            if ns.name.startswith(format_namespace(parent_list))
+            [ns.name] for ns in namespaces if ns.name.startswith(format_namespace(parent_list))
         ]
 
     return ListNamespacesResponse(namespaces=namespace_list)
@@ -148,9 +146,9 @@ async def create_namespace_post(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Namespace name must be provided in request",
         )
-    
+
     namespace_name = format_namespace(request.namespace)
-    
+
     try:
         ns = await iceberg_table_service.create_iceberg_namespace(
             name=namespace_name,
@@ -158,9 +156,7 @@ async def create_namespace_post(
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     properties = {k: str(v) for k, v in (ns.properties or {}).items()}
     properties.update({k: str(v) for k, v in (request.properties or {}).items()})
@@ -185,9 +181,7 @@ async def create_namespace(
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     properties = {k: str(v) for k, v in (ns.properties or {}).items()}
     properties.update({k: str(v) for k, v in (request.properties or {}).items()})
@@ -247,9 +241,7 @@ async def delete_namespace(
     try:
         deleted = await iceberg_table_service.delete_iceberg_namespace(ns.id, db)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     if not deleted:
         raise HTTPException(
@@ -272,23 +264,21 @@ async def update_namespace_properties(
     namespace_name = format_namespace(namespace_list)
 
     try:
-        ns = await iceberg_table_service.update_iceberg_namespace_properties(
+        await iceberg_table_service.update_iceberg_namespace_properties(
             name=namespace_name,
             removals=request.removals or [],
             updates=request.updates or {},
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     # Determine which keys were removed, updated, missing
     # This is a simplified approach - the service returns the updated namespace
     removed_keys = request.removals or []
     updated_keys = list((request.updates or {}).keys())
     missing_keys = []  # Would need to track this separately
-    
+
     return UpdateNamespacePropertiesResponse(
         removed=removed_keys,
         updated=updated_keys,
@@ -342,19 +332,20 @@ async def create_table_post(
         metadata_location = f"s3://warehouse/{namespace_name}/{table_name}/metadata/metadata.json"
 
     try:
-        iceberg_table = await iceberg_table_service.create_iceberg_table(
+        await iceberg_table_service.create_iceberg_table(
             table_name=table_name,
             namespace_name=namespace_name,
             metadata_location=metadata_location,
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     # Build Iceberg metadata from request (metadata should be read from storage)
-    location = metadata_location.rsplit("/metadata/", 1)[0] if "/metadata/" in metadata_location else metadata_location
+    if "/metadata/" in metadata_location:
+        location = metadata_location.rsplit("/metadata/", 1)[0]
+    else:
+        location = metadata_location
     table_uuid_str = str(uuid.uuid4())
     metadata = build_iceberg_metadata(
         format_version=1,  # Default, should be read from metadata_location
@@ -412,12 +403,13 @@ async def create_table(
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     # Build Iceberg metadata from request (metadata should be read from storage)
-    location = metadata_location.rsplit("/metadata/", 1)[0] if "/metadata/" in metadata_location else metadata_location
+    if "/metadata/" in metadata_location:
+        location = metadata_location.rsplit("/metadata/", 1)[0]
+    else:
+        location = metadata_location
     table_uuid_str = str(uuid.uuid4())
     metadata = build_iceberg_metadata(
         format_version=1,  # Default, should be read from metadata_location
@@ -460,22 +452,25 @@ async def register_table(
                 detail=f"Namespace '{namespace}' not found",
             )
 
+    # Calculate location from metadata location
+    if "/metadata/" in request.metadata_location:
+        location = request.metadata_location.rsplit("/metadata/", 1)[0]
+    else:
+        location = request.metadata_location
+
     try:
         iceberg_table = await iceberg_table_service.create_iceberg_table(
             table_name=table,
             namespace_name=namespace_name,
             metadata_location=request.metadata_location,
-            location=request.metadata_location.rsplit("/metadata/", 1)[0] if "/metadata/" in request.metadata_location else request.metadata_location,
+            location=location,
             db=db,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     # Build Iceberg metadata (should read from metadata_location file)
     # For now, return minimal metadata - actual metadata should be read from storage
-    location = request.metadata_location.rsplit("/metadata/", 1)[0] if "/metadata/" in request.metadata_location else request.metadata_location
     table_uuid_str = str(uuid.uuid4())
     metadata = build_iceberg_metadata(
         format_version=1,  # Should be read from metadata_location
@@ -516,7 +511,10 @@ async def load_table(
     # Build Iceberg metadata (should read from metadata_location file)
     # For now, return minimal metadata - actual metadata should be read from storage
     # TODO: Read actual metadata from table_info.metadata_location
-    location = table_info.metadata_location.rsplit("/metadata/", 1)[0] if "/metadata/" in table_info.metadata_location else table_info.metadata_location
+    if "/metadata/" in table_info.metadata_location:
+        location = table_info.metadata_location.rsplit("/metadata/", 1)[0]
+    else:
+        location = table_info.metadata_location
     table_uuid_str = str(uuid.uuid4())
     metadata = build_iceberg_metadata(
         format_version=1,  # Should be read from metadata_location
@@ -576,7 +574,10 @@ async def commit_table(
     # Build Iceberg metadata (should read from metadata_location file)
     # For now, return minimal metadata - actual metadata should be read from storage
     # TODO: Read actual metadata from updated_table.metadata_location
-    location = updated_table.metadata_location.rsplit("/metadata/", 1)[0] if "/metadata/" in updated_table.metadata_location else updated_table.metadata_location
+    if "/metadata/" in updated_table.metadata_location:
+        location = updated_table.metadata_location.rsplit("/metadata/", 1)[0]
+    else:
+        location = updated_table.metadata_location
     table_uuid_str = str(uuid.uuid4())
     metadata = build_iceberg_metadata(
         format_version=1,  # Should be read from metadata_location
@@ -614,4 +615,3 @@ async def drop_table(
         )
 
     return DropTableResponse(dropped=True)
-

@@ -165,5 +165,3 @@ class DropTableResponse(ApiModel):
     """Response after dropping a table."""
 
     dropped: bool = True
-
-

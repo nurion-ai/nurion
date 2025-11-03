@@ -285,4 +285,3 @@ class FileSampleResponse(BaseModel):
     rows: list[dict[str, Any]]
     sampled_row_count: int
     total_row_count: int
-

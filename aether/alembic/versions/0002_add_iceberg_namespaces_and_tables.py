@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -24,13 +23,24 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=255), nullable=False, unique=True),
         sa.Column("properties", sa.JSON(), nullable=True),
         sa.Column(
-            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.Column(
-            "updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
     )
-    op.create_index("ix_catalog_iceberg_namespaces_name", "catalog_iceberg_namespaces", ["name"], unique=True)
+    op.create_index(
+        "ix_catalog_iceberg_namespaces_name",
+        "catalog_iceberg_namespaces",
+        ["name"],
+        unique=True,
+    )
 
     # Create Iceberg tables table (minimal metadata only)
     op.create_table(
@@ -46,13 +56,21 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column(
-            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.Column(
-            "updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
     )
-    op.create_index("ix_catalog_iceberg_tables_name", "catalog_iceberg_tables", ["name"], unique=True)
+    op.create_index(
+        "ix_catalog_iceberg_tables_name", "catalog_iceberg_tables", ["name"], unique=True
+    )
     op.create_index(
         "ix_catalog_iceberg_tables_namespace_name",
         "catalog_iceberg_tables",
@@ -65,7 +83,6 @@ def downgrade() -> None:
     op.drop_index("ix_catalog_iceberg_tables_namespace_name", table_name="catalog_iceberg_tables")
     op.drop_index("ix_catalog_iceberg_tables_name", table_name="catalog_iceberg_tables")
     op.drop_table("catalog_iceberg_tables")
-    
+
     op.drop_index("ix_catalog_iceberg_namespaces_name", table_name="catalog_iceberg_namespaces")
     op.drop_table("catalog_iceberg_namespaces")
-

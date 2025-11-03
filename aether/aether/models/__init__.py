@@ -1,6 +1,6 @@
 """SQLAlchemy models package."""
 
-from .lance import LanceTable, LanceNamespace
 from .iceberg import IcebergNamespace, IcebergTable
+from .lance import LanceNamespace, LanceTable
 
 __all__ = ["LanceNamespace", "LanceTable", "IcebergNamespace", "IcebergTable"]

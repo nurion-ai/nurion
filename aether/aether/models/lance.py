@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -24,9 +24,13 @@ class LanceNamespace(BaseModel):
 
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     tables: Mapped[list[LanceTable]] = relationship(
@@ -59,12 +63,18 @@ class LanceTable(BaseModel):
         index=True,
     )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
-    namespace: Mapped[LanceNamespace | None] = relationship("LanceNamespace", back_populates="tables")
+    namespace: Mapped[LanceNamespace | None] = relationship(
+        "LanceNamespace", back_populates="tables"
+    )
 
     __table_args__ = (
         Index(
@@ -80,4 +90,3 @@ class LanceTable(BaseModel):
             postgresql_using="gin",
         ),
     )
-

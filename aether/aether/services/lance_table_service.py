@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.store import normalized_path_and_storage_options
 from ..db.session import get_session
-from ..models.lance import LanceTable, LanceNamespace
+from ..models.lance import LanceNamespace, LanceTable
 
 logger = logging.getLogger(__name__)
 
@@ -370,4 +370,3 @@ async def list_table_indices(
             )
 
     return indices
-
