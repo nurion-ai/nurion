@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -287,3 +285,4 @@ class FileSampleResponse(BaseModel):
     rows: list[dict[str, Any]]
     sampled_row_count: int
     total_row_count: int
+

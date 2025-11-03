@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 
 import pytest
+from lance_namespace import LanceNamespace
 from lance_namespace.rest import LanceRestNamespace
-
-if TYPE_CHECKING:
-    from lance_namespace import LanceNamespace
 from lance_namespace_urllib3_client.models import (
     DescribeNamespaceRequest,
     ListNamespacesRequest,

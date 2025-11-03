@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import lance
 from lance.schema import schema_to_json
 from sqlalchemy import func, or_, select
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.store import normalized_path_and_storage_options
 from ..db.session import get_session
-from ..models.catalog import LanceTable, Namespace
+from ..models.lance import LanceTable, LanceNamespace
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +32,7 @@ async def create_namespace(
     properties: dict[str, Any] | None = None,
     created_by: str | None = None,
     db: AsyncSession | None = None,
-) -> Namespace:
+) -> LanceNamespace:
     if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name):
         raise ValueError(
             "Namespace name must start with a letter or underscore and contain only "
@@ -43,13 +41,13 @@ async def create_namespace(
 
     session = await _resolve_session(db)
 
-    stmt = select(Namespace).where(Namespace.name == name)
+    stmt = select(LanceNamespace).where(LanceNamespace.name == name)
     result = await session.execute(stmt)
     existing = result.scalar_one_or_none()
     if existing:
         raise ValueError(f"Namespace with name '{name}' already exists")
 
-    namespace = Namespace(
+    namespace = LanceNamespace(
         name=name,
         description=description,
         delimiter=delimiter,
@@ -62,9 +60,9 @@ async def create_namespace(
     return namespace
 
 
-async def ensure_default_namespace(db: AsyncSession | None = None) -> Namespace:
+async def ensure_default_namespace(db: AsyncSession | None = None) -> LanceNamespace:
     session = await _resolve_session(db)
-    stmt = select(Namespace).where(Namespace.name == "default")
+    stmt = select(LanceNamespace).where(LanceNamespace.name == "default")
     result = await session.execute(stmt)
     namespace = result.scalar_one_or_none()
     if namespace:
@@ -82,23 +80,23 @@ async def ensure_default_namespace(db: AsyncSession | None = None) -> Namespace:
     return namespace
 
 
-async def get_namespace_by_name(name: str, db: AsyncSession | None = None) -> Namespace | None:
+async def get_namespace_by_name(name: str, db: AsyncSession | None = None) -> LanceNamespace | None:
     session = await _resolve_session(db)
-    stmt = select(Namespace).where(Namespace.name == name)
+    stmt = select(LanceNamespace).where(LanceNamespace.name == name)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
-async def get_all_namespaces(db: AsyncSession | None = None) -> list[Namespace]:
+async def get_all_namespaces(db: AsyncSession | None = None) -> list[LanceNamespace]:
     session = await _resolve_session(db)
-    stmt = select(Namespace).order_by(Namespace.name)
+    stmt = select(LanceNamespace).order_by(LanceNamespace.name)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
 async def get_available_namespaces(db: AsyncSession | None = None) -> list[str]:
     session = await _resolve_session(db)
-    stmt = select(Namespace.name).order_by(Namespace.name)
+    stmt = select(LanceNamespace.name).order_by(LanceNamespace.name)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
@@ -112,7 +110,7 @@ async def delete_namespace(namespace_id: int, db: AsyncSession | None = None) ->
     if table_count and table_count > 0:
         raise ValueError(f"Cannot delete namespace: it contains {table_count} tables")
 
-    stmt = select(Namespace).where(Namespace.id == namespace_id)
+    stmt = select(LanceNamespace).where(LanceNamespace.id == namespace_id)
     result = await session.execute(stmt)
     namespace = result.scalar_one_or_none()
     if not namespace:
@@ -222,6 +220,7 @@ async def get_tables_by_namespace(
 async def create_empty_lance_table(
     table_name: str,
     location: str,
+    namespace_id: int | None = None,
     storage_options: dict | None = None,
     properties: dict[str, Any] | None = None,
     db: AsyncSession | None = None,
@@ -250,6 +249,7 @@ async def create_empty_lance_table(
         lance_path=normalized_path,
         lance_schema={},
         row_count=0,
+        namespace_id=namespace_id,
         storage_options=storage_options,
         **(properties or {}),
     )
@@ -370,3 +370,4 @@ async def list_table_indices(
             )
 
     return indices
+

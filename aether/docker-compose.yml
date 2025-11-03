@@ -38,12 +38,13 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://aether:aether@db:5432/aether
       LANCE_BASE_URL: http://app:8000/api/lance-namespace
+      ICEBERG_CATALOG_URI: http://app:8000/api/iceberg-catalog
     depends_on:
       app:
         condition: service_healthy
     networks:
       - appnet
-    command: ["sh", "-c", "sleep 10 && uv run pytest tests/test_lance_namespace_api.py -v"]
+    command: ["sh", "-c", "sleep 10 && uv run pytest tests/test_lance_namespace_api.py tests/test_iceberg_catalog_api.py -v"]
 
 networks:
   appnet:

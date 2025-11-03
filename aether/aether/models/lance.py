@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import BaseModel
 
 
-class Namespace(BaseModel):
+class LanceNamespace(BaseModel):
     """Represents a Lance namespace grouping tables under a logical path."""
 
     __tablename__ = "catalog_namespaces"
@@ -24,9 +24,9 @@ class Namespace(BaseModel):
 
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
     tables: Mapped[list[LanceTable]] = relationship(
@@ -59,12 +59,12 @@ class LanceTable(BaseModel):
         index=True,
     )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
-    namespace: Mapped[Namespace | None] = relationship("Namespace", back_populates="tables")
+    namespace: Mapped[LanceNamespace | None] = relationship("LanceNamespace", back_populates="tables")
 
     __table_args__ = (
         Index(
@@ -80,3 +80,4 @@ class LanceTable(BaseModel):
             postgresql_using="gin",
         ),
     )
+
