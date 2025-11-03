@@ -8,8 +8,9 @@ from sqlalchemy import MetaData, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from aether.core.settings import get_settings
-from aether.models import catalog  # noqa: F401 - ensure models are imported
+from aether.models import iceberg, lance  # noqa: F401 - ensure models are imported
 from aether.models.base import BaseModel
+from aether.models.iceberg import IcebergNamespace, IcebergTable  # noqa: F401
 from alembic import context
 
 # this is the Alembic Config object, which provides

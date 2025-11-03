@@ -13,11 +13,13 @@ dependencies = [
     "pydantic-settings>=2.11.0",
     "sqlalchemy[asyncio]>=2.0.44",
     "uvicorn[standard]>=0.38.0",
+    "pyiceberg>=0.10.0",
 ]
 
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "pyiceberg[rest]>=0.7.0",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=6.0.0",
@@ -40,8 +42,11 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C4", "SIM", "TCH"]
-ignore = ["B008"]  # Ignore function calls in default arguments (FastAPI pattern)
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "B008",  # Ignore function calls in default arguments (FastAPI pattern)
+    "SIM105",  # Allow try-except-pass pattern
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["aether"]

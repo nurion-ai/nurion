@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import lance
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
-    from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.store import normalized_path_and_storage_options
 from ...db.session import get_session
-from ...schemas.catalog import (
+from ...schemas.lance import (
     CountTableRowsRequest,
     CountTableRowsResponse,
     CreateEmptyTableRequest,
@@ -44,7 +41,7 @@ from ...schemas.catalog import (
     RegisterTableResponse,
     UpdateTableTagRequest,
 )
-from ...services import catalog_service
+from ...services import lance_table_service
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +81,7 @@ async def create_namespace(
     created_by = properties.get("created_by")
 
     try:
-        namespace = await catalog_service.create_namespace(
+        namespace = await lance_table_service.create_namespace(
             name=id,
             description=description,
             delimiter=delimiter,
@@ -116,8 +113,8 @@ async def describe_namespace(
     db: AsyncSession = Depends(get_db_session),
 ):
     if _is_root_namespace(id, delimiter):
-        namespace = await catalog_service.ensure_default_namespace(db)
-        tables_in_namespace = await catalog_service.get_tables_by_namespace(namespace.name, db)
+        namespace = await lance_table_service.ensure_default_namespace(db)
+        tables_in_namespace = await lance_table_service.get_tables_by_namespace(namespace.name, db)
         return DescribeNamespaceResponse(
             namespace="default",
             properties={
@@ -137,13 +134,13 @@ async def describe_namespace(
             },
         )
 
-    namespace = await catalog_service.get_namespace_by_name(id, db)
+    namespace = await lance_table_service.get_namespace_by_name(id, db)
     if not namespace:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found"
         )
 
-    tables_in_namespace = await catalog_service.get_tables_by_namespace(id, db)
+    tables_in_namespace = await lance_table_service.get_tables_by_namespace(id, db)
     return DescribeNamespaceResponse(
         namespace=namespace.name,
         properties={
@@ -175,14 +172,14 @@ async def drop_namespace(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot drop root namespace"
         )
 
-    namespace = await catalog_service.get_namespace_by_name(id, db)
+    namespace = await lance_table_service.get_namespace_by_name(id, db)
     if not namespace:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found"
         )
 
     try:
-        deleted = await catalog_service.delete_namespace(namespace.id, db)
+        deleted = await lance_table_service.delete_namespace(namespace.id, db)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -203,10 +200,10 @@ async def namespace_exists(
     db: AsyncSession = Depends(get_db_session),
 ):
     if id in {".", "", "default"}:
-        await catalog_service.ensure_default_namespace(db)
+        await lance_table_service.ensure_default_namespace(db)
         return
 
-    namespace = await catalog_service.get_namespace_by_name(id, db)
+    namespace = await lance_table_service.get_namespace_by_name(id, db)
     if not namespace:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Namespace '{id}' not found"
@@ -222,10 +219,10 @@ async def list_namespaces(
     db: AsyncSession = Depends(get_db_session),
 ):
     if _is_root_namespace(id, delimiter):
-        await catalog_service.ensure_default_namespace(db)
-        namespaces = await catalog_service.get_available_namespaces(db)
+        await lance_table_service.ensure_default_namespace(db)
+        namespaces = await lance_table_service.get_available_namespaces(db)
     else:
-        all_namespaces = await catalog_service.get_all_namespaces(db)
+        all_namespaces = await lance_table_service.get_all_namespaces(db)
         namespaces = [
             namespace.name for namespace in all_namespaces if namespace.name.startswith(id)
         ]
@@ -250,7 +247,7 @@ async def list_tables(
     limit: int | None = Query(None, description="Maximum number of results to return"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    tables = await catalog_service.get_tables_by_namespace(id, db)
+    tables = await lance_table_service.get_tables_by_namespace(id, db)
     table_names = [table.name for table in tables]
 
     if page_token is not None or limit is not None:
@@ -283,7 +280,7 @@ async def register_table(
         table_name = id
 
     try:
-        table = await catalog_service.create_lance_table(
+        table = await lance_table_service.create_lance_table(
             lance_path=request.location,
             name=table_name,
             storage_options=request.storage_options,
@@ -312,7 +309,7 @@ async def drop_table(
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
-        table_info = await catalog_service.drop_table_by_id(id, delimiter, db)
+        table_info = await lance_table_service.drop_table_by_id(id, delimiter, db)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -334,7 +331,7 @@ async def deregister_table(
     db: AsyncSession = Depends(get_db_session),
 ):
     try:
-        table_info = await catalog_service.deregister_table_by_id(id, delimiter, db)
+        table_info = await lance_table_service.deregister_table_by_id(id, delimiter, db)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -355,12 +352,12 @@ async def get_table_stats(
     delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -382,12 +379,12 @@ async def describe_table(
     delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -418,12 +415,12 @@ async def table_exists(
     delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -436,12 +433,12 @@ async def count_table_rows(
     request: CountTableRowsRequest = Body(default_factory=CountTableRowsRequest),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -473,7 +470,7 @@ async def create_empty_table(
     table_name = id.split(delimiter)[-1] if delimiter in id else id
 
     try:
-        table = await catalog_service.create_empty_lance_table(
+        table = await lance_table_service.create_empty_lance_table(
             table_name=table_name,
             location=request.location,
             storage_options=request.storage_options,
@@ -501,17 +498,17 @@ async def list_table_indices_endpoint(
     delimiter: str = Query(".", description="Delimiter used to parse object string identifiers"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
 
-    indices = await catalog_service.list_table_indices(table_info.name, db)
+    indices = await lance_table_service.list_table_indices(table_info.name, db)
     return ListTableIndicesResponse(indices=indices)
 
 
@@ -523,12 +520,12 @@ async def list_table_tags(
     limit: int | None = Query(None, description="Maximum number of results to return"),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -560,12 +557,12 @@ async def get_table_tag_version(
     request: GetTableTagVersionRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -585,12 +582,12 @@ async def create_table_tag(
     request: CreateTableTagRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -605,12 +602,12 @@ async def update_table_tag(
     request: UpdateTableTagRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")
@@ -630,12 +627,12 @@ async def delete_table_tag(
     request: DeleteTableTagRequest = Body(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    table_info = await catalog_service.get_lance_table(id, db)
+    table_info = await lance_table_service.get_lance_table(id, db)
 
     if not table_info and delimiter in id:
         parts = id.split(delimiter)
         table_name = parts[-1]
-        table_info = await catalog_service.get_lance_table(table_name, db)
+        table_info = await lance_table_service.get_lance_table(table_name, db)
 
     if not table_info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Table '{id}' not found")

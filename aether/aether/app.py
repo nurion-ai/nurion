@@ -11,7 +11,7 @@ from .api.routes import register_routes
 from .core.settings import Settings, get_settings
 from .db.session import async_engine, async_session_factory
 from .models.base import BaseModel
-from .services import catalog_service
+from .services import iceberg_table_service, lance_table_service
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
 
         async with async_session_factory() as session:
-            await catalog_service.ensure_default_namespace(session)
+            await lance_table_service.ensure_default_namespace(session)
+            await iceberg_table_service.ensure_default_iceberg_namespace(session)
 
     register_routes(app)
 
