@@ -1,2 +1,1 @@
-"""Test suite for the Solstice framework."""
-
+"""Solstice tests"""

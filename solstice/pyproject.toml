@@ -29,8 +29,13 @@ lance = [
     "pylance>=0.38.0",
 ]
 
+iceberg = [
+    "pyiceberg>=0.7.0",
+]
+
 all = [
     "pylance>=0.38.0",
+    "pyiceberg>=0.7.0",
 ]
 
 [project.scripts]

@@ -8,6 +8,136 @@ from solstice.core.operator import SourceOperator
 from solstice.core.models import Record
 
 
+class IcebergSource(SourceOperator):
+    """Source operator for reading from Iceberg tables"""
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        super().__init__(config)
+        
+        self.catalog_uri = config.get('catalog_uri')
+        self.table_name = config.get('table_name')
+        self.batch_size = config.get('batch_size', 1000)
+        self.filter_expr = config.get('filter')
+        self.snapshot_id = config.get('snapshot_id')
+        
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Iceberg table handle
+        self.catalog = None
+        self.table = None
+        self.scan = None
+        self.current_offset = 0
+    
+    def open(self, context) -> None:
+        """Initialize the Iceberg table connection"""
+        super().open(context)
+        
+        try:
+            from pyiceberg.catalog import load_catalog
+            
+            if not self.catalog_uri:
+                raise ValueError("catalog_uri is required for IcebergSource")
+            if not self.table_name:
+                raise ValueError("table_name is required for IcebergSource")
+            
+            # Load catalog
+            self.catalog = load_catalog(
+                name="default",
+                **{"uri": self.catalog_uri}
+            )
+            
+            # Load table
+            self.table = self.catalog.load_table(self.table_name)
+            
+            # Create scan
+            scan = self.table.scan()
+            
+            if self.filter_expr:
+                scan = scan.filter(self.filter_expr)
+            
+            if self.snapshot_id:
+                scan = scan.use_snapshot(self.snapshot_id)
+            
+            self.scan = scan
+            
+            # Get offset from state if recovering
+            if self._context:
+                self.current_offset = self._context.get_state('offset', 0)
+            
+            self.logger.info(
+                f"Opened Iceberg table {self.table_name}, "
+                f"starting from offset {self.current_offset}"
+            )
+            
+        except ImportError:
+            raise ImportError(
+                "pyiceberg library is required for IcebergSource. "
+                "Install it with: pip install pyiceberg"
+            )
+    
+    def read(self) -> Iterable[Record]:
+        """Read records from Iceberg table"""
+        if not self.scan:
+            raise RuntimeError("Source not opened. Call open() first.")
+        
+        # Read in batches
+        for task in self.scan.plan_files():
+            # Read file task
+            arrow_batch_reader = task.to_arrow()
+            
+            for batch in arrow_batch_reader:
+                # Skip batches before current offset
+                if self.current_offset > 0:
+                    batch_size = len(batch)
+                    if self.current_offset >= batch_size:
+                        self.current_offset -= batch_size
+                        continue
+                    else:
+                        # Partial skip within batch
+                        batch = batch.slice(self.current_offset)
+                        self.current_offset = 0
+                
+                # Convert batch to records
+                batch_dict = batch.to_pydict()
+                num_rows = len(batch)
+                
+                for i in range(num_rows):
+                    # Create record from row
+                    row = {col: batch_dict[col][i] for col in batch_dict.keys()}
+                    
+                    # Use first column as key if available
+                    key = None
+                    if batch_dict:
+                        first_col = list(batch_dict.keys())[0]
+                        key = str(row[first_col])
+                    
+                    record = Record(
+                        key=key,
+                        value=row,
+                        metadata={'source': 'iceberg', 'table': self.table_name}
+                    )
+                    
+                    yield record
+                    
+                    # Update offset
+                    if self._context:
+                        self._context.set_state('offset', self._context.get_state('offset', 0) + 1)
+    
+    def checkpoint(self) -> Dict[str, Any]:
+        """Checkpoint the current offset"""
+        state = super().checkpoint()
+        if self._context:
+            state['offset'] = self._context.get_state('offset', 0)
+        return state
+    
+    def close(self) -> None:
+        """Close the Iceberg table"""
+        self.scan = None
+        self.table = None
+        self.catalog = None
+        self.logger.info("Closed Iceberg table source")
+
+
 class LanceTableSource(SourceOperator):
     """Source operator for reading from Lance tables"""
     
