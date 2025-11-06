@@ -125,17 +125,61 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: docker/setup-buildx-action@v3
     
-    - name: Build Docker images
+    - name: Build Docker image
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose build
+        docker compose build app
     
-    - name: Start services and run integration tests
+    - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose up --abort-on-container-exit --exit-code-from tester
+        docker compose up -d app
+        
+        # Wait for services to be healthy
+        echo "Waiting for aether to be ready..."
+        for i in {1..30}; do
+          if curl -f http://localhost:8000/api/health 2>/dev/null; then
+            echo "Aether is ready!"
+            break
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 2
+        done
+        
+        docker compose ps
+    
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+    
+    - name: Set up Python 3.13
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: uv python install 3.13
+    
+    - name: Install dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd aether
+        uv sync --dev
+    
+    - name: Run tests locally
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd aether
+        export LANCE_BASE_URL=http://localhost:8000/api/lance-namespace
+        export ICEBERG_CATALOG_URI=http://localhost:8000/api/iceberg-catalog
+        export DATABASE_URL=postgresql+asyncpg://aether:aether@localhost:5432/aether
+        uv run pytest tests/test_lance_namespace_api.py tests/test_iceberg_catalog_api.py -v
+    
+    - name: Stop services
+      if: always()
+      run: |
+        cd aether
+        docker compose down -v
     
     - name: Upload coverage to Codecov
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -180,12 +224,20 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose up -d
-        docker compose ps
+        docker compose up -d app
         
         # Wait for services to be healthy
         echo "Waiting for aether to be ready..."
-        timeout 60 bash -c 'until curl -f http://localhost:8000/api/health 2>/dev/null; do sleep 2; done'
+        for i in {1..30}; do
+          if curl -f http://localhost:8000/api/health 2>/dev/null; then
+            echo "Aether is ready!"
+            break
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 2
+        done
+        
+        docker compose ps
     
     - name: Set up Python 3.10
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
