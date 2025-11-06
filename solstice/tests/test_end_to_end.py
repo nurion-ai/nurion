@@ -23,12 +23,23 @@ def iceberg_catalog():
     """Connect to aether Iceberg REST catalog"""
     try:
         from pyiceberg.catalog import load_catalog
+        import os
+        
+        # Set environment variables for MinIO S3
+        os.environ['AWS_ACCESS_KEY_ID'] = 'minioadmin'
+        os.environ['AWS_SECRET_ACCESS_KEY'] = 'minioadmin'
+        os.environ['AWS_ENDPOINT_URL'] = 'http://localhost:9000'
+        os.environ['AWS_REGION'] = 'us-east-1'
         
         catalog = load_catalog(
             "aether",
             **{
                 "uri": "http://localhost:8000/api/iceberg-catalog",
                 "type": "rest",
+                "s3.endpoint": "http://localhost:9000",
+                "s3.access-key-id": "minioadmin",
+                "s3.secret-access-key": "minioadmin",
+                "s3.region": "us-east-1",
             }
         )
         return catalog
