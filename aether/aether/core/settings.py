@@ -69,7 +69,7 @@ class IcebergCatalogSettings(BaseModel):
         """Return the endpoint used by backend services."""
         if not self.is_s3:
             return None
-        return self.s3_endpoint or self.s3_external_endpoint
+        return self.s3_endpoint
 
     def warehouse_uri(self) -> str:
         """Return the resolved warehouse URI based on backend configuration."""
