@@ -125,28 +125,28 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: docker/setup-buildx-action@v3
     
-    - name: Build Docker image
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: |
-        cd aether
-        docker compose build app
-    
     - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose up -d app
+        docker compose build app
+        docker compose up -d
         
         # Wait for services to be healthy
-        echo "Waiting for aether to be ready..."
-        for i in {1..30}; do
+        echo "Waiting for services..."
+        for i in {1..40}; do
           if curl -f http://localhost:8000/api/health 2>/dev/null; then
-            echo "Aether is ready!"
+            echo "✅ Aether is ready!"
             break
           fi
-          echo "Waiting... ($i/30)"
           sleep 2
         done
+        
+        # Create warehouse bucket for Iceberg
+        docker run --rm --network aether_appnet \
+          --entrypoint sh minio/mc:latest -c \
+          "mc alias set myminio http://minio:9000 minioadmin minioadmin && \
+           mc mb myminio/warehouse --ignore-existing"
         
         docker compose ps
     
@@ -173,7 +173,10 @@ jobs:
         export LANCE_BASE_URL=http://localhost:8000/api/lance-namespace
         export ICEBERG_CATALOG_URI=http://localhost:8000/api/iceberg-catalog
         export DATABASE_URL=postgresql+asyncpg://aether:aether@localhost:5432/aether
-        uv run pytest tests/test_lance_namespace_api.py tests/test_iceberg_catalog_api.py -v
+        export AWS_ACCESS_KEY_ID=minioadmin
+        export AWS_SECRET_ACCESS_KEY=minioadmin
+        export AWS_ENDPOINT_URL=http://localhost:9000
+        uv run pytest tests/ -v 
     
     - name: Stop services
       if: always()
@@ -213,18 +216,12 @@ jobs:
     - name: Set up Docker Buildx
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: docker/setup-buildx-action@v3
-    
-    - name: Build aether Docker image
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: |
-        cd aether
-        docker compose build app
-    
+
     - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose up -d app
+        docker compose up -d 
         
         # Wait for services to be healthy
         echo "Waiting for aether to be ready..."
@@ -249,19 +246,13 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd solstice
-        pip install -e ".[dev,iceberg,lance]"
+        pip install -e ".[dev]"
     
-    - name: Run unit tests
+    - name: Run tests
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd solstice
-        python -m pytest tests/ -v --tb=short -m "not integration"
-    
-    - name: Run integration tests
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: |
-        cd solstice
-        python -m pytest tests/ -v --tb=short -m integration
+        uv run pytest tests/ -v --tb=short
     
     - name: Stop services
       if: always()
