@@ -10,20 +10,17 @@ from solstice.operators.source import IcebergSource
 @pytest.fixture(scope="module")
 def iceberg_catalog():
     """Get Iceberg REST catalog connection (requires aether service running)"""
-    try:
-        from pyiceberg.catalog import load_catalog
-        
-        # Connect to aether REST catalog
-        catalog = load_catalog(
-            "aether",
-            **{
-                "uri": "http://localhost:8000/api/iceberg-catalog",
-                "type": "rest",
-            }
-        )
-        return catalog
-    except Exception as e:
-        pytest.skip(f"Iceberg catalog not available: {e}")
+    from pyiceberg.catalog import load_catalog
+    
+    # Connect to aether REST catalog
+    catalog = load_catalog(
+        "aether",
+        **{
+            "uri": "http://localhost:8000/api/iceberg-catalog",
+            "type": "rest",
+        }
+    )
+    return catalog
 
 
 @pytest.mark.integration

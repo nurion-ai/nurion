@@ -5,6 +5,7 @@ import pyarrow as pa
 import tempfile
 import shutil
 from pathlib import Path
+import lance
 
 from solstice.core.job import Job
 from solstice.core.stage import Stage
@@ -21,30 +22,27 @@ from solstice.state.backend import LocalStateBackend
 @pytest.fixture(scope="module")
 def iceberg_catalog():
     """Connect to aether Iceberg REST catalog"""
-    try:
-        from pyiceberg.catalog import load_catalog
-        import os
-        
-        # Set environment variables for MinIO S3
-        os.environ['AWS_ACCESS_KEY_ID'] = 'minioadmin'
-        os.environ['AWS_SECRET_ACCESS_KEY'] = 'minioadmin'
-        os.environ['AWS_ENDPOINT_URL'] = 'http://localhost:9000'
-        os.environ['AWS_REGION'] = 'us-east-1'
-        
-        catalog = load_catalog(
-            "aether",
-            **{
-                "uri": "http://localhost:8000/api/iceberg-catalog",
-                "type": "rest",
-                "s3.endpoint": "http://localhost:9000",
-                "s3.access-key-id": "minioadmin",
-                "s3.secret-access-key": "minioadmin",
-                "s3.region": "us-east-1",
-            }
-        )
-        return catalog
-    except Exception as e:
-        pytest.skip(f"Aether catalog not available. Start with: cd ../aether && docker compose up -d. Error: {e}")
+    from pyiceberg.catalog import load_catalog
+    import os
+    
+    # Set environment variables for MinIO S3
+    os.environ['AWS_ACCESS_KEY_ID'] = 'minioadmin'
+    os.environ['AWS_SECRET_ACCESS_KEY'] = 'minioadmin'
+    os.environ['AWS_ENDPOINT_URL'] = 'http://localhost:9000'
+    os.environ['AWS_REGION'] = 'us-east-1'
+    
+    catalog = load_catalog(
+        "aether",
+        **{
+            "uri": "http://localhost:8000/api/iceberg-catalog",
+            "type": "rest",
+            "s3.endpoint": "http://localhost:9000",
+            "s3.access-key-id": "minioadmin",
+            "s3.secret-access-key": "minioadmin",
+            "s3.region": "us-east-1",
+        }
+    )
+    return catalog
 
 
 @pytest.fixture
@@ -64,13 +62,16 @@ def iceberg_test_table(iceberg_catalog):
     except:
         pass
     
-    # Create schema
-    schema = pa.schema([
-        ('id', pa.int64()),
-        ('value', pa.int64()),
-        ('category', pa.string()),
-        ('score', pa.float64()),
-    ])
+    # Create schema with proper Iceberg format
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import NestedField, LongType, StringType, DoubleType
+    
+    schema = Schema(
+        NestedField(field_id=1, name='id', field_type=LongType(), required=False),
+        NestedField(field_id=2, name='value', field_type=LongType(), required=False),
+        NestedField(field_id=3, name='category', field_type=StringType(), required=False),
+        NestedField(field_id=4, name='score', field_type=DoubleType(), required=False),
+    )
     
     # Create table
     table = iceberg_catalog.create_table(table_name, schema=schema)
@@ -97,10 +98,6 @@ def iceberg_test_table(iceberg_catalog):
 @pytest.fixture
 def lance_test_table():
     """Create test Lance table"""
-    try:
-        import lance
-    except ImportError:
-        pytest.skip("Lance not installed")
     
     tmpdir = tempfile.mkdtemp()
     table_path = Path(tmpdir) / "test_table"
@@ -510,14 +507,29 @@ class TestCompleteE2EPipeline:
                 
                 def open(self, context):
                     super().open(context)
-                    self.total_count = context.get_state('total_count', 0)
+                    # Get state from context
+                    self.total_count = self._context.get_state('total_count', 0) if self._context else 0
                 
                 def process(self, record):
                     self.total_count += 1
-                    self._context.set_state('total_count', self.total_count)
+                    if self._context:
+                        self._context.set_state('total_count', self.total_count)
                     
                     record.value['global_position'] = self.total_count
                     return [record]
+                
+                def restore(self, state):
+                    """Restore state"""
+                    super().restore(state)
+                    if self._context:
+                        self.total_count = self._context.get_state('total_count', 0)
+                
+                def checkpoint(self):
+                    """Checkpoint state"""
+                    state = super().checkpoint()
+                    if self._context:
+                        state['total_count'] = self.total_count
+                    return state
             
             # First run: Process first 20 records
             source1 = LanceTableSource({'table_path': lance_test_table, 'batch_size': 5})

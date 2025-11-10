@@ -80,48 +80,43 @@ class IcebergSource(SourceOperator):
         if not self.scan:
             raise RuntimeError("Source not opened. Call open() first.")
         
-        # Read in batches
-        for task in self.scan.plan_files():
-            # Read file task
-            arrow_batch_reader = task.to_arrow()
+        # Read all data as arrow table
+        arrow_table = self.scan.to_arrow()
+        
+        # Convert to records
+        batch_dict = arrow_table.to_pydict()
+        num_rows = len(arrow_table)
+        
+        for i in range(num_rows):
+            # Skip until current offset
+            if self.current_offset > 0:
+                self.current_offset -= 1
+                # Update state offset
+                if self._context:
+                    self._context.set_state('offset', self._context.get_state('offset', 0) + 1)
+                continue
             
-            for batch in arrow_batch_reader:
-                # Skip batches before current offset
-                if self.current_offset > 0:
-                    batch_size = len(batch)
-                    if self.current_offset >= batch_size:
-                        self.current_offset -= batch_size
-                        continue
-                    else:
-                        # Partial skip within batch
-                        batch = batch.slice(self.current_offset)
-                        self.current_offset = 0
-                
-                # Convert batch to records
-                batch_dict = batch.to_pydict()
-                num_rows = len(batch)
-                
-                for i in range(num_rows):
-                    # Create record from row
-                    row = {col: batch_dict[col][i] for col in batch_dict.keys()}
-                    
-                    # Use first column as key if available
-                    key = None
-                    if batch_dict:
-                        first_col = list(batch_dict.keys())[0]
-                        key = str(row[first_col])
-                    
-                    record = Record(
-                        key=key,
-                        value=row,
-                        metadata={'source': 'iceberg', 'table': self.table_name}
-                    )
-                    
-                    yield record
-                    
-                    # Update offset
-                    if self._context:
-                        self._context.set_state('offset', self._context.get_state('offset', 0) + 1)
+            # Create record from row
+            row = {col: batch_dict[col][i] for col in batch_dict.keys()}
+            
+            # Use first column as key if available
+            key = None
+            if batch_dict:
+                first_col = list(batch_dict.keys())[0]
+                key = str(row[first_col])
+            
+            record = Record(
+                key=key,
+                value=row,
+                metadata={'source': 'iceberg', 'table': self.table_name}
+            )
+            
+            # Update offset BEFORE yielding
+            if self._context:
+                current_offset = self._context.get_state('offset', 0)
+                self._context.set_state('offset', current_offset + 1)
+            
+            yield record
     
     def checkpoint(self) -> Dict[str, Any]:
         """Checkpoint the current offset"""
@@ -129,6 +124,16 @@ class IcebergSource(SourceOperator):
         if self._context:
             state['offset'] = self._context.get_state('offset', 0)
         return state
+    
+    def restore(self, state: Dict[str, Any]) -> None:
+        """Restore from checkpoint"""
+        super().restore(state)
+        if 'offset' in state:
+            offset = state['offset']
+            if self._context:
+                self._context.set_state('offset', offset)
+            self.current_offset = offset
+            self.logger.info(f"Restored Iceberg source from offset {offset}")
     
     def close(self) -> None:
         """Close the Iceberg table"""
@@ -177,9 +182,8 @@ class LanceTableSource(SourceOperator):
             
             self.scanner = self.table.scanner(**scanner_kwargs)
             
-            # Get offset from state if recovering
-            if self._context:
-                self.current_offset = self._context.get_state('offset', 0)
+            # Initialize offset - will be updated by restore() if needed
+            self.current_offset = 0
             
             self.logger.info(
                 f"Opened Lance table {self.table_path}, "
@@ -197,8 +201,7 @@ class LanceTableSource(SourceOperator):
         if not self.scanner:
             raise RuntimeError("Source not opened. Call open() first.")
         
-        # Read in batches
-        for batch in self.scanner.to_batches(batch_size=self.batch_size):
+        for batch in self.scanner.to_batches():
             # Skip batches before current offset
             if self.current_offset > 0:
                 batch_size = len(batch)
@@ -230,11 +233,12 @@ class LanceTableSource(SourceOperator):
                     metadata={'source': 'lance', 'table': self.table_path}
                 )
                 
-                yield record
-                
-                # Update offset
+                # Update offset BEFORE yielding
                 if self._context:
-                    self._context.set_state('offset', self._context.get_state('offset', 0) + 1)
+                    current_offset = self._context.get_state('offset', 0)
+                    self._context.set_state('offset', current_offset + 1)
+                
+                yield record
     
     def checkpoint(self) -> Dict[str, Any]:
         """Checkpoint the current offset"""
@@ -242,6 +246,16 @@ class LanceTableSource(SourceOperator):
         if self._context:
             state['offset'] = self._context.get_state('offset', 0)
         return state
+    
+    def restore(self, state: Dict[str, Any]) -> None:
+        """Restore from checkpoint"""
+        super().restore(state)
+        if 'offset' in state:
+            offset = state['offset']
+            if self._context:
+                self._context.set_state('offset', offset)
+            self.current_offset = offset
+            self.logger.info(f"Restored Lance source from offset {offset}")
     
     def close(self) -> None:
         """Close the Lance table"""

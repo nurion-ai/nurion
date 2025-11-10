@@ -55,8 +55,9 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_ENDPOINT_URL: http://minio:9000
-      AWS_REGION: us-east-1
       AWS_S3_ENDPOINT: http://minio:9000
+      AWS_S3_ENDPOINT_EXTERNAL: http://localhost:9000
+      AWS_REGION: us-east-1
       PYICEBERG_CATALOG__DEFAULT__S3__ENDPOINT: http://minio:9000
       PYICEBERG_CATALOG__DEFAULT__S3__ACCESS_KEY_ID: minioadmin
       PYICEBERG_CATALOG__DEFAULT__S3__SECRET_ACCESS_KEY: minioadmin
