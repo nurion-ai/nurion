@@ -184,6 +184,7 @@ async def update_table(
     logger.info("UPDATE_TABLE %s.%s", ".".join(namespace_segments) or "default", table)
     return await service.update_table(namespace_segments, table, payload, db)
 
+
 @router.post(
     "/namespaces/{namespace}/tables/{table}/register",
     response_model=RegisterTableResponse,

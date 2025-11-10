@@ -43,6 +43,7 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_NAMESPACE = "default"
 METADATA_FILE_SUFFIX = ".metadata.json"
 
+
 def parse_namespace(namespace_str: str | None) -> list[str]:
     """Parse encoded namespace strings into a list of segments."""
     if not namespace_str:
@@ -98,9 +99,7 @@ class IcebergCatalogService:
 
         return CatalogConfigResponse(defaults=defaults, overrides={})
 
-    async def list_namespaces(
-        self, parent: str | None, db: AsyncSession
-    ) -> ListNamespacesResponse:
+    async def list_namespaces(self, parent: str | None, db: AsyncSession) -> ListNamespacesResponse:
         namespaces = await iceberg_table_service.get_all_iceberg_namespaces(db)
         parent_filter = None
         if parent:
@@ -123,10 +122,9 @@ class IcebergCatalogService:
         *,
         namespace_override: list[str] | None = None,
     ) -> CreateNamespaceResponse:
-        namespace_segments = (
-            normalize_namespace_list(namespace_override)
-            or normalize_namespace_list(request.namespace)
-        )
+        namespace_segments = normalize_namespace_list(
+            namespace_override
+        ) or normalize_namespace_list(request.namespace)
         if not namespace_segments:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "Namespace name must be provided in request"
@@ -151,9 +149,7 @@ class IcebergCatalogService:
 
         return CreateNamespaceResponse(namespace=namespace_segments, properties=merged_properties)
 
-    async def get_namespace(
-        self, namespace: list[str], db: AsyncSession
-    ) -> NamespaceResponse:
+    async def get_namespace(self, namespace: list[str], db: AsyncSession) -> NamespaceResponse:
         namespace_name = format_namespace(namespace)
         namespace_segments = namespace or [DEFAULT_NAMESPACE]
 
@@ -220,13 +216,9 @@ class IcebergCatalogService:
             missing=[],
         )
 
-    async def list_tables(
-        self, namespace: list[str], db: AsyncSession
-    ) -> ListTablesResponse:
+    async def list_tables(self, namespace: list[str], db: AsyncSession) -> ListTablesResponse:
         namespace_name = format_namespace(namespace)
-        tables = await iceberg_table_service.get_iceberg_tables_by_namespace(
-            namespace_name, db
-        )
+        tables = await iceberg_table_service.get_iceberg_tables_by_namespace(namespace_name, db)
         identifiers = [
             TableIdentifier(namespace=namespace or [DEFAULT_NAMESPACE], name=table.name)
             for table in tables
@@ -408,9 +400,7 @@ class IcebergCatalogService:
     def default_metadata_location(self, namespace_name: str, table_name: str) -> str:
         warehouse = self.warehouse_location()
         namespace_path = namespace_name.replace(".", "/")
-        return (
-            f"{warehouse}/{namespace_path}/{table_name}/metadata/metadata.json"
-        )
+        return f"{warehouse}/{namespace_path}/{table_name}/metadata/metadata.json"
 
     @staticmethod
     def table_location_from_metadata(metadata_location: str) -> str:
@@ -521,9 +511,7 @@ class IcebergCatalogService:
                 return latest
         return None
 
-    async def _get_table(
-        self, table_name: str, namespace_name: str, db: AsyncSession
-    ):
+    async def _get_table(self, table_name: str, namespace_name: str, db: AsyncSession):
         table = await iceberg_table_service.get_iceberg_table_by_name(
             table_name, namespace_name, db
         )
@@ -542,4 +530,3 @@ __all__ = [
     "normalize_namespace_list",
     "DEFAULT_NAMESPACE",
 ]
-

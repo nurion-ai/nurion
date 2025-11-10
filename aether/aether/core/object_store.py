@@ -109,4 +109,3 @@ def _storage_options(uri: str) -> dict[str, Any]:
 
 
 __all__ = ["read_json", "write_json", "list_objects", "filter_by_suffix", "ObjectStoreError"]
-
