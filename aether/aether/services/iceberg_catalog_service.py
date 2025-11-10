@@ -455,7 +455,7 @@ class IcebergCatalogService:
             sort_order=UNSORTED_SORT_ORDER,
             properties=request.properties or {},
         )
-        return table_metadata.model_dump()
+        return table_metadata.model_dump(mode="json")
 
     def _build_empty_metadata(self, metadata_location: str) -> dict[str, Any]:
         table_metadata = new_table_metadata(
@@ -465,7 +465,7 @@ class IcebergCatalogService:
             sort_order=UNSORTED_SORT_ORDER,
             properties={},
         )
-        return table_metadata.model_dump()
+        return table_metadata.model_dump(mode="json")
 
     @staticmethod
     def _apply_table_updates(metadata: dict[str, Any], updates: Iterable[dict[str, Any]]) -> None:
