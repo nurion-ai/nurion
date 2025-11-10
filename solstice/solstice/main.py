@@ -12,15 +12,13 @@ Example usage:
 
 import logging
 import sys
-from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 import time
 import signal
 
 import click
 import ray
 
-from solstice.core.job import Job
 from solstice.state.backend import StateBackend, LocalStateBackend, S3StateBackend
 
 

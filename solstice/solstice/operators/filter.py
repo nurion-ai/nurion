@@ -1,6 +1,6 @@
 """Filter operator"""
 
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from solstice.core.operator import Operator
 from solstice.core.models import Record

@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List, Optional, Any
 import ray
 
-from solstice.state.checkpoint import CheckpointCoordinator, CheckpointManifest
+from solstice.state.checkpoint import CheckpointCoordinator
 from solstice.state.backend import StateBackend
 
 

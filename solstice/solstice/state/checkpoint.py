@@ -170,7 +170,6 @@ class CheckpointCoordinator:
         
         manifest_path = f"{self.job_id}/checkpoints/{checkpoint_id}/manifest.json"
         
-        import json
         from dataclasses import asdict
         self.state_backend.save_state(
             manifest_path,

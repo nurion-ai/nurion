@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import unquote
@@ -14,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...db.session import get_session
 from ...schemas.iceberg import (
     CatalogConfigResponse,
-    CommitTableRequest,
     CommitTableResponse,
     CreateNamespaceRequest,
     CreateNamespaceResponse,
@@ -59,8 +57,9 @@ def format_namespace(namespace_list: list[str]) -> str:
 
 def get_s3_client():
     """Get S3 client configured from environment variables."""
-    import boto3
     import os
+
+    import boto3
     
     s3_kwargs = {}
     if endpoint := os.getenv('AWS_ENDPOINT_URL') or os.getenv('AWS_S3_ENDPOINT'):
@@ -352,10 +351,10 @@ async def create_table_post(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     # Use pyiceberg to create proper metadata
-    from pyiceberg.table.metadata import new_table_metadata
     from pyiceberg.schema import Schema as IcebergSchema
-    from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
     from pyiceberg.table import UNPARTITIONED_PARTITION_SPEC
+    from pyiceberg.table.metadata import new_table_metadata
+    from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
     
     # Convert schema dict to pyiceberg Schema
     iceberg_schema = IcebergSchema.model_validate(request.schema)
@@ -435,17 +434,17 @@ async def update_table(
     # Read current metadata from S3
     try:
         current_metadata = await read_metadata_from_s3(table_info.metadata_location)
-    except:
+    except Exception:
         # If no metadata exists, create minimal one
         if "/metadata/" in table_info.metadata_location:
             location = table_info.metadata_location.rsplit("/metadata/", 1)[0]
         else:
             location = table_info.metadata_location
         
-        from pyiceberg.table.metadata import new_table_metadata
         from pyiceberg.schema import Schema as IcebergSchema
-        from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
         from pyiceberg.table import UNPARTITIONED_PARTITION_SPEC
+        from pyiceberg.table.metadata import new_table_metadata
+        from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
         
         # Create minimal schema
         minimal_schema = IcebergSchema()
@@ -636,8 +635,6 @@ async def commit_table(
     db: AsyncSession = Depends(get_db_session),
 ) -> CommitTableResponse:
     """Commit table updates - read metadata from S3."""
-    import boto3
-    import json as json_lib
     
     # Parse request body as raw JSON
     request_data = await request.json()

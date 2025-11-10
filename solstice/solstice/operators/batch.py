@@ -1,6 +1,6 @@
 """Batch processing operators"""
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 from solstice.core.operator import Operator
 from solstice.core.models import Batch

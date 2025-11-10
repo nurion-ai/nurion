@@ -1,10 +1,9 @@
 """State backend implementations for remote storage"""
 
-import json
 import pickle
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 import logging
 
 
@@ -156,7 +155,7 @@ class S3StateBackend(StateBackend):
                 Key=key
             )
             return True
-        except:
+        except Exception:
             return False
     
     def list_checkpoints(self, prefix: str) -> list:

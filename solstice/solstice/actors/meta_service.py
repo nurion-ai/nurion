@@ -247,7 +247,7 @@ class MetaService:
                     self.global_state_master.get_checkpoint_status.remote(),
                     timeout=5
                 )
-            except:
+            except Exception:
                 pass
         
         return {

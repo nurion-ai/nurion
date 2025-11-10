@@ -1,6 +1,6 @@
 """Stage definition and management"""
 
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, Optional, Tuple, Type, Union
 import logging
 
 from solstice.core.operator import Operator

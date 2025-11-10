@@ -8,10 +8,9 @@ import ray
 from collections import deque
 
 from solstice.core.models import (
-    Shard, ShardStatus, WorkerMetrics, Batch, Record, BackpressureSignal
+    Shard, ShardStatus, WorkerMetrics, Batch, BackpressureSignal
 )
 from solstice.state.backend import StateBackend
-from solstice.core.operator import Operator
 
 
 @ray.remote
@@ -188,7 +187,7 @@ class StageMasterActor:
             
             # Send to worker asynchronously
             worker_ref = self.workers[worker_id]
-            result_ref = worker_ref.process_batch.remote(batch)
+            _result_ref = worker_ref.process_batch.remote(batch)
             
             # Store for later retrieval
             # In a real system, we'd track these and collect results
