@@ -236,17 +236,23 @@ jobs:
         
         docker compose ps
     
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+
     - name: Set up Python 3.10
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-    
+     
     - name: Install dependencies
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd solstice
-        pip install -e ".[dev]"
+        uv sync --dev
     
     - name: Run tests
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
