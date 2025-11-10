@@ -97,7 +97,8 @@ class CreateTableRequest(ApiModel):
     """Request to create a table."""
 
     name: str
-    schema: dict[str, Any]
+    location: str | None = None
+    table_schema: dict[str, Any]
     partition_spec: dict[str, Any] | None = None
     write_metadata_location: str | None = None
     stage_create: bool = False

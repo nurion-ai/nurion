@@ -243,9 +243,13 @@ class IcebergCatalogService:
                     f"Namespace '{namespace_name}' not found",
                 )
 
-        metadata_location = request.write_metadata_location or self.default_metadata_location(
-            namespace_name, request.name
-        )
+        table_location = request.location.rstrip("/") if request.location else None
+        if request.write_metadata_location:
+            metadata_location = request.write_metadata_location
+        elif table_location:
+            metadata_location = f"{table_location}/metadata/metadata.json"
+        else:
+            metadata_location = self.default_metadata_location(namespace_name, request.name)
 
         try:
             await iceberg_table_service.create_iceberg_table(
@@ -447,7 +451,7 @@ class IcebergCatalogService:
     def _build_table_metadata(
         self, metadata_location: str, request: CreateTableRequest
     ) -> dict[str, Any]:
-        iceberg_schema = IcebergSchema.model_validate(request.schema)
+        iceberg_schema = IcebergSchema.model_validate(request.table_schema)
         table_metadata = new_table_metadata(
             location=self.table_location_from_metadata(metadata_location),
             schema=iceberg_schema,
