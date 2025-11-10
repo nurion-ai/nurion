@@ -11,7 +11,7 @@ from solstice.state.backend import StateBackend
 @ray.remote
 class GlobalStateMaster:
     """Global actor for coordinating state and checkpoints across all stages"""
-    
+
     def __init__(
         self,
         job_id: str,
@@ -21,9 +21,9 @@ class GlobalStateMaster:
     ):
         self.job_id = job_id
         self.state_backend = state_backend
-        
+
         self.logger = logging.getLogger("GlobalStateMaster")
-        
+
         # Checkpoint coordination
         self.checkpoint_coordinator = CheckpointCoordinator(
             job_id=job_id,
@@ -31,59 +31,57 @@ class GlobalStateMaster:
             checkpoint_interval_secs=checkpoint_interval_secs,
             checkpoint_interval_records=checkpoint_interval_records,
         )
-        
+
         # Stage tracking
         self.stages: List[str] = []
         self.stage_masters: Dict[str, ray.ObjectRef] = {}
-        
+
         self.logger.info(f"Global State Master initialized for job {job_id}")
-    
+
     def register_stage(self, stage_id: str, stage_master_ref: ray.ObjectRef) -> None:
         """Register a stage with the global state master"""
         self.stages.append(stage_id)
         self.stage_masters[stage_id] = stage_master_ref
-        
+
         self.logger.info(f"Registered stage {stage_id}")
-    
+
     def should_trigger_checkpoint(self) -> bool:
         """Check if a new checkpoint should be triggered"""
         return self.checkpoint_coordinator.should_trigger_checkpoint()
-    
+
     def trigger_global_checkpoint(self) -> str:
         """Trigger a checkpoint across all stages"""
         checkpoint_id = self.checkpoint_coordinator.trigger_checkpoint()
-        
+
         self.logger.info(
             f"Triggered global checkpoint {checkpoint_id} across {len(self.stages)} stages"
         )
-        
+
         # Trigger checkpoint in each stage
         trigger_refs = []
         for stage_id, stage_master in self.stage_masters.items():
             ref = stage_master.trigger_checkpoint.remote(checkpoint_id)
             trigger_refs.append((stage_id, ref))
-        
+
         # Wait for all stages to trigger
         for stage_id, ref in trigger_refs:
             try:
                 ray.get(ref, timeout=30)
             except Exception as e:
-                self.logger.error(
-                    f"Error triggering checkpoint in stage {stage_id}: {e}"
-                )
-        
+                self.logger.error(f"Error triggering checkpoint in stage {stage_id}: {e}")
+
         return checkpoint_id
-    
+
     def collect_checkpoint_handles(self, checkpoint_id: str) -> bool:
         """Collect checkpoint handles from all stages"""
         self.logger.info(f"Collecting checkpoint handles for {checkpoint_id}")
-        
+
         # Collect from each stage
         collect_refs = []
         for stage_id, stage_master in self.stage_masters.items():
             ref = stage_master.collect_checkpoints.remote()
             collect_refs.append((stage_id, ref))
-        
+
         # Gather handles
         all_handles = {}
         for stage_id, ref in collect_refs:
@@ -98,17 +96,15 @@ class GlobalStateMaster:
                         )
                     all_handles[stage_id] = handles
             except Exception as e:
-                self.logger.error(
-                    f"Error collecting handles from stage {stage_id}: {e}"
-                )
+                self.logger.error(f"Error collecting handles from stage {stage_id}: {e}")
                 return False
-        
+
         # Finalize checkpoint
         success = self.checkpoint_coordinator.finalize_checkpoint(
             checkpoint_id=checkpoint_id,
             expected_stages=self.stages,
         )
-        
+
         if success:
             self.logger.info(
                 f"Successfully finalized checkpoint {checkpoint_id} "
@@ -116,34 +112,34 @@ class GlobalStateMaster:
             )
         else:
             self.logger.error(f"Failed to finalize checkpoint {checkpoint_id}")
-        
+
         return success
-    
+
     def get_latest_checkpoint(self) -> Optional[str]:
         """Get the ID of the latest completed checkpoint"""
         checkpoint = self.checkpoint_coordinator.get_latest_checkpoint()
         return checkpoint.checkpoint_id if checkpoint else None
-    
+
     def list_checkpoints(self) -> List[str]:
         """List all available checkpoints"""
         return self.checkpoint_coordinator.list_checkpoints()
-    
+
     def restore_from_checkpoint(self, checkpoint_id: str) -> bool:
         """Restore all stages from a checkpoint"""
         self.logger.info(f"Restoring job {self.job_id} from checkpoint {checkpoint_id}")
-        
+
         # Load checkpoint manifest
         manifest = self.checkpoint_coordinator.load_checkpoint(checkpoint_id)
         if not manifest:
             self.logger.error(f"Failed to load checkpoint {checkpoint_id}")
             return False
-        
+
         # Restore each stage
         restore_refs = []
         for stage_id, stage_master in self.stage_masters.items():
             ref = stage_master.restore_from_checkpoint.remote(checkpoint_id)
             restore_refs.append((stage_id, ref))
-        
+
         # Wait for all restorations
         for stage_id, ref in restore_refs:
             try:
@@ -152,30 +148,29 @@ class GlobalStateMaster:
             except Exception as e:
                 self.logger.error(f"Error restoring stage {stage_id}: {e}")
                 return False
-        
+
         self.logger.info(f"Successfully restored from checkpoint {checkpoint_id}")
         return True
-    
+
     def cleanup_old_checkpoints(self, keep_last_n: int = 5) -> None:
         """Clean up old checkpoints"""
         self.checkpoint_coordinator.cleanup_old_checkpoints(keep_last_n)
-    
+
     def increment_record_count(self, count: int = 1) -> None:
         """Increment processed record count"""
         self.checkpoint_coordinator.increment_record_count(count)
-    
+
     def get_checkpoint_status(self) -> Dict[str, Any]:
         """Get checkpoint status"""
         latest = self.checkpoint_coordinator.get_latest_checkpoint()
-        
+
         return {
-            'latest_checkpoint': latest.checkpoint_id if latest else None,
-            'latest_checkpoint_time': latest.timestamp if latest else None,
-            'total_checkpoints': len(self.checkpoint_coordinator.checkpoints),
-            'records_since_checkpoint': self.checkpoint_coordinator.records_since_checkpoint,
+            "latest_checkpoint": latest.checkpoint_id if latest else None,
+            "latest_checkpoint_time": latest.timestamp if latest else None,
+            "total_checkpoints": len(self.checkpoint_coordinator.checkpoints),
+            "records_since_checkpoint": self.checkpoint_coordinator.records_since_checkpoint,
         }
-    
+
     def health_check(self) -> bool:
         """Health check"""
         return True
-

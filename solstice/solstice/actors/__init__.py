@@ -6,4 +6,3 @@ from solstice.actors.worker import WorkerActor
 from solstice.actors.state_master import GlobalStateMaster
 
 __all__ = ["MetaService", "StageMasterActor", "WorkerActor", "GlobalStateMaster"]
-

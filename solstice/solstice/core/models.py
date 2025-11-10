@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 class ShardStatus(str, Enum):
     """Status of a shard"""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -16,6 +17,7 @@ class ShardStatus(str, Enum):
 
 class CheckpointStatus(str, Enum):
     """Status of a checkpoint"""
+
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -25,6 +27,7 @@ class CheckpointStatus(str, Enum):
 @dataclass
 class Shard:
     """Represents a data shard for processing"""
+
     shard_id: str
     data_range: Dict[str, Any]  # Can contain offset, file path, key range, etc.
     worker_id: Optional[str] = None
@@ -38,6 +41,7 @@ class Shard:
 @dataclass
 class WorkerMetrics:
     """Metrics reported by a worker"""
+
     worker_id: str
     stage_id: str
     processing_rate: float  # records/sec
@@ -51,6 +55,7 @@ class WorkerMetrics:
 @dataclass
 class CheckpointHandle:
     """Handle to a checkpoint stored remotely"""
+
     checkpoint_id: str
     stage_id: str
     worker_id: str
@@ -64,6 +69,7 @@ class CheckpointHandle:
 @dataclass
 class Barrier:
     """Checkpoint barrier marker"""
+
     barrier_id: str
     checkpoint_id: str
     stage_id: str
@@ -75,6 +81,7 @@ class Barrier:
 @dataclass
 class BackpressureSignal:
     """Signal for backpressure propagation"""
+
     from_stage: str
     to_stage: str
     slow_down_factor: float  # 0.0 to 1.0, where 0.0 means pause
@@ -85,6 +92,7 @@ class BackpressureSignal:
 @dataclass
 class Record:
     """A single record flowing through the pipeline"""
+
     key: Optional[str] = None
     value: Any = None
     timestamp: float = field(default_factory=time.time)
@@ -94,11 +102,11 @@ class Record:
 @dataclass
 class Batch:
     """A batch of records"""
+
     records: List[Record]
     batch_id: str
     source_shard: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
-    
+
     def __len__(self):
         return len(self.records)
-

@@ -5,4 +5,3 @@ from solstice.core.stage import Stage, StageMaster
 from solstice.core.operator import Operator
 
 __all__ = ["Job", "Stage", "StageMaster", "Operator"]
-
