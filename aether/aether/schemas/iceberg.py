@@ -129,9 +129,21 @@ class RegisterTableResponse(ApiModel):
 class CommitTableRequest(ApiModel):
     """Request to commit table updates."""
 
-    identifier: TableIdentifier
+    model_config = {"extra": "allow"}  # Allow extra fields from pyiceberg client
+
+    identifier: TableIdentifier | None = None
     requirements: list[TableRequirement] | None = None
     updates: list[dict[str, Any]] | None = None
+
+    # Optional fields that pyiceberg may send
+    name: str | None = None
+    schema: dict[str, Any] | None = None
+    partition_spec: dict[str, Any] | None = None
+    write_order: dict[str, Any] | None = None
+    properties: dict[str, str] | None = None
+
+    # For update operations
+    write_metadata_location: str | None = None
 
 
 class CommitTableResponse(ApiModel):

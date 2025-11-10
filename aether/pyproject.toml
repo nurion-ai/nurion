@@ -14,6 +14,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.44",
     "uvicorn[standard]>=0.38.0",
     "pyiceberg>=0.10.0",
+    "boto3>=1.35.0",
 ]
 
 [dependency-groups]

@@ -80,26 +80,24 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: uv python install 3.13
     
-    - name: Install dependencies
+    - name: Check aether
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
         uv sync --dev
-    
-    - name: Run ruff linting
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: |
-        cd aether
         uv run ruff check .
+        uv run ruff format --check .
     
-    - name: Run ruff formatting check
+    - name: Check solstice
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
-        cd aether
-        uv run ruff format --check .
+        cd solstice
+        uv sync --dev
+        uv run ruff check solstice/
+        uv run ruff format --check solstice/
 
-  test:
-    name: Integration Tests
+  test-aether:
+    name: Aether Integration Tests
     runs-on: ubuntu-latest
     
     steps:
@@ -113,7 +111,6 @@ jobs:
       with:
         files: |
           aether/**
-          solstice/**
           scripts/**
           pyproject.toml
           uv.lock
@@ -126,17 +123,64 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: docker/setup-buildx-action@v3
     
-    - name: Build Docker images
+    - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose build
+        docker compose build app
+        docker compose up -d
+        
+        # Wait for services to be healthy
+        echo "Waiting for services..."
+        for i in {1..40}; do
+          if curl -f http://localhost:8000/api/health 2>/dev/null; then
+            echo "✅ Aether is ready!"
+            break
+          fi
+          sleep 2
+        done
+        
+        # Create warehouse bucket for Iceberg
+        docker run --rm --network aether_appnet \
+          --entrypoint sh minio/mc:latest -c \
+          "mc alias set myminio http://minio:9000 minioadmin minioadmin && \
+           mc mb myminio/warehouse --ignore-existing"
+        
+        docker compose ps
     
-    - name: Start services and run integration tests
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+    
+    - name: Set up Python 3.13
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: uv python install 3.13
+    
+    - name: Install dependencies
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        docker compose up --abort-on-container-exit --exit-code-from tester
+        uv sync --dev
+    
+    - name: Run tests locally
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd aether
+        export LANCE_BASE_URL=http://localhost:8000/api/lance-namespace
+        export ICEBERG_CATALOG_URI=http://localhost:8000/api/iceberg-catalog
+        export DATABASE_URL=postgresql+asyncpg://aether:aether@localhost:5432/aether
+        export AWS_ACCESS_KEY_ID=minioadmin
+        export AWS_SECRET_ACCESS_KEY=minioadmin
+        export AWS_ENDPOINT_URL=http://localhost:9000
+        uv run pytest tests/ -v 
+    
+    - name: Stop services
+      if: always()
+      run: |
+        cd aether
+        docker compose down -v
     
     - name: Upload coverage to Codecov
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -146,3 +190,74 @@ jobs:
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
+
+  test-solstice:
+    name: Solstice Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v45
+      with:
+        files: |
+          solstice/**
+    
+    - name: Skip if no Solstice changes
+      if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
+      run: echo "No Solstice files changed, skipping..."
+    
+    - name: Set up Docker Buildx
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: docker/setup-buildx-action@v3
+
+    - name: Start aether services
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd aether
+        docker compose up -d 
+        
+        # Wait for services to be healthy
+        echo "Waiting for aether to be ready..."
+        for i in {1..30}; do
+          if curl -f http://localhost:8000/api/health 2>/dev/null; then
+            echo "Aether is ready!"
+            break
+          fi
+          echo "Waiting... ($i/30)"
+          sleep 2
+        done
+        
+        docker compose ps
+    
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+    
+    - name: Set up Python 3.13
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: uv python install 3.13
+      
+    - name: Install dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv sync --dev
+    
+    - name: Run tests
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv run pytest tests/ -v --tb=short
+    
+    - name: Stop services
+      if: always()
+      run: |
+        cd aether
+        docker compose down -v

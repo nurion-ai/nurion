@@ -1,26 +1,58 @@
 [project]
 name = "solstice"
 version = "0.1.0"
-description = "Ray + Spark multimodal data processing framework"
-readme = "README.md"
+description = "A Ray-based distributed streaming processing framework with exactly-once semantics"
 authors = [
-    { name = "Enwei Jiao", email = "jiaoew2011@gmail.com" }
+    {name = "Solstice Contributors"}
 ]
+readme = "README.md"
 requires-python = ">=3.13"
+license = {text = "Apache-2.0"}
+
 dependencies = [
-    "pyspark>=4.0.1",
-    "ray>=2.50.1",
+    "ray[default]>=2.50.0",
+    "pyarrow>=18.1.0",
+    "click>=8.1.7",
+    "boto3>=1.35.80",
+    "pylance>=0.38.0",
+    "pyiceberg>=0.7.0",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.scripts]
+solstice = "solstice.main:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4.2",
-    "ruff>=0.14.2",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.14.0",
 ]
 
-[tool.uv]
-dev-groups = ["dev"]
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-scm>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["solstice*", "workflows*"]
+
+[tool.setuptools.package-data]
+solstice = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312', 'py313']
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
