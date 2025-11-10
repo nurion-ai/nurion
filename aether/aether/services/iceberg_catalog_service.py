@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any
 from urllib.parse import unquote
 
 from fastapi import HTTPException, status
+from pyiceberg.schema import Schema as IcebergSchema  # type: ignore
+from pyiceberg.table import UNPARTITIONED_PARTITION_SPEC  # type: ignore
+from pyiceberg.table.metadata import new_table_metadata  # type: ignore
+from pyiceberg.table.sorting import UNSORTED_SORT_ORDER  # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core import object_store
@@ -37,13 +42,6 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAMESPACE = "default"
 METADATA_FILE_SUFFIX = ".metadata.json"
-
-# pyiceberg imports are optional but required for metadata manipulation.
-from pyiceberg.schema import Schema as IcebergSchema  # type: ignore
-from pyiceberg.table import UNPARTITIONED_PARTITION_SPEC  # type: ignore
-from pyiceberg.table.metadata import new_table_metadata  # type: ignore
-from pyiceberg.table.sorting import UNSORTED_SORT_ORDER  # type: ignore
-
 
 def parse_namespace(namespace_str: str | None) -> list[str]:
     """Parse encoded namespace strings into a list of segments."""

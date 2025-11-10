@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
+from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.session import get_session
@@ -39,7 +39,7 @@ router = APIRouter(prefix="/iceberg-catalog/v1", tags=["iceberg-rest-catalog"])
 _catalog_service = IcebergCatalogService()
 
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session() -> AsyncIterator[AsyncSession]:
     async for session in get_session():
         yield session
 
