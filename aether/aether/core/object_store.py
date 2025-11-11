@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Iterable, Sequence
 from typing import Any
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ from fsspec.core import url_to_fs
 
 from .settings import get_settings
 
+logger = logging.getLogger(__name__)
 
 class ObjectStoreError(RuntimeError):
     """Raised when an object store operation fails."""
@@ -61,7 +63,8 @@ def _write_json_sync(uri: str, payload: dict[str, Any]) -> None:
     try:
         with fsspec.open(uri, "w", encoding="utf-8", **storage_options) as fh:
             fh.write(data)
-    except OSError as exc:  # pragma: no cover
+    except OSError as exc: 
+        logger.error(f"Failed to write object: {uri}, options: {storage_options}", exc_info=True)
         raise ObjectStoreError(f"Failed to write object: {uri}") from exc
 
 
@@ -75,6 +78,7 @@ def _list_objects_sync(uri: str) -> list[str]:
             return []
         return [fs.unstrip_protocol(entry) for entry in entries]
     except OSError as exc:  # pragma: no cover
+        logger.error(f"Failed to list objects: {uri}, options: {storage_options}", exc_info=True)
         raise ObjectStoreError(f"Failed to list objects under: {uri}") from exc
 
 
