@@ -3,53 +3,31 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class IcebergCatalogSettings(BaseModel):
+class IcebergCatalogSettings(BaseSettings):
     """Iceberg catalog specific configuration."""
 
-    storage_backend: Literal["s3", "local"] = Field(
-        default="s3",
-        validation_alias=AliasChoices(
-            "ICEBERG__STORAGE_BACKEND",
-            "ICEBERG_STORAGE_BACKEND",
-        ),
+    model_config = SettingsConfigDict(
+        env_prefix="ICEBERG__",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
-    warehouse: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("ICEBERG__WAREHOUSE", "ICEBERG_WAREHOUSE"),
-    )
-    local_root_path: str = Field(
-        default="/tmp/iceberg",
-        validation_alias=AliasChoices(
-            "ICEBERG__LOCAL_ROOT_PATH",
-            "ICEBERG_LOCAL_ROOT_PATH",
-        ),
-    )
-    s3_endpoint: str | None = Field(
-        default=None,
-        description="Internal S3 endpoint",
-        validation_alias=AliasChoices("ICEBERG__S3_ENDPOINT", "AWS_ENDPOINT_URL"),
-    )
+
+    storage_backend: Literal["s3", "local"] = "s3"
+    warehouse: str | None = None
+    local_root_path: str = "/tmp/iceberg"
+    s3_endpoint: str | None = Field(default=None, description="Internal S3 endpoint")
     s3_external_endpoint: str | None = Field(
-        default="http://localhost:9000",
+        default=None,
         description="External S3 endpoint for clients",
-        validation_alias=AliasChoices("ICEBERG__S3_EXTERNAL_ENDPOINT", "AWS_S3_ENDPOINT_EXTERNAL"),
     )
-    s3_access_key_id: str = Field(
-        default="minioadmin",
-        validation_alias=AliasChoices("ICEBERG__S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
-    )
-    s3_secret_access_key: str = Field(
-        default="minioadmin",
-        validation_alias=AliasChoices("ICEBERG__S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
-    )
-    s3_region: str = Field(
-        default="us-east-1",
-        validation_alias=AliasChoices("ICEBERG__S3_REGION", "AWS_REGION"),
-    )
+    s3_access_key_id: str = "minioadmin"
+    s3_secret_access_key: str = "minioadmin"
+    s3_region: str = "us-east-1"
 
     @property
     def is_s3(self) -> bool:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Iterable, Sequence
 from typing import Any
 from urllib.parse import urlparse
@@ -15,6 +16,7 @@ from fsspec.core import url_to_fs
 from .settings import get_settings
 
 logger = logging.getLogger(__name__)
+
 
 class ObjectStoreError(RuntimeError):
     """Raised when an object store operation fails."""
@@ -63,7 +65,7 @@ def _write_json_sync(uri: str, payload: dict[str, Any]) -> None:
     try:
         with fsspec.open(uri, "w", encoding="utf-8", **storage_options) as fh:
             fh.write(data)
-    except OSError as exc: 
+    except OSError as exc:
         logger.error(f"Failed to write object: {uri}, options: {storage_options}", exc_info=True)
         raise ObjectStoreError(f"Failed to write object: {uri}") from exc
 
@@ -95,11 +97,18 @@ def _storage_options(uri: str) -> dict[str, Any]:
                 "S3 URI requested but ICEBERG storage backend is not configured for S3 operations."
             )
         client_kwargs: dict[str, Any] = {}
-        if endpoint := iceberg_cfg.endpoint_for_backend():
+        endpoint = iceberg_cfg.endpoint_for_backend()
+        if not endpoint:
+            endpoint = (
+                os.getenv("ICEBERG__S3_ENDPOINT")
+                or os.getenv("ICEBERG_S3_ENDPOINT")
+                or os.getenv("AWS_ENDPOINT_URL")
+            )
+        if endpoint:
+            logger.debug("Using S3 endpoint %s for URI %s", endpoint, uri)
             client_kwargs["endpoint_url"] = endpoint
         if iceberg_cfg.s3_region:
             client_kwargs["region_name"] = iceberg_cfg.s3_region
-
         options: dict[str, Any] = {}
         if iceberg_cfg.s3_access_key_id:
             options["key"] = iceberg_cfg.s3_access_key_id
