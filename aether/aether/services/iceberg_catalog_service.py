@@ -243,6 +243,15 @@ class IcebergCatalogService:
                     f"Namespace '{namespace_name}' not found",
                 )
 
+        _LOGGER.info(
+            "Creating table '%s.%s' (stage_create=%s) with request location=%s metadata=%s",
+            namespace_name,
+            request.name,
+            request.stage_create,
+            request.location,
+            request.write_metadata_location,
+        )
+
         table_location = request.location.rstrip("/") if request.location else None
         if request.write_metadata_location:
             metadata_location = request.write_metadata_location
@@ -259,11 +268,23 @@ class IcebergCatalogService:
                 db=db,
             )
         except ValueError as exc:
+            _LOGGER.exception(
+                "Failed to record table '%s.%s' in catalog: %s",
+                namespace_name,
+                request.name,
+                exc,
+            )
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
         table_metadata = self._build_table_metadata(metadata_location, request)
 
         await self._write_metadata(metadata_location, table_metadata)
+        _LOGGER.info(
+            "Created table '%s.%s' with metadata at %s",
+            namespace_name,
+            request.name,
+            metadata_location,
+        )
 
         return CreateTableResponse(
             metadata_location=metadata_location,
@@ -288,6 +309,7 @@ class IcebergCatalogService:
         self._apply_table_updates(metadata, updates.get("updates", []))
 
         await self._write_metadata(table.metadata_location, metadata)
+        _LOGGER.info("Updated table '%s.%s'", namespace_name, table_name)
 
         return LoadTableResponse(
             metadata_location=table.metadata_location,
