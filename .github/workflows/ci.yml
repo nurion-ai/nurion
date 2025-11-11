@@ -175,6 +175,12 @@ jobs:
         export AWS_SECRET_ACCESS_KEY=minioadmin
         export AWS_ENDPOINT_URL=http://localhost:9000
         uv run pytest tests/ -v 
+
+    - name: Print app logs on failure
+      if: failure()
+      run: |
+        cd aether
+        docker compose logs app
     
     - name: Stop services
       if: always()

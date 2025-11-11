@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class ApiModel(BaseModel):
@@ -97,7 +97,11 @@ class CreateTableRequest(ApiModel):
     """Request to create a table."""
 
     name: str
-    schema: dict[str, Any]
+    location: str | None = None
+    table_schema: dict[str, Any] = Field(
+        validation_alias=AliasChoices("table_schema", "schema"),
+        serialization_alias="schema",
+    )
     partition_spec: dict[str, Any] | None = None
     write_metadata_location: str | None = None
     stage_create: bool = False

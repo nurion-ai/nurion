@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from sqlalchemy.exc import OperationalError
@@ -27,20 +28,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.settings = settings or get_settings()
 
-    @app.on_event("startup")
-    async def on_startup() -> None:  # pragma: no cover - startup hook
-        logger.info("Running database migrations...")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        await on_startup()
         try:
-            async with async_engine.begin() as conn:
-                await conn.run_sync(BaseModel.metadata.create_all)
-        except OperationalError as exc:  # pragma: no cover - defensive logging
-            logger.error("Database migration failed: %s", exc)
-            raise
+            yield
+        finally:
+            await on_shutdown()
 
-        async with async_session_factory() as session:
-            await lance_table_service.ensure_default_namespace(session)
-            await iceberg_table_service.ensure_default_iceberg_namespace(session)
+    app.router.lifespan_context = lifespan
 
     register_routes(app)
 
     return app
+
+
+async def on_startup() -> None:
+    """Startup hook registered via lifespan."""
+    logger.info("Running database migrations...")
+    try:
+        async with async_engine.begin() as conn:
+            await conn.run_sync(BaseModel.metadata.create_all)
+    except OperationalError as exc:  # pragma: no cover - defensive logging
+        logger.error("Database migration failed: %s", exc)
+        raise
+
+    async with async_session_factory() as session:
+        await lance_table_service.ensure_default_namespace(session)
+        await iceberg_table_service.ensure_default_iceberg_namespace(session)
+
+
+async def on_shutdown() -> None:
+    """Shutdown hook registered via lifespan."""
+    # Placeholder for future cleanup (noop for now)
