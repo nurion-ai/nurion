@@ -1,11 +1,13 @@
 """Sink operators for writing data"""
 
 import logging
-from typing import Any, Dict, Optional
 from pathlib import Path
+from typing import Any, Dict, Optional
 
-from solstice.core.operator import SinkOperator
+from lance import dataset as lance_dataset
+
 from solstice.core.models import Record
+from solstice.core.operator import SinkOperator
 
 
 class Sink(SinkOperator):
@@ -166,13 +168,6 @@ class LanceSink(Sink):
         """Initialize Lance table"""
         super().open(context)
 
-        try:
-            import lance
-
-            self.lance = lance
-        except ImportError:
-            raise ImportError("lance library required for LanceSink")
-
         # Create output directory
         Path(self.table_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -198,10 +193,10 @@ class LanceSink(Sink):
         # Write to Lance
         if self.table is None:
             # Create new table
-            self.table = self.lance.write_dataset(table, self.table_path, mode=self.mode)
+            self.table = lance_dataset.write_dataset(table, self.table_path, mode=self.mode)
         else:
             # Append to existing table
-            self.lance.write_dataset(table, self.table_path, mode="append")
+            lance_dataset.write_dataset(table, self.table_path, mode="append")
 
         self.logger.info(f"Flushed {len(self.buffer)} records to Lance table")
         self.buffer.clear()

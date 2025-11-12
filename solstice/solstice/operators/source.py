@@ -1,11 +1,14 @@
 """Source operators for reading data"""
 
 import logging
-from typing import Any, Dict, Iterable, Optional
 from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
 
-from solstice.core.operator import SourceOperator
+from lance import dataset as lance_dataset
+from pyiceberg.catalog import load_catalog
+
 from solstice.core.models import Record
+from solstice.core.operator import SourceOperator
 
 
 class IcebergSource(SourceOperator):
@@ -32,45 +35,36 @@ class IcebergSource(SourceOperator):
         """Initialize the Iceberg table connection"""
         super().open(context)
 
-        try:
-            from pyiceberg.catalog import load_catalog
+        if not self.catalog_uri:
+            raise ValueError("catalog_uri is required for IcebergSource")
+        if not self.table_name:
+            raise ValueError("table_name is required for IcebergSource")
 
-            if not self.catalog_uri:
-                raise ValueError("catalog_uri is required for IcebergSource")
-            if not self.table_name:
-                raise ValueError("table_name is required for IcebergSource")
+        # Load catalog
+        self.catalog = load_catalog(name="default", **{"uri": self.catalog_uri})
 
-            # Load catalog
-            self.catalog = load_catalog(name="default", **{"uri": self.catalog_uri})
+        # Load table
+        self.table = self.catalog.load_table(self.table_name)
 
-            # Load table
-            self.table = self.catalog.load_table(self.table_name)
+        # Create scan
+        scan = self.table.scan()
 
-            # Create scan
-            scan = self.table.scan()
+        if self.filter_expr:
+            scan = scan.filter(self.filter_expr)
 
-            if self.filter_expr:
-                scan = scan.filter(self.filter_expr)
+        if self.snapshot_id:
+            scan = scan.use_snapshot(self.snapshot_id)
 
-            if self.snapshot_id:
-                scan = scan.use_snapshot(self.snapshot_id)
+        self.scan = scan
 
-            self.scan = scan
+        # Get offset from state if recovering
+        if self._context:
+            self.current_offset = self._context.get_state("offset", 0)
 
-            # Get offset from state if recovering
-            if self._context:
-                self.current_offset = self._context.get_state("offset", 0)
-
-            self.logger.info(
-                f"Opened Iceberg table {self.table_name}, "
-                f"starting from offset {self.current_offset}"
-            )
-
-        except ImportError:
-            raise ImportError(
-                "pyiceberg library is required for IcebergSource. "
-                "Install it with: pip install pyiceberg"
-            )
+        self.logger.info(
+            f"Opened Iceberg table {self.table_name}, "
+            f"starting from offset {self.current_offset}"
+        )
 
     def read(self) -> Iterable[Record]:
         """Read records from Iceberg table"""
@@ -160,35 +154,26 @@ class LanceTableSource(SourceOperator):
         """Initialize the Lance table connection"""
         super().open(context)
 
-        try:
-            import lance
+        if not Path(self.table_path).exists():
+            raise FileNotFoundError(f"Lance table not found: {self.table_path}")
 
-            if not Path(self.table_path).exists():
-                raise FileNotFoundError(f"Lance table not found: {self.table_path}")
+        self.table = lance_dataset.LanceDataset(self.table_path)
 
-            self.table = lance.dataset(self.table_path)
+        # Create scanner
+        scanner_kwargs = {}
+        if self.columns:
+            scanner_kwargs["columns"] = self.columns
+        if self.filter_expr:
+            scanner_kwargs["filter"] = self.filter_expr
 
-            # Create scanner
-            scanner_kwargs = {}
-            if self.columns:
-                scanner_kwargs["columns"] = self.columns
-            if self.filter_expr:
-                scanner_kwargs["filter"] = self.filter_expr
+        self.scanner = self.table.scanner(**scanner_kwargs)
 
-            self.scanner = self.table.scanner(**scanner_kwargs)
+        # Initialize offset - will be updated by restore() if needed
+        self.current_offset = 0
 
-            # Initialize offset - will be updated by restore() if needed
-            self.current_offset = 0
-
-            self.logger.info(
-                f"Opened Lance table {self.table_path}, starting from offset {self.current_offset}"
-            )
-
-        except ImportError:
-            raise ImportError(
-                "lance library is required for LanceTableSource. "
-                "Install it with: pip install pylance"
-            )
+        self.logger.info(
+            f"Opened Lance table {self.table_path}, starting from offset {self.current_offset}"
+        )
 
     def read(self) -> Iterable[Record]:
         """Read records from Lance table"""

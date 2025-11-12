@@ -558,6 +558,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/02/a6b21098b1d5d6249b7c5ab69dde30108a71e4e819d4a9778f1de1d5b70d/fsspec-2025.10.0-py3-none-any.whl", hash = "sha256:7c7712353ae7d875407f97715f0e1ffcc21e33d5b24556cb1e090ae9409ec61d", size = 200966, upload-time = "2025-10-30T14:58:42.53Z" },
 ]
 
+[package.optional-dependencies]
+s3 = [
+    { name = "s3fs" },
+]
+
 [[package]]
 name = "google-api-core"
 version = "2.28.1"
@@ -1936,8 +1941,8 @@ name = "solstice"
 version = "0.1.0"
 source = { editable = "solstice" }
 dependencies = [
-    { name = "boto3" },
     { name = "click" },
+    { name = "fsspec", extra = ["s3"] },
     { name = "pyarrow" },
     { name = "pyiceberg" },
     { name = "pylance" },
@@ -1953,8 +1958,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", specifier = ">=1.35.80" },
     { name = "click", specifier = ">=8.1.7" },
+    { name = "fsspec", extras = ["s3"], specifier = ">=2024.6.0" },
     { name = "pyarrow", specifier = ">=18.1.0" },
     { name = "pyiceberg", specifier = ">=0.7.0" },
     { name = "pylance", specifier = ">=0.38.0" },

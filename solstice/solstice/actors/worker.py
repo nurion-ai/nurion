@@ -3,7 +3,7 @@
 import time
 import logging
 from typing import Any, Dict, List, Optional
-import ray
+import ray  # type: ignore[import]
 
 from solstice.core.operator import Operator, OperatorContext
 from solstice.core.models import Batch, Record, WorkerMetrics
@@ -48,6 +48,7 @@ class WorkerActor:
             task_id=f"{stage_id}_{worker_id}",
             stage_id=stage_id,
             worker_id=worker_id,
+            state_manager=self.state_manager,
         )
         self.operator.open(context)
 
@@ -57,7 +58,7 @@ class WorkerActor:
 
         self.logger.info(f"Worker {worker_id} initialized for stage {stage_id}")
 
-    def process_batch(self, batch: Batch) -> List[Record]:
+    def process_batch(self, batch: Batch) -> Batch:
         """Process a batch of records"""
         start_time = time.time()
 
@@ -83,7 +84,7 @@ class WorkerActor:
                 f"{len(batch)} records -> {len(output_batch)} records"
             )
 
-            return output_batch.records
+            return output_batch
 
         except Exception as e:
             self.logger.error(f"Error processing batch {batch.batch_id}: {e}", exc_info=True)

@@ -27,7 +27,7 @@ class MapBatchesOperator(Operator):
             return Batch(
                 records=output_records,
                 batch_id=batch.batch_id,
-                source_shard=batch.source_shard,
+                source_split=batch.source_split,
             )
 
         except Exception as e:
@@ -41,7 +41,7 @@ class MapBatchesOperator(Operator):
                 return Batch(
                     records=[],
                     batch_id=batch.batch_id,
-                    source_shard=batch.source_shard,
+                    source_split=batch.source_split,
                 )
             else:
                 raise

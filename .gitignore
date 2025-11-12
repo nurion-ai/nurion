@@ -33,3 +33,6 @@ mvnw.cmd
 .DS_Store
 .DS_Store?
 ._*
+
+# Test data
+solstice/tests/testdata/resources/

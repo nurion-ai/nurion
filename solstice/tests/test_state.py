@@ -346,11 +346,11 @@ class TestBatchOperations:
         batch = Batch(
             records=[Record(key='1', value={'v': 1})],
             batch_id='meta_test',
-            source_shard='shard_1'
+            source_split='split_1'
         )
         
         after = time.time()
         
         assert batch.batch_id == 'meta_test'
-        assert batch.source_shard == 'shard_1'
+        assert batch.source_split == 'split_1'
         assert before <= batch.timestamp <= after

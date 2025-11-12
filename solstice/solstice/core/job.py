@@ -185,28 +185,17 @@ class Job:
 
         return checkpoint_id
 
-    def restore_from_checkpoint(self, checkpoint_id: Optional[str] = None) -> bool:
-        """
-        Restore job from a checkpoint.
-
-        Args:
-            checkpoint_id: Specific checkpoint to restore from (or latest if None)
-
-        Returns:
-            True if restoration was successful
-        """
+    def restore_from_checkpoint(self) -> bool:
+        """Restore job from a checkpoint"""
         if not self.global_state_master:
             self.initialize()
 
-        # Get checkpoint to restore
+        checkpoint_id = ray.get(self.global_state_master.get_latest_checkpoint.remote())
         if not checkpoint_id:
-            checkpoint_id = ray.get(self.global_state_master.get_latest_checkpoint.remote())
-            if not checkpoint_id:
-                self.logger.error("No checkpoint available to restore from")
-                return False
+            self.logger.error("No checkpoint available to restore from")
+            return False
 
-        self.logger.info(f"Restoring from checkpoint {checkpoint_id}...")
-
+        self.logger.info(f"Restoring job {self.job_id} from checkpoint {checkpoint_id}...")
         success = ray.get(self.global_state_master.restore_from_checkpoint.remote(checkpoint_id))
 
         if success:

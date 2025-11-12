@@ -7,7 +7,7 @@ import uuid
 import ray
 from collections import deque
 
-from solstice.core.models import Shard, ShardStatus, WorkerMetrics, Batch, BackpressureSignal
+from solstice.core.models import Split, SplitStatus, WorkerMetrics, Batch, BackpressureSignal
 from solstice.state.backend import StateBackend
 
 
@@ -39,16 +39,20 @@ class StageMasterActor:
         # Worker management
         self.workers: Dict[str, ray.ObjectRef] = {}  # worker_id -> actor ref
         self.worker_metrics: Dict[str, WorkerMetrics] = {}
-        self.worker_shards: Dict[str, List[str]] = {}  # worker_id -> shard_ids
+        self.worker_splits: Dict[str, List[str]] = {}  # worker_id -> split_ids
 
-        # Shard management
-        self.shards: Dict[str, Shard] = {}
-        self.pending_shards: deque = deque()
-        self.shard_assignments: Dict[str, str] = {}  # shard_id -> worker_id
+        # Split management
+        self.splits: Dict[str, Split] = {}
+        self.pending_splits: deque = deque()
+        self.split_assignments: Dict[str, str] = {}  # split_id -> worker_id
 
         # Data queues
         self.input_queue: deque = deque()
         self.output_buffer: deque = deque()
+        self.inflight_batches: Dict[str, ray.ObjectRef] = {}  # batch_id -> result_ref
+        self.result_to_batch: Dict[ray.ObjectRef, str] = {}
+        self.batch_to_worker: Dict[str, str] = {}
+        self.active_batches: Dict[str, Batch] = {}
 
         # Checkpoint state
         self.current_checkpoint_id: Optional[str] = None
@@ -88,7 +92,7 @@ class StageMasterActor:
         )
 
         self.workers[worker_id] = worker_ref
-        self.worker_shards[worker_id] = []
+        self.worker_splits[worker_id] = []
 
         self.logger.info(f"Created worker {worker_id}")
         return worker_id
@@ -105,17 +109,17 @@ class StageMasterActor:
         except Exception as e:
             self.logger.error(f"Error shutting down worker {worker_id}: {e}")
 
-        # Reassign its shards
-        shards = self.worker_shards.get(worker_id, [])
-        for shard_id in shards:
-            if shard_id in self.shards:
-                self.shards[shard_id].status = ShardStatus.PENDING
-                self.shards[shard_id].worker_id = None
-                self.pending_shards.append(shard_id)
+        # Reassign its splits
+        splits = self.worker_splits.get(worker_id, [])
+        for split_id in splits:
+            if split_id in self.splits:
+                self.splits[split_id].status = SplitStatus.PENDING
+                self.splits[split_id].worker_id = None
+                self.pending_splits.append(split_id)
 
         # Remove worker
         del self.workers[worker_id]
-        del self.worker_shards[worker_id]
+        del self.worker_splits[worker_id]
         if worker_id in self.worker_metrics:
             del self.worker_metrics[worker_id]
 
@@ -138,8 +142,8 @@ class StageMasterActor:
             for worker_id in list(self.workers.keys()):
                 if len(workers_to_remove) >= (current_count - target_count):
                     break
-                # Only remove workers with no assigned shards
-                if not self.worker_shards.get(worker_id):
+                # Only remove workers with no assigned splits
+                if not self.worker_splits.get(worker_id):
                     workers_to_remove.append(worker_id)
 
             for worker_id in workers_to_remove:
@@ -164,8 +168,8 @@ class StageMasterActor:
         # Find idle workers
         idle_workers = []
         for worker_id in self.workers.keys():
-            # Simple heuristic: workers with fewer shards are more idle
-            if len(self.worker_shards.get(worker_id, [])) < 2:
+            # Simple heuristic: workers with fewer splits are more idle
+            if len(self.worker_splits.get(worker_id, [])) < 2:
                 idle_workers.append(worker_id)
 
         if not idle_workers:
@@ -181,12 +185,60 @@ class StageMasterActor:
 
             # Send to worker asynchronously
             worker_ref = self.workers[worker_id]
-            _result_ref = worker_ref.process_batch.remote(batch)
+            result_ref = worker_ref.process_batch.remote(batch)
 
-            # Store for later retrieval
-            # In a real system, we'd track these and collect results
+            self.worker_splits[worker_id].append(batch.batch_id)
+            self.inflight_batches[batch.batch_id] = result_ref
+            self.result_to_batch[result_ref] = batch.batch_id
+            self.batch_to_worker[batch.batch_id] = worker_id
+            self.active_batches[batch.batch_id] = batch
 
             self.total_processed += len(batch)
+
+        # Collect any completed work immediately
+        self.collect_ready_results(timeout=0.0)
+
+    def collect_ready_results(self, timeout: float = 0.0) -> None:
+        """Collect ready results from workers and populate output buffer"""
+        if not self.result_to_batch:
+            return
+
+        pending_refs = list(self.result_to_batch.keys())
+        ready_refs, _ = ray.wait(
+            pending_refs,
+            num_returns=len(pending_refs),
+            timeout=timeout,
+        )
+
+        for ref in ready_refs:
+            batch_id = self.result_to_batch.pop(ref, None)
+            if batch_id is None:
+                continue
+
+            worker_id = self.batch_to_worker.pop(batch_id, None)
+            if worker_id and batch_id in self.worker_splits.get(worker_id, []):
+                self.worker_splits[worker_id].remove(batch_id)
+
+            self.inflight_batches.pop(batch_id, None)
+            batch_payload = self.active_batches.pop(batch_id, None)
+
+            try:
+                output_batch = ray.get(ref, timeout=5)
+            except Exception as e:
+                self.logger.error(f"Failed to fetch processed batch {batch_id}: {e}")
+                if batch_payload:
+                    self.input_queue.appendleft(batch_payload)
+                if worker_id:
+                    self.handle_worker_failure(worker_id)
+                continue
+
+            if output_batch:
+                self.output_buffer.append(output_batch)
+
+    def tick(self, timeout: float = 0.0) -> None:
+        """Run a scheduling iteration: assign work then collect results"""
+        self.assign_work()
+        self.collect_ready_results(timeout=timeout)
 
     def get_output_batch(self) -> Optional[Batch]:
         """Get a batch from the output buffer"""
@@ -248,7 +300,7 @@ class StageMasterActor:
 
         # Restore each worker
         restore_refs = []
-        for worker_id, worker_ref in self.workers.items():
+        for _, worker_ref in self.workers.items():
             ref = worker_ref.restore_from_checkpoint.remote(checkpoint_id)
             restore_refs.append(ref)
 
@@ -289,6 +341,21 @@ class StageMasterActor:
     def handle_worker_failure(self, worker_id: str) -> None:
         """Handle a worker failure"""
         self.logger.warning(f"Handling failure of worker {worker_id}")
+
+        stalled_batches = [
+            batch_id for batch_id, owner in self.batch_to_worker.items() if owner == worker_id
+        ]
+
+        for batch_id in stalled_batches:
+            ref = self.inflight_batches.pop(batch_id, None)
+            if ref is not None:
+                self.result_to_batch.pop(ref, None)
+            batch_payload = self.active_batches.pop(batch_id, None)
+            if batch_payload:
+                self.input_queue.appendleft(batch_payload)
+            self.batch_to_worker.pop(batch_id, None)
+            if worker_id in self.worker_splits and batch_id in self.worker_splits[worker_id]:
+                self.worker_splits[worker_id].remove(batch_id)
 
         # Remove the failed worker
         self._remove_worker(worker_id)

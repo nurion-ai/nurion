@@ -6,8 +6,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
-class ShardStatus(str, Enum):
-    """Status of a shard"""
+class SplitStatus(str, Enum):
+    """Status of a split"""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -25,13 +25,13 @@ class CheckpointStatus(str, Enum):
 
 
 @dataclass
-class Shard:
-    """Represents a data shard for processing"""
+class Split:
+    """Represents a data split for processing"""
 
-    shard_id: str
+    split_id: str
     data_range: Dict[str, Any]  # Can contain offset, file path, key range, etc.
     worker_id: Optional[str] = None
-    status: ShardStatus = ShardStatus.PENDING
+    status: SplitStatus = SplitStatus.PENDING
     retry_count: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -105,7 +105,7 @@ class Batch:
 
     records: List[Record]
     batch_id: str
-    source_shard: Optional[str] = None
+    source_split: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
 
     def __len__(self):

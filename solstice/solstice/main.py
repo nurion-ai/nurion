@@ -20,6 +20,7 @@ import click
 import ray
 
 from solstice.state.backend import StateBackend, LocalStateBackend, S3StateBackend
+from solstice.core.job import Job
 
 
 def setup_logging(level: str = "INFO"):
@@ -34,13 +35,14 @@ def setup_logging(level: str = "INFO"):
 def create_state_backend(backend_type: str, **kwargs) -> StateBackend:
     """Create state backend from parameters"""
     if backend_type == "local":
-        base_path = kwargs.get("base_path", "/tmp/solstice")
-        return LocalStateBackend(base_path)
+        local_path = kwargs.get("local_path", "/tmp/solstice")
+        return LocalStateBackend(local_path)
 
     elif backend_type == "s3":
-        bucket = kwargs["bucket"]
-        prefix = kwargs.get("prefix", "checkpoints")
-        return S3StateBackend(bucket, prefix)
+        s3_path = kwargs.get("s3_path")
+        if not s3_path:
+            raise ValueError("s3_path is required for S3 state backend")
+        return S3StateBackend(s3_path)
 
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
@@ -84,7 +86,6 @@ def parse_kwargs(ctx, param, value):
 @click.option("--job-id", required=False, type=str, help="Job ID (auto-generated if not provided)")
 @click.option("--restore-from", required=False, type=str, help="Checkpoint ID to restore from")
 @click.option("--log-level", default="INFO", type=str, help="Logging level")
-@click.option("--ray-address", default=None, type=str, help="Ray cluster address (None for local)")
 @click.option("--checkpoint-interval", default=300, type=int, help="Checkpoint interval in seconds")
 @click.option("--checkpoint-records", default=None, type=int, help="Checkpoint interval in records")
 @click.option(
@@ -109,7 +110,6 @@ def main(
     job_id: Optional[str],
     restore_from: Optional[str],
     log_level: str,
-    ray_address: Optional[str],
     checkpoint_interval: int,
     checkpoint_records: Optional[int],
     state_backend: str,
@@ -176,13 +176,8 @@ def main(
 
     logger.info(f"Job ID: {job_id}")
 
-    # Initialize Ray
-    if ray_address:
-        logger.info(f"Connecting to Ray cluster: {ray_address}")
-        ray.init(address=ray_address, ignore_reinit_error=True)
-    else:
-        logger.info("Starting local Ray cluster")
-        ray.init(ignore_reinit_error=True)
+    logger.info("Starting local Ray cluster")
+    ray.init(ignore_reinit_error=True)
 
     logger.info(f"Ray cluster info: {ray.cluster_resources()}")
 
@@ -191,7 +186,7 @@ def main(
         if state_backend == "local":
             backend = create_state_backend("local", base_path=state_path)
         else:  # s3
-            backend = create_state_backend("s3", bucket=state_path, prefix=state_prefix)
+            backend = create_state_backend("s3", s3_path=state_path)
 
         logger.info(f"Created state backend: {type(backend).__name__}")
 
@@ -210,7 +205,7 @@ def main(
             **extra_kwargs,
         }
 
-        job = workflow_module.create_job(
+        job: Job = workflow_module.create_job(
             job_id=job_id,
             config=workflow_config,
             state_backend=backend,

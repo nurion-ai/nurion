@@ -19,7 +19,7 @@ cd /path/to/nurion/solstice
 pip install -e .
 
 # Or install dependencies directly
-pip install ray pyarrow click boto3
+pip install "ray[default]" pyarrow click "fsspec[s3]"
 
 # Optional: Lance table support
 pip install pylance
