@@ -34,8 +34,10 @@ def test_df_type_check(spark_session):
     assert utils.df_type_check(koalas_df)
 
     other_df = "df"
-    error_msg = (f"The type: {type(other_df)} is not supported, only support " +
-                 "pyspark.sql.DataFrame and pyspark.pandas.DataFrame")
+    error_msg = (
+        f"The type: {type(other_df)} is not supported, only support "
+        + "pyspark.sql.DataFrame and pyspark.pandas.DataFrame"
+    )
     with pytest.raises(Exception) as exinfo:
         utils.df_type_check(other_df)
     assert str(exinfo.value) == error_msg
@@ -54,8 +56,10 @@ def test_convert_to_spark(spark_session):
     assert converted.count() == 10
 
     other_df = "df"
-    error_msg = (f"The type: {type(other_df)} is not supported, only support " +
-                 "pyspark.sql.DataFrame and pyspark.pandas.DataFrame")
+    error_msg = (
+        f"The type: {type(other_df)} is not supported, only support "
+        + "pyspark.sql.DataFrame and pyspark.pandas.DataFrame"
+    )
     with pytest.raises(Exception) as exinfo:
         utils.df_type_check(other_df)
     assert str(exinfo.value) == error_msg

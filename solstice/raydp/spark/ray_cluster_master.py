@@ -24,7 +24,6 @@ from ray.util.scheduling_strategies import (
     PlacementGroupSchedulingStrategy,
 )
 
-from raydp.utils import code_search_path
 
 from .ray_pyworker import PyWorker
 
@@ -45,9 +44,7 @@ class RayDPSparkMaster:
 
     def start_up(self, resources=None):
         if self._started_up:
-            self._logger.warning(
-                "The RayClusterMaster has started already. Do not call it twice"
-            )
+            self._logger.warning("The RayClusterMaster has started already. Do not call it twice")
             return
         ray_app_master_class = ray.cross_language.java_actor_class(
             "org.apache.spark.deploy.raydp.RayAppMaster",
@@ -58,9 +55,7 @@ class RayDPSparkMaster:
             # },
         )
         self._logger.info(f"Start the RayClusterMaster with configs: {self._configs}")
-        self._ray_java_master = ray_app_master_class.options(
-            resources=resources
-        ).remote()
+        self._ray_java_master = ray_app_master_class.options(resources=resources).remote()
         self._logger.info("The RayClusterMaster has started")
         self._started_up = True
 

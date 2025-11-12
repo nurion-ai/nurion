@@ -18,40 +18,41 @@
 import pytest
 import sys
 import torch
-import raydp
 from raydp.torch import TorchEstimator
+
 
 def test_torch_estimator(spark_on_ray_small):
     ##prepare the data
     customers = [
-        (1,'James', 21, 6),
+        (1, "James", 21, 6),
         (2, "Liz", 25, 8),
         (3, "John", 31, 6),
         (4, "Jennifer", 45, 7),
         (5, "Robert", 41, 5),
-        (6, "Sandra", 45, 8)
+        (6, "Sandra", 45, 8),
     ]
     df = spark_on_ray_small.createDataFrame(customers, ["cID", "name", "age", "grade"])
 
     ##create model
-    model = torch.nn.Sequential(torch.nn.Linear(1, 2), torch.nn.Linear(2,1))
+    model = torch.nn.Sequential(torch.nn.Linear(1, 2), torch.nn.Linear(2, 1))
     optimizer = torch.optim.Adam(model.parameters())
     loss = torch.nn.MSELoss()
 
-    #config
+    # config
     estimator = TorchEstimator(
-        model = model,
-        optimizer = optimizer,
-        loss = loss,
-        num_workers = 3,
-        num_epochs = 5,
-        feature_columns = ["age"],
-        feature_types = torch.float,
-        label_column = "grade",
-        label_type = torch.float,
-        batch_size = 1
+        model=model,
+        optimizer=optimizer,
+        loss=loss,
+        num_workers=3,
+        num_epochs=5,
+        feature_columns=["age"],
+        feature_types=torch.float,
+        label_column="grade",
+        label_type=torch.float,
+        batch_size=1,
     )
     estimator.fit_on_spark(df)
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main(["-v", __file__]))

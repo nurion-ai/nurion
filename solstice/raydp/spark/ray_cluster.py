@@ -84,9 +84,7 @@ class SparkCluster:
                     resource[resource_name] = float(configs[key])
             return resource
 
-        resources = get_master_actor_resource(
-            spark_master_actor_resource_prefix, resources
-        )
+        resources = get_master_actor_resource(spark_master_actor_resource_prefix, resources)
 
         return resources
 
@@ -102,9 +100,7 @@ class SparkCluster:
                 self._configs["spark.driver.host"] = str(driver_node_ip)
                 self._configs["spark.driver.bindAddress"] = str(driver_node_ip)
 
-        raydp_cp = os.path.abspath(
-            os.path.join(os.path.abspath(__file__), "../../jars/*")
-        )
+        raydp_cp = os.path.abspath(os.path.join(os.path.abspath(__file__), "../../jars/*"))
         ray_cp = os.path.abspath(os.path.join(os.path.dirname(ray.__file__), "jars/*"))
         spark_home = os.environ.get("SPARK_HOME", os.path.dirname(pyspark.__file__))
         spark_jars_dir = os.path.abspath(os.path.join(spark_home, "jars/*"))
@@ -112,9 +108,7 @@ class SparkCluster:
         raydp_jars = glob.glob(raydp_cp)
         driver_cp = ":".join(raydp_jars + [spark_jars_dir] + glob.glob(ray_cp))
         if DRIVER_CP_KEY in self._configs:
-            self._configs[DRIVER_CP_KEY] += (
-                self._configs[DRIVER_CP_KEY] + ":" + driver_cp
-            )
+            self._configs[DRIVER_CP_KEY] += self._configs[DRIVER_CP_KEY] + ":" + driver_cp
         else:
             self._configs[DRIVER_CP_KEY] = driver_cp
 
@@ -124,9 +118,7 @@ class SparkCluster:
         else:
             self._configs[DRIVER_JAVA_OPTIONS_KEY] = extra_driver_options
 
-        python_path_candidates = self._configs.get(
-            "spark.executorEnv.PYTHONPATH", ""
-        ).split(":")
+        python_path_candidates = self._configs.get("spark.executorEnv.PYTHONPATH", "").split(":")
         for k, v in os.environ.items():
             if k == "PYTHONPATH":
                 python_path_candidates.append(v)
@@ -150,9 +142,7 @@ class SparkCluster:
             spark_builder.config("spark.ui.proxyRedirectUri", "/")
             spark_builder.config("spark.ui.proxyBase", f"/spark/{task_id}/{app_id}")
         self._spark_session = (
-            spark_builder.appName(self._app_name)
-            .master(self.get_cluster_url())
-            .getOrCreate()
+            spark_builder.appName(self._app_name).master(self.get_cluster_url()).getOrCreate()
         )
 
         # self._logger.info(f"Spark UI: {self._spark_session.sparkContext.uiWebUrl}")

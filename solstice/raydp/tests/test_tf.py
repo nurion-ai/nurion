@@ -18,7 +18,6 @@
 import pyspark
 import pytest
 import os
-import sys
 import shutil
 
 import tensorflow as tf
@@ -28,6 +27,7 @@ from pyspark.sql.functions import rand
 
 from raydp.tf import TFEstimator
 from raydp.utils import random_split
+
 
 @pytest.mark.parametrize("use_fs_directory", [True, False])
 def test_tf_estimator(spark_on_ray_small, use_fs_directory):
@@ -55,16 +55,18 @@ def test_tf_estimator(spark_on_ray_small, use_fs_directory):
     optimizer = keras.optimizers.Adam(0.01)
     loss = keras.losses.MeanSquaredError()
 
-    estimator = TFEstimator(num_workers=2,
-                            model=model,
-                            optimizer=optimizer,
-                            loss=loss,
-                            metrics=["accuracy", "mse"],
-                            feature_columns="x",
-                            label_columns="y",
-                            batch_size=1000,
-                            num_epochs=2,
-                            use_gpu=False)
+    estimator = TFEstimator(
+        num_workers=2,
+        model=model,
+        optimizer=optimizer,
+        loss=loss,
+        metrics=["accuracy", "mse"],
+        feature_columns="x",
+        label_columns="y",
+        batch_size=1000,
+        num_epochs=2,
+        use_gpu=False,
+    )
 
     if use_fs_directory:
         dir = os.path.dirname(__file__) + "/test_tf"
@@ -78,9 +80,12 @@ def test_tf_estimator(spark_on_ray_small, use_fs_directory):
     if use_fs_directory:
         shutil.rmtree(dir)
 
+
 if __name__ == "__main__":
     # sys.exit(pytest.main(["-v", __file__]))
-    import ray, raydp
+    import ray
+    import raydp
+
     ray.init()
-    spark = raydp.init_spark('a', 6, 1, '500m')
+    spark = raydp.init_spark("a", 6, 1, "500m")
     test_tf_estimator(spark, False)

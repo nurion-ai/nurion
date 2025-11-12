@@ -46,9 +46,7 @@ class PyWorker:
         )
         from pyspark.worker import main as worker_main
 
-        logger.info(
-            f"Starting PyWorker with pid: {os.getpid()}, listen_port={self.listen_port}"
-        )
+        logger.info(f"Starting PyWorker with pid: {os.getpid()}, listen_port={self.listen_port}")
         while True:
             try:
                 logger.info("Waiting for connection")

@@ -62,8 +62,7 @@ class IcebergSource(SourceOperator):
             self.current_offset = self._context.get_state("offset", 0)
 
         self.logger.info(
-            f"Opened Iceberg table {self.table_name}, "
-            f"starting from offset {self.current_offset}"
+            f"Opened Iceberg table {self.table_name}, starting from offset {self.current_offset}"
         )
 
     def read(self) -> Iterable[Record]:

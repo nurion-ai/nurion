@@ -28,7 +28,7 @@ from pyspark.sql.pandas.types import from_arrow_type
 from pyspark.storagelevel import StorageLevel
 import ray
 import ray.cross_language
-from ray.data import Dataset, Datasource, from_arrow_refs
+from ray.data import Dataset, from_arrow_refs
 from ray.types import ObjectRef
 from ray._private.client_mode_hook import client_mode_wrap
 
@@ -44,9 +44,7 @@ class PartitionObjectsOwner:
     actor_name: str
     # Function that set serialized parquet objects to actor owner state
     # and return result of .remote() calling
-    set_reference_as_state: Callable[
-        [ray.actor.ActorHandle, List[ObjectRef]], ObjectRef
-    ]
+    set_reference_as_state: Callable[[ray.actor.ActorHandle, List[ObjectRef]], ObjectRef]
 
 
 def get_raydp_master_owner(
@@ -95,8 +93,7 @@ def _save_spark_df_to_object_store(
     records = object_store_writer.save(use_batch, actor_owner_name)
 
     record_tuples = [
-        (record.objectId(), record.ownerAddress(), record.numRecords())
-        for record in records
+        (record.objectId(), record.ownerAddress(), record.numRecords()) for record in records
     ]
     blocks, block_sizes = _register_objects(record_tuples)
     logger.info(
@@ -201,9 +198,7 @@ def _convert_by_rdd(
     rdd = jvm.org.apache.spark.rdd.RayDatasetRDD(spark._jsc, object_ids, locations)
     # convert the rdd to dataframe
     object_store_reader = jvm.org.apache.spark.sql.raydp.ObjectStoreReader
-    jdf = object_store_reader.RayDatasetToDataFrame(
-        spark._jsparkSession, rdd, schema_str
-    )
+    jdf = object_store_reader.RayDatasetToDataFrame(spark._jsparkSession, rdd, schema_str)
     return DataFrame(jdf, spark._wrapped if hasattr(spark, "_wrapped") else spark)
 
 

@@ -46,7 +46,6 @@ def ensure_lance_dataset(name: str = "sample_lance", refresh: bool = False) -> P
     elif name in _LANCE_CACHE:
         return _LANCE_CACHE[name]
 
-
     dataset_dir = data_root() / "lance" / name
     if refresh and dataset_dir.exists():
         shutil.rmtree(dataset_dir, ignore_errors=True)
@@ -72,9 +71,7 @@ def ensure_lance_dataset(name: str = "sample_lance", refresh: bool = False) -> P
     return dataset_dir
 
 
-def ensure_iceberg_catalog(
-    name: str = "sample_iceberg", refresh: bool = False
-) -> Dict[str, str]:
+def ensure_iceberg_catalog(name: str = "sample_iceberg", refresh: bool = False) -> Dict[str, str]:
     """Create (if needed) a self-contained Iceberg catalog with sample data.
 
     Returns a dictionary containing:
@@ -85,7 +82,6 @@ def ensure_iceberg_catalog(
         _ICEBERG_CACHE.pop(name, None)
     elif name in _ICEBERG_CACHE:
         return _ICEBERG_CACHE[name]
-
 
     warehouse_path = data_root() / "iceberg" / name / "warehouse"
     catalog_db_path = data_root() / "iceberg" / name / "catalog.db"
@@ -165,11 +161,13 @@ def ensure_iceberg_catalog(
         batch = pa.table(
             {
                 "event_id": list(range(1000, 1000 + ICEBERG_NUM_ROWS)),
-                "event_type": [
-                    event_types[i % len(event_types)] for i in range(ICEBERG_NUM_ROWS)
+                "event_type": [event_types[i % len(event_types)] for i in range(ICEBERG_NUM_ROWS)],
+                "amount": [
+                    amount_pattern[i % len(amount_pattern)] for i in range(ICEBERG_NUM_ROWS)
                 ],
-                "amount": [amount_pattern[i % len(amount_pattern)] for i in range(ICEBERG_NUM_ROWS)],
-                "region": [region_pattern[i % len(region_pattern)] for i in range(ICEBERG_NUM_ROWS)],
+                "region": [
+                    region_pattern[i % len(region_pattern)] for i in range(ICEBERG_NUM_ROWS)
+                ],
             },
             schema=arrow_schema,
         )
@@ -188,4 +186,3 @@ def ensure_iceberg_catalog(
     }
     _ICEBERG_CACHE[name] = result
     return result
-
