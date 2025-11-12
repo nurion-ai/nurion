@@ -5,7 +5,7 @@ import pyarrow as pa
 import tempfile
 import shutil
 from pathlib import Path
-from lance import dataset as lance_dataset
+from lance.dataset import write_dataset
 
 from solstice.core.operator import OperatorContext
 from solstice.operators.source import LanceTableSource
@@ -30,7 +30,7 @@ def test_lance_table():
         )
 
         # Write to Lance
-        lance_dataset.write_dataset(data, str(table_path))
+        write_dataset(data, str(table_path))
 
         yield str(table_path)
 

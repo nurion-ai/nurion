@@ -6,7 +6,9 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Dict
-from lance import dataset as lance_dataset
+
+import pyarrow as pa
+from lance.dataset import write_dataset
 from pyiceberg.catalog import (
     NamespaceAlreadyExistsError,
     NoSuchNamespaceError,
@@ -16,8 +18,6 @@ from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import NestedField, Schema
 from pyiceberg.table import PartitionSpec
 from pyiceberg.types import DoubleType, IntegerType, StringType
-
-import pyarrow as pa
 
 LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def ensure_lance_dataset(name: str = "sample_lance", refresh: bool = False) -> P
         }
     )
 
-    lance_dataset.write_dataset(table, str(dataset_dir))
+    write_dataset(table, str(dataset_dir))
     LOGGER.info("Created Lance test dataset at %s", dataset_dir)
 
     _LANCE_CACHE[name] = dataset_dir

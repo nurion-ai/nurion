@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from lance import dataset as lance_dataset
+from lance.dataset import write_dataset
 
 from solstice.core.models import Record
 from solstice.core.operator import SinkOperator
@@ -193,10 +193,10 @@ class LanceSink(Sink):
         # Write to Lance
         if self.table is None:
             # Create new table
-            self.table = lance_dataset.write_dataset(table, self.table_path, mode=self.mode)
+            self.table = write_dataset(table, self.table_path, mode=self.mode)
         else:
             # Append to existing table
-            lance_dataset.write_dataset(table, self.table_path, mode="append")
+            write_dataset(table, self.table_path, mode="append")
 
         self.logger.info(f"Flushed {len(self.buffer)} records to Lance table")
         self.buffer.clear()

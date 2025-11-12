@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from lance import dataset as lance_dataset
+from lance.dataset import LanceDataset
 from pyiceberg.catalog import load_catalog
 
 from solstice.core.models import Record
@@ -156,7 +156,7 @@ class LanceTableSource(SourceOperator):
         if not Path(self.table_path).exists():
             raise FileNotFoundError(f"Lance table not found: {self.table_path}")
 
-        self.table = lance_dataset.LanceDataset(self.table_path)
+        self.table = LanceDataset(self.table_path)
 
         # Create scanner
         scanner_kwargs = {}
