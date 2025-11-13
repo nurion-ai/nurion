@@ -35,14 +35,12 @@ def _identity_transform(value):
 class FailOnceMapOperator(MapOperator):
     """Operator that fails on the first batch and succeeds afterwards."""
 
-    _failed_once = False
-
     def __init__(self, config):
         super().__init__(config)
 
     def process_batch(self, batch: Batch) -> Batch:
-        if not type(self)._failed_once:
-            type(self)._failed_once = True
+        if not self.context.get_state("failed_once", False):
+            self.context.set_state("failed_once", True)
             raise RuntimeError("intentional failure for testing")
         return super().process_batch(batch)
 
@@ -98,7 +96,8 @@ def iceberg_sql_catalog():
 def ray_cluster():
     """Initialise a lightweight in-process Ray runtime for actor tests."""
     ray.init(
-        local_mode=True,
+        address=None,
+        num_cpus=4,
         include_dashboard=False,
         ignore_reinit_error=True,
         log_to_driver=False,
@@ -115,6 +114,10 @@ def local_backend(tmp_path):
     backend_dir = tmp_path / "state"
     backend_dir.mkdir()
     return LocalStateBackend(str(backend_dir))
+
+
+def _start_stage_master(**kwargs):
+    return StageMasterActor.remote(**kwargs)
 
 
 def test_simple_etl_workflow_local_runner(lance_test_table, local_backend, tmp_path):
@@ -137,7 +140,7 @@ def test_simple_etl_workflow_local_runner(lance_test_table, local_backend, tmp_p
     assert output_path.exists()
 
     sink_batches = stage_results["sink"]
-    total_records = sum(len(batch.records) for batch in sink_batches)
+    total_records = sum(len(batch) for batch in sink_batches)
     expected_records = max(LANCE_NUM_ROWS - 2, 0)
     assert total_records == expected_records
 
@@ -160,90 +163,96 @@ def test_iceberg_sql_catalog_contains_expected_rows(iceberg_sql_catalog):
 
 
 @pytest.mark.usefixtures("ray_cluster")
+@pytest.mark.usefixtures("ray_cluster")
 def test_stage_master_assigns_batches_and_collects(local_backend):
-    stage_master = StageMasterActor.remote(
+    stage_master = _start_stage_master(
         stage_id="map_stage",
         operator_class=MapOperator,
         operator_config={"map_fn": _mark_seen},
         state_backend=local_backend,
-        worker_resources={"num_cpus": 0.1},
+        worker_resources={"num_cpus": 1},
         initial_workers=1,
         max_workers=2,
         min_workers=1,
     )
 
     try:
-        batch = Batch(
-            records=[Record(key=str(i), value={"value": i}) for i in range(5)],
+        batch = Batch.from_records(
+            [Record(key=str(i), value={"value": i}) for i in range(5)],
             batch_id="batch-1",
         )
         ray.get(stage_master.add_input_batch.remote(batch))
         ray.get(stage_master.tick.remote(timeout=0.5))
 
-        output_batch = ray.get(stage_master.get_output_batch.remote())
+        output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
         assert output_batch is not None
-        assert len(output_batch.records) == 5
-        assert all(record.value["seen"] for record in output_batch.records)
+        output_records = output_batch.to_records()
+        assert len(output_records) == 5
+        assert all(record.value["seen"] for record in output_records)
     finally:
         ray.get(stage_master.shutdown.remote())
 
 
 @pytest.mark.usefixtures("ray_cluster")
 def test_stage_master_recovers_from_worker_failure(local_backend):
-    stage_master = StageMasterActor.remote(
+    stage_master = _start_stage_master(
         stage_id="fail_stage",
         operator_class=FailOnceMapOperator,
         operator_config={"map_fn": _mark_seen},
         state_backend=local_backend,
-        worker_resources={"num_cpus": 0.1},
+        worker_resources={"num_cpus": 1},
         initial_workers=1,
         max_workers=3,
         min_workers=1,
     )
 
     try:
-        batch = Batch(
-            records=[Record(key=str(i), value={"value": i}) for i in range(3)],
+        batch = Batch.from_records(
+            [Record(key=str(i), value={"value": i}) for i in range(3)],
             batch_id="batch-failure",
         )
 
         ray.get(stage_master.add_input_batch.remote(batch))
 
         output_batch = None
-        for _ in range(5):
+        for _ in range(10):
             ray.get(stage_master.tick.remote(timeout=0.5))
-            output_batch = ray.get(stage_master.get_output_batch.remote())
+            ray.get(stage_master.collect_ready_results.remote(timeout=0.5))
+            output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
             if output_batch is not None:
                 break
+        if output_batch is None:
+            ray.get(stage_master.collect_ready_results.remote(timeout=5.0))
+            output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
 
         assert output_batch is not None
-        assert all(record.value["seen"] for record in output_batch.records)
+        assert all(record.value["seen"] for record in output_batch.to_records())
     finally:
         ray.get(stage_master.shutdown.remote())
 
 
 @pytest.mark.usefixtures("ray_cluster")
 def test_stage_master_checkpoint_and_restore(local_backend):
-    stage_master = StageMasterActor.remote(
+    stage_master = _start_stage_master(
         stage_id="stateful_stage",
         operator_class=StatefulCounterOperator,
         operator_config={"map_fn": _identity_transform},
         state_backend=local_backend,
-        worker_resources={"num_cpus": 0.1},
+        worker_resources={"num_cpus": 1},
         initial_workers=1,
         max_workers=2,
         min_workers=1,
     )
 
     try:
-        first_batch = Batch(
-            records=[Record(key=str(i), value={"value": i}) for i in range(5)],
+        first_batch = Batch.from_records(
+            [Record(key=str(i), value={"value": i}) for i in range(5)],
             batch_id="batch-0",
         )
         ray.get(stage_master.add_input_batch.remote(first_batch))
         ray.get(stage_master.tick.remote(timeout=0.5))
-        output_batch = ray.get(stage_master.get_output_batch.remote())
-        positions = [record.value["position"] for record in output_batch.records]
+        output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
+        positions = [record.value["position"] for record in output_batch.to_records()]
         assert positions == [1, 2, 3, 4, 5]
 
         checkpoint_id = "cp-1"
@@ -251,17 +260,19 @@ def test_stage_master_checkpoint_and_restore(local_backend):
         handles = ray.get(stage_master.collect_checkpoints.remote())
         assert handles
 
-        ray.get(stage_master.restore_from_checkpoint.remote(checkpoint_id))
+        ray.get(stage_master.restore_from_checkpoint.remote(checkpoint_id, handles))
 
-        second_batch = Batch(
-            records=[Record(key=str(i), value={"value": i}) for i in range(5, 8)],
+        second_batch = Batch.from_records(
+            [Record(key=str(i), value={"value": i}) for i in range(5, 8)],
             batch_id="batch-1",
         )
         ray.get(stage_master.add_input_batch.remote(second_batch))
         ray.get(stage_master.tick.remote(timeout=0.5))
-
-        output_batch_two = ray.get(stage_master.get_output_batch.remote())
-        positions_two = [record.value["position"] for record in output_batch_two.records]
+        output_batch_two = ray.get(stage_master.get_next_output.remote(timeout=5.0))
+        metrics = ray.get(stage_master.collect_metrics.remote())
+        assert metrics["total_processed"] >= 8
+        assert output_batch_two is not None
+        positions_two = [record.value["position"] for record in output_batch_two.to_records()]
         assert positions_two == [6, 7, 8]
     finally:
         ray.get(stage_master.shutdown.remote())

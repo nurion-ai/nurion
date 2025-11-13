@@ -92,11 +92,11 @@ class Operator(ABC):
     def process_batch(self, batch: Batch) -> Batch:
         """Process a batch of records (can be overridden for batch optimization)"""
         output_records = []
-        for record in batch.records:
+        for record in batch.to_records():
             output_records.extend(self.process(record))
 
-        return Batch(
-            records=output_records,
+        return Batch.from_records(
+            output_records,
             batch_id=batch.batch_id,
             source_split=batch.source_split,
         )

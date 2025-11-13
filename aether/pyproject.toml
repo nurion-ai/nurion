@@ -3,7 +3,7 @@ name = "aether"
 version = "0.1.0"
 description = "FastAPI service for Nurion data platform"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.17.0",
     "asyncpg>=0.30.0",

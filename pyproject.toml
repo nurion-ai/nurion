@@ -2,7 +2,7 @@
 name = "nurion"
 version = "0.1.0"
 description = "Nurion data platform workspace"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = []
 
 [tool.uv.workspace]

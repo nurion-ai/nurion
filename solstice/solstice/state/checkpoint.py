@@ -126,7 +126,7 @@ class CheckpointCoordinator:
 
         checkpoint.handles[stage_id].append(handle)
         self.logger.debug(
-            f"Added checkpoint handle for {checkpoint_id}/{stage_id}/{handle.worker_id}"
+            f"Added checkpoint handle for {checkpoint_id}/{stage_id}/{handle.split_id}"
         )
 
     def finalize_checkpoint(
@@ -155,11 +155,15 @@ class CheckpointCoordinator:
             stage_handles={
                 stage_id: [
                     {
+                        "checkpoint_id": h.checkpoint_id,
+                        "split_id": h.split_id,
+                        "split_attempt": h.split_attempt,
                         "worker_id": h.worker_id,
                         "state_path": h.state_path,
                         "offset": h.offset,
                         "size_bytes": h.size_bytes,
                         "metadata": h.metadata,
+                        "timestamp": h.timestamp,
                     }
                     for h in handles
                 ]

@@ -95,7 +95,8 @@ class TestStateManager:
         """Setup test state manager"""
         self.test_dir = tempfile.mkdtemp()
         backend = LocalStateBackend(self.test_dir)
-        self.manager = StateManager("worker1", "stage1", backend)
+        self.manager = StateManager(stage_id="stage1", state_backend=backend, worker_id="worker1")
+        self.manager.activate_split("stage1_split_0")
 
     def teardown_method(self):
         """Cleanup"""
@@ -142,7 +143,9 @@ class TestStateManager:
         self.manager.update_offset({"position": 1000, "file": "data.parquet"})
 
         # Create checkpoint (saves to real files)
-        handle = self.manager.checkpoint("ckpt_001")
+        handles = self.manager.checkpoint("ckpt_001")
+        assert len(handles) == 1
+        handle = handles[0]
 
         assert handle.checkpoint_id == "ckpt_001"
         assert handle.worker_id == "worker1"
@@ -154,28 +157,29 @@ class TestStateManager:
 
         # Clear state
         self.manager.clear()
-        assert len(self.manager.keyed_state) == 0
-        assert len(self.manager.operator_state) == 0
+        assert self.manager.active_splits() == []
 
         # Restore from checkpoint (loads from real files)
-        self.manager.restore("ckpt_001")
+        restored = self.manager.restore_split(handle.split_id, "ckpt_001")
+        assert restored is True
+        self.manager.activate_split(handle.split_id)
 
         assert self.manager.get_keyed_state("key1") == {"value": 100}
         assert self.manager.get_keyed_state("key2") == {"value": 200}
         assert self.manager.get_operator_state()["counter"] == 42
-        assert self.manager.offset["position"] == 1000
+        assert self.manager.get_offset()["position"] == 1000
 
     def test_delta_checkpoint(self):
         """Test delta-based checkpointing"""
         # First checkpoint
         self.manager.update_keyed_state("key1", {"value": 1})
-        handle1 = self.manager.checkpoint("ckpt_001")
+        handle1 = self.manager.checkpoint("ckpt_001")[0]
         size1 = handle1.size_bytes
 
         # Second checkpoint with more keys
         self.manager.update_keyed_state("key2", {"value": 2})
         self.manager.update_keyed_state("key3", {"value": 3})
-        handle2 = self.manager.checkpoint("ckpt_002")
+        handle2 = self.manager.checkpoint("ckpt_002")[0]
         size2 = handle2.size_bytes
 
         # Delta should be smaller than full state
@@ -213,10 +217,12 @@ class TestCheckpointCoordinator:
         handle = CheckpointHandle(
             checkpoint_id=checkpoint_id,
             stage_id="stage1",
-            worker_id="worker1",
+            split_id="stage1_split_1",
+            split_attempt=0,
             state_path="stage1/ckpt/worker1.pkl",
             offset={"pos": 100},
             size_bytes=1024,
+            worker_id="worker1",
         )
 
         self.coordinator.add_checkpoint_handle(checkpoint_id, "stage1", handle)
@@ -235,10 +241,12 @@ class TestCheckpointCoordinator:
             handle = CheckpointHandle(
                 checkpoint_id=checkpoint_id,
                 stage_id=stage_id,
-                worker_id="worker1",
+                split_id=f"{stage_id}_split_1",
+                split_attempt=0,
                 state_path=f"{stage_id}/ckpt/worker1.pkl",
                 offset={"pos": 100},
                 size_bytes=1024,
+                worker_id="worker1",
             )
             self.coordinator.add_checkpoint_handle(checkpoint_id, stage_id, handle)
 
@@ -292,10 +300,12 @@ class TestCheckpointCoordinator:
             handle = CheckpointHandle(
                 checkpoint_id=ckpt_id,
                 stage_id="stage1",
-                worker_id="worker1",
+                split_id=f"stage1_split_{i}",
+                split_attempt=0,
                 state_path=f"stage1/ckpt_{i}/worker1.pkl",
                 offset={"pos": i},
                 size_bytes=100,
+                worker_id="worker1",
             )
             self.coordinator.add_checkpoint_handle(ckpt_id, "stage1", handle)
             self.coordinator.finalize_checkpoint(ckpt_id, ["stage1"])
@@ -326,13 +336,13 @@ class TestBatchOperations:
             Record(key="3", value={"v": 3}),
         ]
 
-        batch = Batch(records=records, batch_id="test")
+        batch = Batch.from_records(records, batch_id="test")
 
         assert len(batch) == 3
 
     def test_empty_batch(self):
         """Test empty batch"""
-        batch = Batch(records=[], batch_id="empty")
+        batch = Batch.from_records([], batch_id="empty")
 
         assert len(batch) == 0
 
@@ -342,8 +352,8 @@ class TestBatchOperations:
 
         before = time.time()
 
-        batch = Batch(
-            records=[Record(key="1", value={"v": 1})], batch_id="meta_test", source_split="split_1"
+        batch = Batch.from_records(
+            [Record(key="1", value={"v": 1})], batch_id="meta_test", source_split="split_1"
         )
 
         after = time.time()

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import ray  # type: ignore[import]
 
 from solstice.core.operator import Operator, OperatorContext
-from solstice.core.models import Batch, WorkerMetrics
+from solstice.core.models import Batch, CheckpointHandle, WorkerMetrics
 from solstice.state.manager import StateManager
 from solstice.state.backend import StateBackend
 
@@ -33,10 +33,11 @@ class WorkerActor:
 
         # State management
         self.state_manager = StateManager(
-            worker_id=worker_id,
             stage_id=stage_id,
             state_backend=state_backend,
+            worker_id=worker_id,
         )
+        self.state_manager.activate_split(f"{stage_id}_bootstrap")
 
         # Metrics
         self.processed_count = 0
@@ -63,6 +64,18 @@ class WorkerActor:
         start_time = time.time()
 
         try:
+            split_id = batch.source_split or f"{self.stage_id}:{batch.batch_id}"
+            extra_metadata: Dict[str, Any] = {}
+            if isinstance(batch.metadata, dict):
+                extra_metadata.update(batch.metadata)
+            extra_metadata.setdefault("batch_id", batch.batch_id)
+            extra_metadata.setdefault("stage_id", self.stage_id)
+
+            self.state_manager.activate_split(
+                split_id,
+                metadata=extra_metadata,
+            )
+
             # Process batch through operator
             output_batch = self.operator.process_batch(batch)
 
@@ -71,9 +84,16 @@ class WorkerActor:
             self.processing_times.append(time.time() - start_time)
 
             # Track key distribution
-            for record in batch.records:
-                if record.key:
-                    self.key_counts[record.key] = self.key_counts.get(record.key, 0) + 1
+            key_column_name = Batch.SOLSTICE_KEY_COLUMN
+            if key_column_name in batch.column_names:
+                for key in batch.column(key_column_name).to_pylist():
+                    if key:
+                        self.key_counts[key] = self.key_counts.get(key, 0) + 1
+            else:
+                # Fallback to materialized records when key column is unavailable
+                for record in batch.to_records():
+                    if record.key:
+                        self.key_counts[record.key] = self.key_counts.get(record.key, 0) + 1
 
             # Keep only recent timing data
             if len(self.processing_times) > 100:
@@ -97,7 +117,6 @@ class WorkerActor:
         # Freeze current state
         self.pending_checkpoint_id = checkpoint_id
         self.checkpoint_frozen_state = {
-            "operator_state": self.operator.checkpoint(),
             "worker_metrics": self.get_metrics(),
         }
 
@@ -109,44 +128,77 @@ class WorkerActor:
 
         checkpoint_id = self.pending_checkpoint_id
 
-        # Update state manager with operator state
-        if self.checkpoint_frozen_state:
-            self.state_manager.update_operator_state(self.checkpoint_frozen_state["operator_state"])
-
         # Create checkpoint
-        handle = self.state_manager.checkpoint(checkpoint_id)
+        handles = self.state_manager.checkpoint(checkpoint_id, worker_id=self.worker_id)
 
         # Clear pending checkpoint
         self.pending_checkpoint_id = None
         self.checkpoint_frozen_state = None
 
-        self.logger.info(f"Created checkpoint {checkpoint_id}")
+        handle_dicts = [
+            {
+                "checkpoint_id": handle.checkpoint_id,
+                "stage_id": handle.stage_id,
+                "split_id": handle.split_id,
+                "split_attempt": handle.split_attempt,
+                "state_path": handle.state_path,
+                "offset": handle.offset,
+                "size_bytes": handle.size_bytes,
+                "timestamp": handle.timestamp,
+                "metadata": handle.metadata,
+                "worker_id": handle.worker_id,
+            }
+            for handle in handles
+            if handle is not None
+        ]
 
-        # Return handle as dict for serialization
-        return {
-            "checkpoint_id": handle.checkpoint_id,
-            "stage_id": handle.stage_id,
-            "worker_id": handle.worker_id,
-            "state_path": handle.state_path,
-            "offset": handle.offset,
-            "size_bytes": handle.size_bytes,
-            "timestamp": handle.timestamp,
-            "metadata": handle.metadata,
-        }
+        self.logger.info(
+            "Created checkpoint %s with %d split handles", checkpoint_id, len(handle_dicts)
+        )
 
-    def restore_from_checkpoint(self, checkpoint_id: str) -> None:
+        return {"handles": handle_dicts, "metrics": self.get_metrics()}
+
+    def restore_from_checkpoint(
+        self, checkpoint_id: str, handles: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
         """Restore state from a checkpoint"""
         self.logger.info(f"Restoring from checkpoint {checkpoint_id}")
 
-        # Restore state
-        self.state_manager.restore(checkpoint_id)
+        if not handles:
+            self.logger.warning("No split handles provided for restore; skipping")
+            return
 
-        # Restore operator state
-        operator_state = self.state_manager.get_operator_state()
-        if operator_state:
-            self.operator.restore(operator_state)
+        checkpoint_handles = [
+            CheckpointHandle(
+                checkpoint_id=handle.get("checkpoint_id", checkpoint_id),
+                stage_id=handle["stage_id"],
+                split_id=handle["split_id"],
+                split_attempt=handle.get("split_attempt", 0),
+                state_path=handle["state_path"],
+                offset=handle.get("offset", {}),
+                size_bytes=handle.get("size_bytes", 0),
+                timestamp=handle.get("timestamp", time.time()),
+                metadata=handle.get("metadata", {}),
+                worker_id=handle.get("worker_id"),
+            )
+            for handle in handles
+        ]
 
-        self.logger.info(f"Restored from checkpoint {checkpoint_id}")
+        self.state_manager.restore_many(checkpoint_handles)
+
+        for handle in checkpoint_handles:
+            self.state_manager.activate_split(
+                handle.split_id,
+                attempt=handle.split_attempt,
+                metadata=handle.metadata,
+            )
+            operator_state = self.state_manager.get_operator_state()
+            if operator_state:
+                self.operator.restore(operator_state)
+
+        self.logger.info(
+            "Restored %d splits from checkpoint %s", len(checkpoint_handles), checkpoint_id
+        )
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get current worker metrics"""

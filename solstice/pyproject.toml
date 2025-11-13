@@ -6,7 +6,7 @@ authors = [
     {name = "Solstice Contributors"}
 ]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 
 dependencies = [
@@ -57,3 +57,9 @@ target-version = "py313"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
+filterwarnings = [
+    "ignore::pydantic.warnings.PydanticDeprecatedSince212",
+]
+markers = [
+    "integration: marks integration tests",
+]

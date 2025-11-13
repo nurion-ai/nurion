@@ -56,7 +56,7 @@ class StageMasterActor:
 
         # Checkpoint state
         self.current_checkpoint_id: Optional[str] = None
-        self.checkpoint_handles: Dict[str, Dict[str, Any]] = {}  # worker_id -> handle
+        self.checkpoint_handles: Dict[str, Dict[str, Any]] = {}  # split_id -> handle
 
         # Backpressure
         self.backpressure_active = False
@@ -178,6 +178,7 @@ class StageMasterActor:
         # Distribute work
         while self.input_queue and idle_workers:
             batch = self.input_queue.popleft()
+            split_id = batch.source_split or batch.batch_id
 
             # Round-robin assignment
             worker_id = idle_workers[0]
@@ -187,7 +188,8 @@ class StageMasterActor:
             worker_ref = self.workers[worker_id]
             result_ref = worker_ref.process_batch.remote(batch)
 
-            self.worker_splits[worker_id].append(batch.batch_id)
+            if split_id not in self.worker_splits[worker_id]:
+                self.worker_splits[worker_id].append(split_id)
             self.inflight_batches[batch.batch_id] = result_ref
             self.result_to_batch[result_ref] = batch.batch_id
             self.batch_to_worker[batch.batch_id] = worker_id
@@ -215,12 +217,14 @@ class StageMasterActor:
             if batch_id is None:
                 continue
 
-            worker_id = self.batch_to_worker.pop(batch_id, None)
-            if worker_id and batch_id in self.worker_splits.get(worker_id, []):
-                self.worker_splits[worker_id].remove(batch_id)
-
             self.inflight_batches.pop(batch_id, None)
             batch_payload = self.active_batches.pop(batch_id, None)
+
+            worker_id = self.batch_to_worker.pop(batch_id, None)
+            if worker_id:
+                split_id = batch_payload.source_split if batch_payload else batch_id
+                if split_id in self.worker_splits.get(worker_id, []):
+                    self.worker_splits[worker_id].remove(split_id)
 
             try:
                 output_batch = ray.get(ref, timeout=5)
@@ -244,6 +248,17 @@ class StageMasterActor:
         """Get a batch from the output buffer"""
         if self.output_buffer:
             return self.output_buffer.popleft()
+        return None
+
+    def get_next_output(self, timeout: float = 5.0, poll_interval: float = 0.1) -> Optional[Batch]:
+        """Blocking helper used in tests to fetch the next output batch."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            batch = self.get_output_batch()
+            if batch is not None:
+                return batch
+            self.collect_ready_results(timeout=poll_interval)
+            time.sleep(poll_interval)
         return None
 
     def trigger_checkpoint(self, checkpoint_id: str) -> None:
@@ -271,7 +286,7 @@ class StageMasterActor:
         if not self.current_checkpoint_id:
             return []
 
-        handles = []
+        handles: List[Dict[str, Any]] = []
         collect_refs = []
 
         for worker_id, worker_ref in self.workers.items():
@@ -281,10 +296,30 @@ class StageMasterActor:
         # Collect handles
         for worker_id, ref in collect_refs:
             try:
-                handle = ray.get(ref, timeout=60)
-                if handle:
-                    handles.append(handle)
-                    self.checkpoint_handles[worker_id] = handle
+                result = ray.get(ref, timeout=60)
+                if not result:
+                    continue
+
+                worker_handles = result.get("handles") if isinstance(result, dict) else result
+                if not worker_handles:
+                    continue
+
+                for handle in worker_handles:
+                    normalized = dict(handle)
+                    normalized.setdefault("worker_id", worker_id)
+                    split_id = normalized.get("split_id")
+                    if split_id:
+                        self.checkpoint_handles[split_id] = normalized
+                    handles.append(normalized)
+
+                metrics_payload = result.get("metrics") if isinstance(result, dict) else None
+                if metrics_payload:
+                    try:
+                        self.worker_metrics[worker_id] = WorkerMetrics(**metrics_payload)
+                    except TypeError:
+                        self.logger.debug(
+                            "Failed to parse worker metrics from %s: %s", worker_id, metrics_payload
+                        )
             except Exception as e:
                 self.logger.error(f"Error collecting checkpoint from worker {worker_id}: {e}")
 
@@ -294,14 +329,33 @@ class StageMasterActor:
 
         return handles
 
-    def restore_from_checkpoint(self, checkpoint_id: str) -> None:
+    def restore_from_checkpoint(
+        self, checkpoint_id: str, handles: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
         """Restore stage from checkpoint"""
         self.logger.info(f"Restoring stage {self.stage_id} from checkpoint {checkpoint_id}")
 
-        # Restore each worker
+        if not handles:
+            self.logger.warning("No handles provided for stage restore; skipping")
+            return
+
+        worker_ids = list(self.workers.keys())
+        if not worker_ids:
+            self.logger.warning("No workers available to restore stage %s", self.stage_id)
+            return
+
+        assignments: Dict[str, List[Dict[str, Any]]] = {worker_id: [] for worker_id in worker_ids}
+        for index, handle in enumerate(handles):
+            worker_id = worker_ids[index % len(worker_ids)]
+            assignments[worker_id].append(handle)
+
         restore_refs = []
-        for _, worker_ref in self.workers.items():
-            ref = worker_ref.restore_from_checkpoint.remote(checkpoint_id)
+        for worker_id, assigned_handles in assignments.items():
+            if not assigned_handles:
+                continue
+            worker_ref = self.workers[worker_id]
+            self.worker_splits[worker_id] = []
+            ref = worker_ref.restore_from_checkpoint.remote(checkpoint_id, assigned_handles)
             restore_refs.append(ref)
 
         # Wait for restoration
@@ -347,21 +401,24 @@ class StageMasterActor:
         ]
 
         for batch_id in stalled_batches:
+            split_identifier = batch_id
             ref = self.inflight_batches.pop(batch_id, None)
             if ref is not None:
                 self.result_to_batch.pop(ref, None)
             batch_payload = self.active_batches.pop(batch_id, None)
             if batch_payload:
                 self.input_queue.appendleft(batch_payload)
+                split_identifier = batch_payload.source_split or batch_id
             self.batch_to_worker.pop(batch_id, None)
-            if worker_id in self.worker_splits and batch_id in self.worker_splits[worker_id]:
-                self.worker_splits[worker_id].remove(batch_id)
+            if (
+                worker_id in self.worker_splits
+                and split_identifier in self.worker_splits[worker_id]
+            ):
+                self.worker_splits[worker_id].remove(split_identifier)
 
-        # Remove the failed worker
-        self._remove_worker(worker_id)
-
-        # Create a replacement
-        self._create_worker()
+        # Clear worker assignment state; worker remains available for future work.
+        if worker_id in self.worker_splits:
+            self.worker_splits[worker_id].clear()
 
     def get_backpressure_signal(self) -> Optional[BackpressureSignal]:
         """Get backpressure signal if active"""

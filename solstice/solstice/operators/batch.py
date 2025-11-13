@@ -1,9 +1,12 @@
 """Batch processing operators"""
 
+from collections.abc import Iterable
 from typing import Any, Dict, Optional
 
+import pyarrow as pa
+
 from solstice.core.operator import Operator
-from solstice.core.models import Batch
+from solstice.core.models import Batch, Record
 
 
 class MapBatchesOperator(Operator):
@@ -18,16 +21,46 @@ class MapBatchesOperator(Operator):
             raise ValueError("map_batches_fn must be a callable")
 
     def process_batch(self, batch: Batch) -> Batch:
-        """Apply map function to entire batch (optimized for batch processing)"""
+        """Apply map function to entire batch (optimized for Arrow data)."""
         try:
-            # Apply transformation to entire batch
-            output_records = self.map_batches_fn(batch.records)
+            # Apply transformation. The function can return a Batch, Arrow object,
+            # or an iterable of Record/dict for compatibility.
+            result = self.map_batches_fn(batch)
 
-            # Return new batch with transformed records
-            return Batch(
-                records=output_records,
-                batch_id=batch.batch_id,
-                source_split=batch.source_split,
+            if isinstance(result, Batch):
+                return result
+
+            if isinstance(result, (pa.Table, pa.RecordBatch)):
+                return batch.replace(result)
+
+            if isinstance(result, Iterable):
+                materialized = list(result)
+                if not materialized:
+                    return Batch.empty(
+                        batch_id=batch.batch_id,
+                        source_split=batch.source_split,
+                        schema=batch.schema,
+                    )
+                element = materialized[0]
+                if isinstance(element, (Record, dict)):
+                    return Batch.from_records(
+                        materialized,
+                        batch_id=batch.batch_id,
+                        source_split=batch.source_split,
+                        metadata=batch.metadata,
+                    )
+                if isinstance(element, pa.RecordBatch):
+                    return Batch.from_arrow(
+                        materialized,
+                        batch_id=batch.batch_id,
+                        source_split=batch.source_split,
+                        metadata=batch.metadata,
+                    )
+
+            raise TypeError(
+                "map_batches_fn must return one of Batch, pyarrow.Table, "
+                "pyarrow.RecordBatch, Iterable[Record], Iterable[dict] or "
+                "Iterable[pyarrow.RecordBatch]"
             )
 
         except Exception as e:
@@ -38,10 +71,10 @@ class MapBatchesOperator(Operator):
 
             if self.config.get("skip_on_error", False):
                 # Return empty batch on error
-                return Batch(
-                    records=[],
+                return Batch.empty(
                     batch_id=batch.batch_id,
                     source_split=batch.source_split,
+                    schema=batch.schema,
                 )
             else:
                 raise
