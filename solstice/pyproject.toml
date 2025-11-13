@@ -15,7 +15,8 @@ dependencies = [
     "click>=8.1.7",
     "fsspec[s3]>=2024.6.0",
     "pylance>=0.38.0",
-    "pyiceberg>=0.7.0",
+    "pyiceberg[sqlalchemy]>=0.10.0",
+    "sqlalchemy>=2.0.0",
 ]
 
 [project.scripts]

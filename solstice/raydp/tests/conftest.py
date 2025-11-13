@@ -60,10 +60,13 @@ def spark_on_ray_small(request):
     else:
         ray.init(address=request.param)
     node_ip = ray.util.get_node_ip_address()
-    spark = raydp.init_spark("test", 1, 1, "500M", configs={
-        "spark.driver.host": node_ip,
-        "spark.driver.bindAddress": node_ip
-    })
+    spark = raydp.init_spark(
+        "test",
+        1,
+        1,
+        "500M",
+        configs={"spark.driver.host": node_ip, "spark.driver.bindAddress": node_ip},
+    )
 
     def stop_all():
         raydp.stop_spark()
@@ -82,10 +85,13 @@ def spark_on_ray_2_executors(request):
     else:
         ray.init(address=request.param)
     node_ip = ray.util.get_node_ip_address()
-    spark = raydp.init_spark("test", 2, 1, "500M", configs={
-        "spark.driver.host": node_ip,
-        "spark.driver.bindAddress": node_ip
-    })
+    spark = raydp.init_spark(
+        "test",
+        2,
+        1,
+        "500M",
+        configs={"spark.driver.host": node_ip, "spark.driver.bindAddress": node_ip},
+    )
 
     def stop_all():
         raydp.stop_spark()
@@ -95,7 +101,8 @@ def spark_on_ray_2_executors(request):
     request.addfinalizer(stop_all)
     return spark
 
-@pytest.fixture(scope='session')
+
+@pytest.fixture(scope="session")
 def custom_spark_dir(tmp_path_factory) -> str:
     working_dir = tmp_path_factory.mktemp("spark").as_posix()
 
@@ -104,19 +111,20 @@ def custom_spark_dir(tmp_path_factory) -> str:
     # in the archive download. Latest release's download URL (https://dlcdn.apache.org/spark/*)
     # will be changed to archive when the next release come out and break the test.
     if pyspark.__version__ == "3.2.1":
-        spark_distribution = 'spark-3.2.1-bin-hadoop3.2'
+        spark_distribution = "spark-3.2.1-bin-hadoop3.2"
     elif pyspark.__version__ == "3.1.3":
-        spark_distribution = 'spark-3.1.3-bin-hadoop3.2'
+        spark_distribution = "spark-3.1.3-bin-hadoop3.2"
     else:
         raise Exception(f"Unsupported Spark version {pyspark.__version__}.")
 
-    file_extension = 'tgz'
+    file_extension = "tgz"
     spark_distribution_file = f"{working_dir}/{spark_distribution}.{file_extension}"
 
     import wget
 
     wget.download(
         f"https://archive.apache.org/dist/spark/spark-{pyspark.__version__}/{spark_distribution}.{file_extension}",
-        spark_distribution_file)
-    subprocess.check_output(['tar', 'xzvf', spark_distribution_file, '--directory', working_dir])
+        spark_distribution_file,
+    )
+    subprocess.check_output(["tar", "xzvf", spark_distribution_file, "--directory", working_dir])
     return f"{working_dir}/{spark_distribution}"

@@ -158,4 +158,3 @@ class LocalJobRunner:
             visit(stage_id)
 
         return order
-

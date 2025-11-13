@@ -57,7 +57,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pyiceberg", extras = ["rest"], specifier = ">=0.7.0" },
+    { name = "pyiceberg", extras = ["rest"], specifier = ">=0.10.0" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
@@ -1947,6 +1947,7 @@ dependencies = [
     { name = "pyiceberg" },
     { name = "pylance" },
     { name = "ray", extra = ["default"] },
+    { name = "sqlalchemy" },
 ]
 
 [package.dev-dependencies]
@@ -1961,9 +1962,10 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.7" },
     { name = "fsspec", extras = ["s3"], specifier = ">=2024.6.0" },
     { name = "pyarrow", specifier = ">=18.1.0" },
-    { name = "pyiceberg", specifier = ">=0.7.0" },
+    { name = "pyiceberg", extras = ["sqlalchemy"], specifier = ">=0.10.0" },
     { name = "pylance", specifier = ">=0.38.0" },
     { name = "ray", extras = ["default"], specifier = ">=2.50.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.0" },
 ]
 
 [package.metadata.requires-dev]

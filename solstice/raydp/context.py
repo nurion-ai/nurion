@@ -73,9 +73,7 @@ class _SparkContext(ContextDecorator):
             raise Exception(
                 "The Spark cluster has not been created, please call get_or_create_session first."
             )
-        return (
-            self._spark_session._jvm.org.apache.spark.sql.connect.ConnectServer.start()
-        )
+        return self._spark_session._jvm.org.apache.spark.sql.connect.ConnectServer.start()
 
     def stop(self, cleanup_data=True):
         if self._spark_session is not None:
@@ -177,9 +175,7 @@ def start_connect_server() -> int:
                     "The spark connect server start failed, can not find available port, please check the spark logs."
                 )
             return port
-        raise Exception(
-            "The spark environment has not inited, please call init_spark first."
-        )
+        raise Exception("The spark environment has not inited, please call init_spark first.")
 
 
 def stop_spark(cleanup_data=True):

@@ -16,7 +16,6 @@
 #
 
 import os
-import sys
 import shutil
 import platform
 import pytest
@@ -56,9 +55,9 @@ def test_xgb_estimator(spark_on_ray_small, use_fs_directory):
 
 
 if __name__ == "__main__":
-    import ray, raydp
+    import ray
+    import raydp
 
     ray.init(address="auto")
     spark = raydp.init_spark("test_xgboost", 1, 1, "500m")
     test_xgb_estimator(spark, True)
-

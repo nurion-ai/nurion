@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import ray  # type: ignore[import]
 
 from solstice.core.operator import Operator, OperatorContext
-from solstice.core.models import Batch, Record, WorkerMetrics
+from solstice.core.models import Batch, WorkerMetrics
 from solstice.state.manager import StateManager
 from solstice.state.backend import StateBackend
 
