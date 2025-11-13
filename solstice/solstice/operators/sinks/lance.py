@@ -54,4 +54,3 @@ class LanceSink(Sink):
             self.mode = "append"
         self.logger.info(f"Flushed {len(self.buffer)} records to Lance table")
         self.buffer.clear()
-

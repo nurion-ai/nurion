@@ -103,4 +103,3 @@ class FileSource(ArrowStreamingSource):
             return pacsv.read_csv(file_path)
 
         raise ValueError(f"Unsupported format: {self.file_format}")
-

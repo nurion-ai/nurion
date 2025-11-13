@@ -121,4 +121,3 @@ class FileSink(Sink):
                 else:
                     row["value"] = record.value
                 writer.writerow(row)
-

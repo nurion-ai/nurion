@@ -132,9 +132,7 @@ class TestMapBatchesOperator:
         def process_batch(batch: Batch):
             doubled = []
             for record in batch.to_records():
-                doubled.append(
-                    Record(key=record.key, value={"value": record.value["value"] * 2})
-                )
+                doubled.append(Record(key=record.key, value={"value": record.value["value"] * 2}))
             return Batch.from_records(
                 doubled,
                 batch_id=batch.batch_id,

@@ -316,7 +316,9 @@ class Batch:
         if rows:
             table = pa.Table.from_pylist(rows, schema=schema)
         elif schema is not None:
-            table = pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema)
+            table = pa.Table.from_arrays(
+                [pa.array([], type=field.type) for field in schema], schema
+            )
         else:
             table = pa.table({})
 
@@ -326,7 +328,9 @@ class Batch:
             source_split=source_split,
             metadata=metadata or {},
         )
-        batch._records_cache = list(records) if rows and all(isinstance(r, Record) for r in records) else None
+        batch._records_cache = (
+            list(records) if rows and all(isinstance(r, Record) for r in records) else None
+        )
         batch.is_materialized = bool(rows)
         return batch
 

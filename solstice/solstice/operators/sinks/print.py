@@ -23,4 +23,3 @@ class PrintSink(Sink):
 
     def close(self) -> None:
         self.logger.info(f"Printed {self.count} records")
-

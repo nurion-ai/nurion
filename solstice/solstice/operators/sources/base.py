@@ -48,13 +48,17 @@ class ArrowStreamingSource(SourceOperator):
         return {"source": self.__class__.__name__}
 
     def _next_batch_id(self) -> str:
-        stage_prefix = self._context.stage_id if self._context and self._context.stage_id else "source"
+        stage_prefix = (
+            self._context.stage_id if self._context and self._context.stage_id else "source"
+        )
         batch_id = f"{stage_prefix}_batch_{self._batch_counter}"
         self._batch_counter += 1
         return batch_id
 
     def _next_split_id(self) -> str:
-        stage_prefix = self._context.stage_id if self._context and self._context.stage_id else "source"
+        stage_prefix = (
+            self._context.stage_id if self._context and self._context.stage_id else "source"
+        )
         split_id = f"{stage_prefix}_split_{self._split_counter}"
         self._split_counter += 1
         return split_id
@@ -119,4 +123,3 @@ class ArrowStreamingSource(SourceOperator):
         for record_batch in data:
             table = pa.Table.from_batches([record_batch])
             yield from self._emit_table(table, metadata=metadata)
-

@@ -9,4 +9,3 @@ class Sink(SinkOperator):
     """Base sink operator."""
 
     pass
-

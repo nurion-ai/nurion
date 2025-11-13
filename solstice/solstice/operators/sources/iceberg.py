@@ -57,4 +57,3 @@ class IcebergSource(ArrowStreamingSource):
         self.scan = None
         self.table = None
         self.catalog = None
-

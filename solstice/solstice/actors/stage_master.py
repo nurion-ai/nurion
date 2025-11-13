@@ -410,7 +410,10 @@ class StageMasterActor:
                 self.input_queue.appendleft(batch_payload)
                 split_identifier = batch_payload.source_split or batch_id
             self.batch_to_worker.pop(batch_id, None)
-            if worker_id in self.worker_splits and split_identifier in self.worker_splits[worker_id]:
+            if (
+                worker_id in self.worker_splits
+                and split_identifier in self.worker_splits[worker_id]
+            ):
                 self.worker_splits[worker_id].remove(split_identifier)
 
         # Clear worker assignment state; worker remains available for future work.

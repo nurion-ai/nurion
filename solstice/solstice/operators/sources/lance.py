@@ -55,4 +55,3 @@ class LanceTableSource(ArrowStreamingSource):
     def close(self) -> None:
         self.scanner = None
         self.table = None
-

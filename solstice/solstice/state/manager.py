@@ -209,7 +209,9 @@ class StateManager:
         state_path: Optional[str] = None,
     ) -> bool:
         """Restore a specific split from the backend."""
-        resolved_path = state_path or f"{self.stage_id}/splits/{split_id}/checkpoints/{checkpoint_id}.pkl"
+        resolved_path = (
+            state_path or f"{self.stage_id}/splits/{split_id}/checkpoints/{checkpoint_id}.pkl"
+        )
 
         if not self.state_backend.exists(resolved_path):
             self.logger.warning("Split state not found: %s", resolved_path)
