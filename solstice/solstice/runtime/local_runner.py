@@ -11,10 +11,12 @@ occurs within a single process.
 from __future__ import annotations
 
 import itertools
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 from solstice.core.job import Job
-from solstice.core.models import Batch
+import pyarrow as pa
+
+from solstice.core.models import Batch, Record
 from solstice.core.operator import Operator, OperatorContext, SourceOperator
 
 BatchHook = Callable[[str, Batch, Operator], None]
@@ -90,17 +92,53 @@ class LocalJobRunner:
         if not isinstance(operator, SourceOperator):
             raise TypeError(f"Stage {stage_id} expected SourceOperator, got {type(operator)}")
 
-        records = list(operator.read())
+        items = list(operator.read())
+
+        if not items:
+            return []
+
+        first_item = items[0]
+
+        if isinstance(first_item, Batch):
+            normalized: List[Batch] = []
+            for index, batch in enumerate(items):
+                batch_id = batch.batch_id or f"{stage_id}_batch_{index}"
+                source_split = batch.source_split or f"{stage_id}_split_{index}"
+                if batch.batch_id and batch.source_split:
+                    normalized.append(batch)
+                else:
+                    normalized.append(
+                        batch.replace(
+                            data=batch.to_table(),
+                            batch_id=batch_id,
+                            source_split=source_split,
+                        )
+                    )
+            return normalized
+
+        if isinstance(first_item, (pa.Table, pa.RecordBatch)):
+            arrow_batches: List[Batch] = []
+            for index, payload in enumerate(items):
+                arrow_batches.append(
+                    Batch.from_arrow(
+                        payload,
+                        batch_id=f"{stage_id}_batch_{index}",
+                        source_split=f"{stage_id}_split_{index}",
+                    )
+                )
+            return arrow_batches
+
+        records: List[Union[Record, Dict[str, Any]]] = items  # type: ignore[assignment]
         batch_size = operator_config.get("batch_size") or len(records) or 1
         batches: List[Batch] = []
 
         for index, start in enumerate(range(0, len(records), batch_size)):
             chunk = records[start : start + batch_size]
             batches.append(
-                Batch(
-                    records=chunk,
+                Batch.from_records(
+                    chunk,
                     batch_id=f"{stage_id}_batch_{index}",
-                    source_split=None,
+                    source_split=f"{stage_id}_split_{index}",
                 )
             )
 
@@ -118,19 +156,62 @@ class LocalJobRunner:
     ) -> List[Batch]:
         output_batches: List[Batch] = []
 
-        for batch in input_batches:
+        for index, batch in enumerate(input_batches):
             if before_batch:
                 before_batch(stage_id, batch, operator)
 
             if failure_injector:
                 failure_injector(stage_id, batch, operator)
 
-            processed = operator.process_batch(batch)
+            processed_output = operator.process_batch(batch)
+
+            if isinstance(processed_output, Batch):
+                processed = processed_output
+            elif isinstance(processed_output, (pa.Table, pa.RecordBatch)):
+                processed = batch.replace(processed_output)
+            elif isinstance(processed_output, Iterable):
+                materialized = list(processed_output)
+                if not materialized:
+                    processed = Batch.empty(
+                        batch_id=f"{batch.batch_id}_out_{index}",
+                        source_split=batch.source_split,
+                        schema=batch.schema,
+                    )
+                else:
+                    first_element = materialized[0]
+                    if isinstance(first_element, (Record, dict)):
+                        processed = Batch.from_records(
+                            materialized,
+                            batch_id=f"{batch.batch_id}_out_{index}",
+                            source_split=batch.source_split,
+                            metadata=batch.metadata,
+                            schema=batch.schema
+                            if set(batch.column_names).issuperset(
+                                {Batch.SOLSTICE_KEY_COLUMN, Batch.SOLSTICE_TS_COLUMN}
+                            )
+                            else None,
+                        )
+                    elif isinstance(first_element, (pa.RecordBatch, pa.Table)):
+                        processed = Batch.from_arrow(
+                            materialized,
+                            batch_id=f"{batch.batch_id}_out_{index}",
+                            source_split=batch.source_split,
+                            metadata=batch.metadata,
+                        )
+                    else:
+                        raise TypeError(
+                            f"Operator {operator} returned unsupported iterable element "
+                            f"type {type(first_element)!r}"
+                        )
+            else:
+                raise TypeError(
+                    f"Operator {operator} returned unsupported type {type(processed_output)!r}"
+                )
 
             if after_batch:
                 after_batch(stage_id, processed, operator)
 
-            if processed.records:
+            if len(processed):
                 output_batches.append(processed)
 
         return output_batches

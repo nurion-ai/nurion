@@ -3,7 +3,7 @@
 import pytest
 
 from solstice.core.operator import OperatorContext
-from solstice.operators.source import IcebergSource
+from solstice.operators.sources import IcebergSource
 
 
 @pytest.fixture(scope="module")

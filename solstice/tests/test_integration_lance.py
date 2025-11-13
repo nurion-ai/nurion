@@ -8,7 +8,7 @@ from pathlib import Path
 from lance.dataset import write_dataset
 
 from solstice.core.operator import OperatorContext
-from solstice.operators.source import LanceTableSource
+from solstice.operators.sources import LanceTableSource
 
 
 @pytest.fixture
@@ -55,15 +55,15 @@ class TestLanceTableSourceIntegration:
         # Open source
         source.open(context)
 
-        # Read records
-        records = list(source.read())
+        # Read batches
+        batches = list(source.read())
 
-        # Verify
-        assert len(records) == 5
-        assert records[0].value["id"] == 1
-        assert records[0].value["name"] == "Alice"
-        assert records[4].value["id"] == 5
-        assert records[4].value["name"] == "Eve"
+        total_rows = sum(len(batch) for batch in batches)
+        assert total_rows == 5
+
+        table = batches[0].to_table()
+        assert table.column("id").to_pylist() == [1, 2, 3, 4, 5]
+        assert table.column("name").to_pylist() == ["Alice", "Bob", "Charlie", "Dave", "Eve"]
 
         # Cleanup
         source.close()
@@ -81,13 +81,13 @@ class TestLanceTableSourceIntegration:
 
         source.open(context)
 
-        records = list(source.read())
+        batches = list(source.read())
 
-        # Should have id and name, but not value
-        assert len(records) == 5
-        assert "id" in records[0].value
-        assert "name" in records[0].value
-        # Note: Lance might still include all columns depending on version
+        total_rows = sum(len(batch) for batch in batches)
+        assert total_rows == 5
+
+        table = batches[0].to_table()
+        assert table.schema.names == ["id", "name"]
 
         source.close()
 
@@ -103,13 +103,13 @@ class TestLanceTableSourceIntegration:
         context1 = OperatorContext("task1", "stage1", "worker1")
         source1.open(context1)
 
-        records = []
-        for i, record in enumerate(source1.read()):
-            records.append(record)
-            if i >= 1:  # Read 2 records (indices 0, 1)
+        consumed = []
+        for batch in source1.read():
+            consumed.extend(batch.to_records())
+            if len(consumed) >= 2:
                 break
 
-        assert len(records) == 2, f"Should have read 2 records, got {len(records)}"
+        assert len(consumed) == 2, f"Should have read 2 records, got {len(consumed)}"
 
         # Checkpoint
         checkpoint_state = source1.checkpoint()
@@ -126,9 +126,10 @@ class TestLanceTableSourceIntegration:
         source2.restore(checkpoint_state)
 
         # Should start from offset 2 (3rd record)
-        remaining_records = list(source2.read())
+        remaining_records = []
+        for batch in source2.read():
+            remaining_records.extend(batch.to_records())
 
-        # Should get records 3, 4, 5
         assert len(remaining_records) == 3
         assert remaining_records[0].value["id"] == 3
 

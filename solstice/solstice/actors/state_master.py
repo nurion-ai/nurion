@@ -1,9 +1,11 @@
 """Global State Master for coordinating checkpoints"""
 
 import logging
-from typing import Dict, List, Optional, Any
+import time
+from typing import Any, Dict, List, Optional
 import ray
 
+from solstice.core.models import CheckpointHandle
 from solstice.state.checkpoint import CheckpointCoordinator
 from solstice.state.backend import StateBackend
 
@@ -86,15 +88,29 @@ class GlobalStateMaster:
         all_handles = {}
         for stage_id, ref in collect_refs:
             try:
-                handles = ray.get(ref, timeout=120)
-                if handles:
-                    for handle in handles:
+                handles_payload = ray.get(ref, timeout=120)
+                if handles_payload:
+                    stage_handles = []
+                    for handle in handles_payload:
+                        checkpoint_handle = CheckpointHandle(
+                            checkpoint_id=handle.get("checkpoint_id", checkpoint_id),
+                            stage_id=handle["stage_id"],
+                            split_id=handle["split_id"],
+                            split_attempt=handle.get("split_attempt", 0),
+                            state_path=handle["state_path"],
+                            offset=handle.get("offset", {}),
+                            size_bytes=handle.get("size_bytes", 0),
+                            timestamp=handle.get("timestamp", time.time()),
+                            metadata=handle.get("metadata", {}),
+                            worker_id=handle.get("worker_id"),
+                        )
                         self.checkpoint_coordinator.add_checkpoint_handle(
                             checkpoint_id=checkpoint_id,
                             stage_id=stage_id,
-                            handle=handle,
+                            handle=checkpoint_handle,
                         )
-                    all_handles[stage_id] = handles
+                        stage_handles.append(checkpoint_handle)
+                    all_handles[stage_id] = stage_handles
             except Exception as e:
                 self.logger.error(f"Error collecting handles from stage {stage_id}: {e}")
                 return False
@@ -137,7 +153,8 @@ class GlobalStateMaster:
         # Restore each stage
         restore_refs = []
         for stage_id, stage_master in self.stage_masters.items():
-            ref = stage_master.restore_from_checkpoint.remote(checkpoint_id)
+            stage_handles = manifest.stage_handles.get(stage_id, [])
+            ref = stage_master.restore_from_checkpoint.remote(checkpoint_id, stage_handles)
             restore_refs.append((stage_id, ref))
 
         # Wait for all restorations

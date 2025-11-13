@@ -72,10 +72,10 @@ python -m solstice.main \
 ```python
 from solstice.core.job import Job
 from solstice.core.stage import Stage
-from solstice.operators.source import LanceTableSource
+from solstice.operators.sources import LanceTableSource
 from solstice.operators.map import MapOperator, FlatMapOperator
 from solstice.operators.filter import FilterOperator
-from solstice.operators.sink import FileSink
+from solstice.operators.sinks import FileSink
 
 # Create a job
 job = Job(job_id='my_pipeline')

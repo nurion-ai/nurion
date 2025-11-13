@@ -129,16 +129,24 @@ class TestMapBatchesOperator:
     def test_map_batches_basic(self):
         """Test batch mapping operation"""
 
-        def process_batch(records):
-            # Double all values in batch
-            return [Record(key=r.key, value={"value": r.value["value"] * 2}) for r in records]
+        def process_batch(batch: Batch):
+            doubled = []
+            for record in batch.to_records():
+                doubled.append(
+                    Record(key=record.key, value={"value": record.value["value"] * 2})
+                )
+            return Batch.from_records(
+                doubled,
+                batch_id=batch.batch_id,
+                source_split=batch.source_split,
+            )
 
         operator = MapBatchesOperator({"map_batches_fn": process_batch})
         context = OperatorContext("task1", "stage1", "worker1")
         operator.open(context)
 
-        batch = Batch(
-            records=[
+        batch = Batch.from_records(
+            [
                 Record(key="1", value={"value": 1}),
                 Record(key="2", value={"value": 2}),
                 Record(key="3", value={"value": 3}),
@@ -148,34 +156,35 @@ class TestMapBatchesOperator:
 
         result_batch = operator.process_batch(batch)
 
-        assert len(result_batch.records) == 3
-        assert result_batch.records[0].value["value"] == 2
-        assert result_batch.records[1].value["value"] == 4
-        assert result_batch.records[2].value["value"] == 6
+        result_records = result_batch.to_records()
+        assert len(result_records) == 3
+        assert result_records[0].value["value"] == 2
+        assert result_records[1].value["value"] == 4
+        assert result_records[2].value["value"] == 6
 
     def test_map_batches_skip_on_error(self):
         """Test batch mapping with error handling"""
 
-        def failing_fn(records):
+        def failing_fn(batch: Batch):
             raise ValueError("Batch processing error")
 
         operator = MapBatchesOperator({"map_batches_fn": failing_fn, "skip_on_error": True})
         context = OperatorContext("task1", "stage1", "worker1")
         operator.open(context)
 
-        batch = Batch(records=[Record(key="1", value={"data": "test"})], batch_id="batch1")
+        batch = Batch.from_records([Record(key="1", value={"data": "test"})], batch_id="batch1")
 
         result_batch = operator.process_batch(batch)
-        assert len(result_batch.records) == 0
+        assert result_batch.is_empty()
 
     def test_map_batches_aggregation(self):
         """Test batch-level aggregation"""
 
-        def aggregate_batch(records):
+        def aggregate_batch(batch: Batch):
             # Sum all values in batch
+            records = batch.to_records()
             total = sum(r.value["value"] for r in records)
             avg = total / len(records) if records else 0
-
             return [
                 Record(key="aggregated", value={"total": total, "count": len(records), "avg": avg})
             ]
@@ -184,8 +193,8 @@ class TestMapBatchesOperator:
         context = OperatorContext("task1", "stage1", "worker1")
         operator.open(context)
 
-        batch = Batch(
-            records=[
+        batch = Batch.from_records(
+            [
                 Record(key="1", value={"value": 10}),
                 Record(key="2", value={"value": 20}),
                 Record(key="3", value={"value": 30}),
@@ -195,10 +204,11 @@ class TestMapBatchesOperator:
 
         result_batch = operator.process_batch(batch)
 
-        assert len(result_batch.records) == 1
-        assert result_batch.records[0].value["total"] == 60
-        assert result_batch.records[0].value["count"] == 3
-        assert result_batch.records[0].value["avg"] == 20.0
+        result_records = result_batch.to_records()
+        assert len(result_records) == 1
+        assert result_records[0].value["total"] == 60
+        assert result_records[0].value["count"] == 3
+        assert result_records[0].value["avg"] == 20.0
 
 
 class TestFilterOperator:

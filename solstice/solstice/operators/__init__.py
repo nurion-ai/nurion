@@ -1,10 +1,10 @@
 """Built-in operators"""
 
-from solstice.operators.source import LanceTableSource, IcebergSource, FileSource
+from solstice.operators.sources import FileSource, IcebergSource, LanceTableSource
 from solstice.operators.map import MapOperator, FlatMapOperator, KeyByOperator
 from solstice.operators.batch import MapBatchesOperator
 from solstice.operators.filter import FilterOperator
-from solstice.operators.sink import Sink, FileSink, LanceSink, PrintSink
+from solstice.operators.sinks import FileSink, LanceSink, PrintSink, Sink
 
 __all__ = [
     "LanceTableSource",
