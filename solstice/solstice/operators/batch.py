@@ -1,7 +1,7 @@
 """Batch processing operators"""
 
 from collections.abc import Iterable
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional
 
 import pyarrow as pa
 
