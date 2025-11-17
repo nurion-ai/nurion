@@ -17,7 +17,7 @@ from solstice.core.job import Job
 import pyarrow as pa
 
 from solstice.core.models import Batch, Record
-from solstice.core.operator import Operator, OperatorContext, SourceOperator
+from solstice.core.operator import Operator, SourceOperator
 
 BatchHook = Callable[[str, Batch, Operator], None]
 StageHook = Callable[[str, Operator], None]
@@ -52,7 +52,6 @@ class LocalJobRunner:
         for stage_id in stage_order:
             stage = self.job.stages[stage_id]
             operator = stage.operator_class(stage.operator_config)
-            operator.open(OperatorContext(stage_id=stage_id))
 
             if before_stage:
                 before_stage(stage_id, operator)

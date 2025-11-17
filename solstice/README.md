@@ -103,8 +103,8 @@ job.add_stage(Stage(
 ), upstream_stages=['transform'])
 
 # Run
-job.initialize()
-job.start()
+runner = job.create_ray_runner()
+runner.run()
 ```
 
 ## Key Features

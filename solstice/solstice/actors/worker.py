@@ -5,7 +5,7 @@ import logging
 from typing import Any, Dict, List, Optional
 import ray  # type: ignore[import]
 
-from solstice.core.operator import Operator, OperatorContext
+from solstice.core.operator import Operator
 from solstice.core.models import Batch, CheckpointHandle, WorkerMetrics
 from solstice.state.manager import StateManager
 from solstice.state.backend import StateBackend
@@ -43,15 +43,6 @@ class WorkerActor:
         self.processed_count = 0
         self.processing_times: List[float] = []
         self.key_counts: Dict[str, int] = {}
-
-        # Operator initialization
-        context = OperatorContext(
-            task_id=f"{stage_id}_{worker_id}",
-            stage_id=stage_id,
-            worker_id=worker_id,
-            state_manager=self.state_manager,
-        )
-        self.operator.open(context)
 
         # Checkpoint state
         self.pending_checkpoint_id: Optional[str] = None

@@ -30,7 +30,12 @@ class CheckpointStatus(str, Enum):
 
 @dataclass
 class Split:
-    """Represents a logical split of data for processing."""
+    """Represents a logical split of data for processing.
+
+    Each split tracks the scheduling metadata for a *single* data batch. The actual
+    payload lives separately in :class:`Batch` instances; the runtime associates
+    splits with batches via identifiers/object references.
+    """
 
     split_id: str
     stage_id: str
@@ -43,6 +48,8 @@ class Split:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    record_count: int = 0
+    is_terminal: bool = False
 
     def lineage(self) -> Dict[str, Any]:
         """Return lineage metadata for downstream operators."""
@@ -54,6 +61,60 @@ class Split:
             "metadata": dict(self.metadata),
         }
 
+    def with_status(self, status: SplitStatus) -> "Split":
+        """Return a copy of the split with an updated status timestamp."""
+        updated = Split(
+            split_id=self.split_id,
+            stage_id=self.stage_id,
+            data_range=dict(self.data_range),
+            parent_split_ids=list(self.parent_split_ids),
+            attempt=self.attempt,
+            status=status,
+            assigned_worker=self.assigned_worker,
+            retry_count=self.retry_count,
+            metadata=dict(self.metadata),
+            record_count=self.record_count,
+            is_terminal=self.is_terminal,
+        )
+        updated.created_at = self.created_at
+        updated.updated_at = time.time()
+        return updated
+
+    def with_output(
+        self,
+        *,
+        target_stage_id: Optional[str] = None,
+        split_id: Optional[str] = None,
+        record_count: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        is_terminal: Optional[bool] = None,
+    ) -> "Split":
+        """Produce a new split metadata object for downstream consumption."""
+        combined_metadata = dict(self.metadata)
+        if metadata:
+            combined_metadata.update(metadata)
+
+        derived_stage_id = target_stage_id or self.stage_id
+        derived_split_id = split_id or self.split_id
+
+        parent_ids = list(self.parent_split_ids)
+        if self.split_id not in parent_ids:
+            parent_ids.append(self.split_id)
+
+        return Split(
+            split_id=derived_split_id,
+            stage_id=derived_stage_id,
+            data_range=dict(self.data_range),
+            parent_split_ids=parent_ids,
+            attempt=0,
+            status=SplitStatus.PENDING,
+            assigned_worker=None,
+            retry_count=0,
+            metadata=combined_metadata,
+            record_count=record_count if record_count is not None else self.record_count,
+            is_terminal=self.is_terminal if is_terminal is None else is_terminal,
+        )
+
 
 @dataclass
 class WorkerMetrics:
@@ -63,7 +124,6 @@ class WorkerMetrics:
     stage_id: str
     processing_rate: float  # records/sec
     backlog_size: int
-    key_distribution: Dict[str, int] = field(default_factory=dict)
     cpu_usage: float = 0.0
     memory_usage: float = 0.0
     timestamp: float = field(default_factory=time.time)
@@ -82,7 +142,6 @@ class CheckpointHandle:
     size_bytes: int
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    worker_id: Optional[str] = None
 
 
 @dataclass
@@ -222,6 +281,24 @@ class Batch:
                 )
             )
         return rows
+
+    @property
+    def split_id(self) -> Optional[str]:
+        """The logical split this batch belongs to."""
+        return self.source_split
+
+    def with_split(self, split_id: Optional[str]) -> "Batch":
+        """Return a copy of the batch associated with ``split_id``."""
+        cloned = Batch(
+            data=self._table,
+            batch_id=self.batch_id,
+            source_split=split_id,
+            metadata=dict(self.metadata),
+        )
+        if self._records_cache is not None:
+            cloned._records_cache = list(self._records_cache)
+            cloned.is_materialized = self.is_materialized
+        return cloned
 
     def replace(
         self,

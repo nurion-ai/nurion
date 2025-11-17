@@ -1,6 +1,5 @@
 """Unit tests for operators (pure logic, no mocks)"""
 
-from solstice.core.operator import OperatorContext
 from solstice.core.models import Record, Batch
 from solstice.operators.map import MapOperator, FlatMapOperator
 from solstice.operators.batch import MapBatchesOperator
@@ -18,8 +17,6 @@ class TestMapOperator:
             return record
 
         operator = MapOperator({"map_fn": double_value})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         record = Record(key="1", value={"value": 5})
         results = list(operator.process(record))
@@ -34,8 +31,6 @@ class TestMapOperator:
             raise ValueError("Test error")
 
         operator = MapOperator({"map_fn": failing_fn, "skip_on_error": True})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         record = Record(key="1", value={"data": "test"})
         results = list(operator.process(record))
@@ -51,8 +46,6 @@ class TestMapOperator:
             return record
 
         operator = MapOperator({"map_fn": transform})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         record = Record(key="1", value={"a": 3, "b": 4})
         results = list(operator.process(record))
@@ -74,8 +67,6 @@ class TestFlatMapOperator:
             ]
 
         operator = FlatMapOperator({"flatmap_fn": split_fn})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         record = Record(key="1", value={"part1": "A", "part2": "B"})
         results = list(operator.process(record))
@@ -91,8 +82,6 @@ class TestFlatMapOperator:
             return []
 
         operator = FlatMapOperator({"flatmap_fn": empty_fn})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         record = Record(key="1", value={"data": "test"})
         results = list(operator.process(record))
@@ -107,8 +96,6 @@ class TestFlatMapOperator:
             return [{"index": i, "data": record["data"]} for i in range(count)]
 
         operator = FlatMapOperator({"flatmap_fn": split_by_count})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         # 1 output
         r1 = Record(key="1", value={"count": 1, "data": "A"})
@@ -140,8 +127,6 @@ class TestMapBatchesOperator:
             )
 
         operator = MapBatchesOperator({"map_batches_fn": process_batch})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         batch = Batch.from_records(
             [
@@ -167,8 +152,6 @@ class TestMapBatchesOperator:
             raise ValueError("Batch processing error")
 
         operator = MapBatchesOperator({"map_batches_fn": failing_fn, "skip_on_error": True})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         batch = Batch.from_records([Record(key="1", value={"data": "test"})], batch_id="batch1")
 
@@ -188,8 +171,6 @@ class TestMapBatchesOperator:
             ]
 
         operator = MapBatchesOperator({"map_batches_fn": aggregate_batch})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         batch = Batch.from_records(
             [
@@ -219,8 +200,6 @@ class TestFilterOperator:
             return record["value"] % 2 == 0
 
         operator = FilterOperator({"filter_fn": is_even})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         # Test even number (should pass)
         record1 = Record(key="1", value={"value": 4})
@@ -239,8 +218,6 @@ class TestFilterOperator:
             return record.get("score", 0) > 0.5 and record.get("count", 0) > 10
 
         operator = FilterOperator({"filter_fn": is_valid})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
 
         # Should pass
         record1 = Record(key="1", value={"score": 0.8, "count": 20})
@@ -254,36 +231,3 @@ class TestFilterOperator:
         record3 = Record(key="3", value={"score": 0.8, "count": 5})
         assert len(list(operator.process(record3))) == 0
 
-
-class TestOperatorCheckpointing:
-    """Tests for operator checkpoint and restore"""
-
-    def test_operator_checkpoint_restore(self):
-        """Test operator state checkpoint and restore"""
-
-        def transform(record):
-            record["processed"] = True
-            return record
-
-        operator = MapOperator({"map_fn": transform})
-        context = OperatorContext("task1", "stage1", "worker1")
-        operator.open(context)
-
-        # Set some state
-        context.set_state("counter", 42)
-        context.set_state("last_key", "key123")
-
-        # Checkpoint
-        state = operator.checkpoint()
-
-        assert state["counter"] == 42
-        assert state["last_key"] == "key123"
-
-        # Create new operator and restore
-        operator2 = MapOperator({"map_fn": transform})
-        context2 = OperatorContext("task1", "stage1", "worker1")
-        operator2.open(context2)
-        operator2.restore(state)
-
-        assert context2.get_state("counter") == 42
-        assert context2.get_state("last_key") == "key123"

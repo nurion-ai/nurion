@@ -90,33 +90,3 @@ class Stage:
             "fixed_parallelism": self.fixed_parallelism,
             "worker_resources": self.worker_resources,
         }
-
-
-class StageMaster:
-    """Wrapper for StageMasterActor to provide a cleaner API"""
-
-    def __init__(self, stage: Stage, state_backend):
-        self.stage = stage
-        self.state_backend = state_backend
-        self.actor_ref = None
-
-    def start(self):
-        """Start the stage master actor"""
-        from solstice.actors.stage_master import StageMasterActor
-
-        self.actor_ref = StageMasterActor.remote(
-            stage_id=self.stage.stage_id,
-            operator_class=self.stage.operator_class,
-            operator_config=self.stage.operator_config,
-            state_backend=self.state_backend,
-            worker_resources=self.stage.worker_resources,
-            initial_workers=self.stage.initial_parallelism,
-            max_workers=self.stage.max_parallelism,
-            min_workers=self.stage.min_parallelism,
-        )
-
-        return self.actor_ref
-
-    def get_ref(self):
-        """Get the actor reference"""
-        return self.actor_ref

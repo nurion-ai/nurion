@@ -38,7 +38,7 @@ class MapBatchesOperator(Operator):
                 if not materialized:
                     return Batch.empty(
                         batch_id=batch.batch_id,
-                        source_split=batch.source_split,
+                        source_split=batch.split_id,
                         schema=batch.schema,
                     )
                 element = materialized[0]
@@ -46,14 +46,14 @@ class MapBatchesOperator(Operator):
                     return Batch.from_records(
                         materialized,
                         batch_id=batch.batch_id,
-                        source_split=batch.source_split,
+                        source_split=batch.split_id,
                         metadata=batch.metadata,
                     )
                 if isinstance(element, pa.RecordBatch):
                     return Batch.from_arrow(
                         materialized,
                         batch_id=batch.batch_id,
-                        source_split=batch.source_split,
+                        source_split=batch.split_id,
                         metadata=batch.metadata,
                     )
 
@@ -73,7 +73,7 @@ class MapBatchesOperator(Operator):
                 # Return empty batch on error
                 return Batch.empty(
                     batch_id=batch.batch_id,
-                    source_split=batch.source_split,
+                    source_split=batch.split_id,
                     schema=batch.schema,
                 )
             else:

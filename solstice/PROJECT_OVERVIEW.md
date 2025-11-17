@@ -161,8 +161,10 @@ job = Job(
 
 ### Manual
 ```python
-checkpoint_id = job.trigger_checkpoint()
-job.restore_from_checkpoint(checkpoint_id)
+runner = job.create_ray_runner()
+runner.initialize()
+checkpoint_id = runner.trigger_checkpoint()
+runner.restore_from_checkpoint(checkpoint_id)
 ```
 
 ## Implementation Stats
