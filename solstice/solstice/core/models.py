@@ -300,7 +300,7 @@ class Batch:
             cloned.is_materialized = self.is_materialized
         return cloned
 
-    def replace(
+    def with_new_data(
         self,
         data: Union[pa.Table, pa.RecordBatch],
         *,
@@ -316,12 +316,12 @@ class Batch:
             metadata=metadata or dict(self.metadata),
         )
 
-    def select(self, columns: Sequence[str]) -> "Batch":
+    def with_columns(self, columns: Sequence[str]) -> "Batch":
         """Return a batch containing only the specified columns."""
         missing = set(columns) - set(self.column_names)
         if missing:
             raise ValueError(f"Columns {missing} not found in batch schema")
-        return self.replace(self._table.select(columns))
+        return self.with_new_data(self._table.select(columns))
 
     def column(self, name: str) -> pa.ChunkedArray:
         return self._table.column(name)

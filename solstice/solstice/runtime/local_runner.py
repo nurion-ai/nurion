@@ -4,7 +4,7 @@ Utility runtime for executing Solstice workflows locally (synchronously).
 This runner is intended for tests and developer experiments where spinning up
 Ray actors is overkill. It evaluates the job DAG produced by a workflow and
 invokes each operator in topological order, propagating `Batch` objects between
-stages. State-aware operators still receive an `OperatorContext`, but execution
+stages.
 occurs within a single process.
 """
 
@@ -107,7 +107,7 @@ class LocalJobRunner:
                     normalized.append(batch)
                 else:
                     normalized.append(
-                        batch.replace(
+                        batch.with_new_data(
                             data=batch.to_table(),
                             batch_id=batch_id,
                             source_split=source_split,
@@ -167,41 +167,7 @@ class LocalJobRunner:
             if isinstance(processed_output, Batch):
                 processed = processed_output
             elif isinstance(processed_output, (pa.Table, pa.RecordBatch)):
-                processed = batch.replace(processed_output)
-            elif isinstance(processed_output, Iterable):
-                materialized = list(processed_output)
-                if not materialized:
-                    processed = Batch.empty(
-                        batch_id=f"{batch.batch_id}_out_{index}",
-                        source_split=batch.source_split,
-                        schema=batch.schema,
-                    )
-                else:
-                    first_element = materialized[0]
-                    if isinstance(first_element, (Record, dict)):
-                        processed = Batch.from_records(
-                            materialized,
-                            batch_id=f"{batch.batch_id}_out_{index}",
-                            source_split=batch.source_split,
-                            metadata=batch.metadata,
-                            schema=batch.schema
-                            if set(batch.column_names).issuperset(
-                                {Batch.SOLSTICE_KEY_COLUMN, Batch.SOLSTICE_TS_COLUMN}
-                            )
-                            else None,
-                        )
-                    elif isinstance(first_element, (pa.RecordBatch, pa.Table)):
-                        processed = Batch.from_arrow(
-                            materialized,
-                            batch_id=f"{batch.batch_id}_out_{index}",
-                            source_split=batch.source_split,
-                            metadata=batch.metadata,
-                        )
-                    else:
-                        raise TypeError(
-                            f"Operator {operator} returned unsupported iterable element "
-                            f"type {type(first_element)!r}"
-                        )
+                processed = batch.with_new_data(data=processed_output)
             else:
                 raise TypeError(
                     f"Operator {operator} returned unsupported type {type(processed_output)!r}"

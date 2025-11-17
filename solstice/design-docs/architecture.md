@@ -1,7 +1,7 @@
 # Solstice Runtime Architecture
 
 ## Overview
-Solstice implements a distributed, streaming dataflow engine on top of Ray actors. Workflows are expressed as directed acyclic graphs (DAGs) of stages. Each stage owns a user-defined operator and a pool of stateful worker actors. Stages exchange *Splits*, which are metadata records describing batches of data pointed to by Ray object references. This orchestration keeps hot data off the control plane and allows the pipeline to scale horizontally across workers while maintaining exactly-once semantics.
+Solstice implements a distributed, streaming dataflow engine on top of Ray actors. Workflows are expressed as directed acyclic graphs (DAGs) of stages. Each stage owns a user-defined operator and a pool of stateless `StageWorker` actors, while the stage master manages split-scoped state and checkpointing. Stages exchange *Splits*, which are metadata records describing batches of data pointed to by Ray object references. This orchestration keeps hot data off the control plane and allows the pipeline to scale horizontally across workers while maintaining exactly-once semantics.
 
 ```
        +-------------+       +-------------+       +-------------+
@@ -25,19 +25,19 @@ Solstice implements a distributed, streaming dataflow engine on top of Ray actor
   - Drive the pipeline by pulling output splits from upstream stages and pushing to downstream stages.
   - Monitor stage counters to detect when the DAG is quiescent, trigger checkpoints, and collect metrics.
   - Apply backpressure to source ingestion via a configurable `source_pending_limit`, ensuring the Ray object store is not overrun.
-* `StageMasterActor`: Manages a stage-local queue of splits and a pool of worker actors. Functions:
+* `StageMasterActor`: Manages the split queues, per-split state, and a pool of StageWorkers. Functions:
   - Schedule splits on available workers (`process_split`) and track inflight work.
+  - Persist split-level state via `StateManager` and coordinate checkpoint handles without involving workers.
   - Fan-out completed splits directly to downstream stage masters using shared Ray object references, buffering locally only for sink stages.
   - Provide per-stage metrics and queue counters for backpressure and lifecycle decisions.
-* `WorkerActor`: Executes the user operator over batches. Responsibilities:
+* `StageWorker`: Executes the user operator over batches without retaining persistent state. Responsibilities:
   - Materialise Ray batch references and invoke `process_batch`.
-  - Maintain operator state via `StateManager`.
   - Produce output batches and return Ray references alongside operator metrics.
 
 ### State & Checkpointing
 * `GlobalStateMaster`: Coordinates checkpoint barriers, collects split-level handles, and orchestrates restore.
-* `StateManager`: Maintains per-split and operator state within worker actors, emitting checkpoint handles on demand.
-* Checkpoints capture lineage and offsets per split. Restoration rehydrates stage masters and workers using these handles.
+* `StateManager`: Lives with each stage master, tracking split state (offsets, metadata) and emitting checkpoint handles on demand.
+* Checkpoints capture lineage and offsets per split. Restoration rehydrates stage masters, which in turn restart stateless workers.
 
 ### Control Plane Services
 * `MetaService`: Maintains the DAG topology, stage metadata, and global job status. Handles stage registration and metrics aggregation.
@@ -49,7 +49,7 @@ Solstice implements a distributed, streaming dataflow engine on top of Ray actor
    - Splits carry only metadata; batches remain in Ray’s object store, referenced by ID, preventing large-scale copies.
 
 2. **Stage processing**
-   - Stage masters maintain pending split queues. Workers pull splits, materialise the batch via Ray, and run operators.
+   - Stage masters maintain pending split queues. StageWorkers pull splits, materialise the batch via Ray, and run operators.
    - Output batches are `with_split`-tagged with downstream split IDs and re-put into the object store.
    - Stage masters push completion records (split + batch ref) to downstream stages or the runner.
 
@@ -69,12 +69,12 @@ Solstice implements a distributed, streaming dataflow engine on top of Ray actor
    - The driver-side `RayJobRunner._seed_sources()` consumes each emitted `Batch`, waits on `_source_pending_limit` (`64` default) to avoid flooding, and stores the payload once in the Ray object store via `ray.put`.
    - For every downstream stage, the runner instantiates a `Split` referencing the upstream stage and batch metadata (`batch_id`, `record_count`) and pushes it to the target `StageMasterActor.enqueue_split()`. The `data_range` currently holds only coarse identifiers, not dataset offsets.
 3. **Stage scheduling**
-   - Each stage master maintains queues (`pending_splits`, `active_splits`, `inflight_results`) and uses `assign_work()` to dispatch to workers with spare capacity (`max_active_splits_per_worker` default `2`).
+   - Each stage master maintains queues (`pending_splits`, `active_splits`, `inflight_results`) and uses its run loop to dispatch to workers with spare capacity (`max_active_splits_per_worker` default `2`).
    - The payload reference is reused across downstream stages; Ray ensures deduplicated transfer while stage masters track logical ownership.
 4. **Worker execution**
-   - `WorkerActor.process_split()` dereferences the batch, normalises metadata (`batch_id`, `split_id`), activates state via `StateManager`, and runs `operator.process_batch()`. Operators return a `Batch` (or `None`), which is re-materialised into Ray’s object store when present.
+   - `StageWorker.process_split()` dereferences the batch, normalises metadata (`batch_id`, `split_id`), and runs `operator.process_batch()`. Operators return a `Batch` (or `None`), which is re-materialised into Ray’s object store when present. Any mutable state is returned to the stage master rather than persisted locally.
 5. **Downstream propagation**
-   - The stage master run loop (`StageMasterActor.run()`) continuously waits for completion, increments metrics, and clones metadata per downstream edge via `Split.with_output()`, forwarding the same `payload_ref` downstream.
+   - The stage master run loop continuously waits for completion, increments metrics, and clones metadata per downstream edge via `Split.with_output()`, forwarding the same `payload_ref` downstream.
    - Stages without downstream edges buffer outputs in `output_queue` for sinks, test harnesses, or external consumers to retrieve.
 6. **Object lifecycle & throttling**
    - Completed splits release their local references (`_release_split()`), allowing Ray to reclaim payloads once all consumers finish.
@@ -83,7 +83,7 @@ Solstice implements a distributed, streaming dataflow engine on top of Ray actor
 ## Scheduling & Backpressure
 * Each stage master enforces per-worker concurrency limits and tracks occupancy.
 * Pending queue size triggers backpressure flags; `MetaService` may propagate slow-down signals upstream (hook for future dynamic throttling).
-* `StageMasterActor.run()` is an asynchronous loop (`max_concurrency=16`) that assigns pending splits, awaits completions via `collect_ready_results()`, and immediately forwards payload refs downstream.
+* `StageMasterActor.run()` is a long-lived loop (`max_concurrency=16`) that assigns pending splits, awaits completions via `ray.wait`, and immediately forwards payload refs downstream.
 * `RayJobRunner` now seeds sources, monitors stage health, and detects completion; fine-grained scheduling and fan-out happen inside the per-stage run loops, eliminating the central polling bottleneck.
 
 ## Elasticity
@@ -128,9 +128,9 @@ Solstice implements a distributed, streaming dataflow engine on top of Ray actor
      |                                 |
   enqueue_split                 enqueue_split
      |                                 |
-+----v-----+                      +-----v----+
-| Worker A |  process_split       | Worker B |
-+----------+  (with state)        +----------+
++----v----------+               +------v---------+
+| StageWorker A | process_split | StageWorker B |
++---------------+               +---------------+
           batch_ref                          batch_ref
                \                           /
                 \----> Stage C Master <---/

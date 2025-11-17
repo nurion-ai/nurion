@@ -158,7 +158,6 @@ class CheckpointCoordinator:
                         "checkpoint_id": h.checkpoint_id,
                         "split_id": h.split_id,
                         "split_attempt": h.split_attempt,
-                        "worker_id": h.worker_id,
                         "state_path": h.state_path,
                         "offset": h.offset,
                         "size_bytes": h.size_bytes,

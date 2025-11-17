@@ -14,7 +14,7 @@ from solstice.actors.meta_service import MetaService
 from solstice.actors.state_master import GlobalStateMaster
 from solstice.core.job import Job
 from solstice.core.models import Batch, Split
-from solstice.core.operator import OperatorContext, SourceOperator
+from solstice.core.operator import SourceOperator
 from solstice.actors.stage_master import StageMasterActor
 
 
@@ -152,7 +152,6 @@ class RayJobRunner:
         if not isinstance(operator, SourceOperator):
             raise TypeError(f"Stage {stage_id} expected SourceOperator, got {type(operator)}")
 
-        operator.open(OperatorContext(stage_id=stage_id))
         try:
             iterator = iter(operator.read())
             try:
@@ -167,7 +166,7 @@ class RayJobRunner:
                 source_split = batch.split_id or f"{stage_id}_split_{idx}"
                 if batch.batch_id and batch.split_id:
                     return batch
-                return batch.replace(
+                return batch.with_new_data(
                     data=batch.to_table(),
                     batch_id=batch_id,
                     source_split=source_split,

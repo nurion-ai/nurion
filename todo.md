@@ -8,11 +8,11 @@
 
 ## Scheduling & Scaling
 - [ ] Implement adaptive worker scaling policies (queue depth, processing rate) that periodically call `StageMasterActor.scale_workers()` rather than relying on manual configuration.
-- [ ] Add prioritisation or fairness in `StageMasterActor.assign_work()` so workers do not starve long-waiting splits when new splits keep arriving.
+- [ ] Add prioritisation or fairness in the StageMaster scheduler so workers do not starve long-waiting splits when new splits keep arriving.
 - [ ] Explore batching of `ray.get_split_counters` calls (e.g., subscribe/publish) to reduce driver pressure and improve idle detection accuracy.
 
 ## Checkpointing & Fault Tolerance
-- [ ] Ensure every `WorkerActor.create_checkpoint()` returns at least metadata handles for stateful operators (current default backend may return `[]`), and surface warnings via `MetaService` when checkpoints contain no handles.
+- [ ] Ensure every `StageWorker.process_split()` result includes enough metadata for the StageMaster’s split-level checkpoints, and surface warnings via `MetaService` when checkpoints contain no handles.
 - [ ] Support asynchronous checkpoint drains in `StageMasterActor` so checkpoint barriers do not block normal split processing.
 - [ ] Wire `RayJobRunner.trigger_checkpoint()` into periodic/autonomous policies (time, records, backpressure) with coordination through `GlobalStateMaster`.
 
