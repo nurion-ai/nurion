@@ -13,8 +13,6 @@ import pyarrow as pa
 from solstice.actors.meta_service import MetaService
 from solstice.actors.state_master import GlobalStateMaster
 from solstice.core.job import Job
-from solstice.core.models import Batch, Split
-from solstice.core.operator import SourceOperator
 from solstice.actors.stage_master import StageMasterActor
 
 
@@ -34,15 +32,12 @@ class RayJobRunner:
 
         self._initialized = False
         self._running = False
-        self._sources_seeded = False
-        self._split_counters: dict[str, int] = {}
         self._topology: List[str] = []
         self._reverse_dag: Dict[str, List[str]] = {}
         self._sink_stage_ids: List[str] = []
 
         self.job.attach_ray_runner(self)
 
-        self._source_pending_limit = int(self.job.config.get("source_pending_limit", 64))
         self._stage_run_poll_interval = float(self.job.config.get("stage_run_poll_interval", 0.05))
 
     # ------------------------------------------------------------------
@@ -88,6 +83,7 @@ class RayJobRunner:
 
         for stage_id, stage in self.job.stages.items():
             actor_name = f"{self.job.job_id}:{stage_id}"
+            upstream_stages = self._reverse_dag.get(stage_id, [])
             stage_master = StageMasterActor.options(name=actor_name).remote(
                 job_id=self.job.job_id,
                 stage_id=stage.stage_id,
@@ -96,9 +92,9 @@ class RayJobRunner:
                 state_backend=self.job.state_backend,
                 worker_resources=stage.worker_resources,
                 actor_name=actor_name,
-                initial_workers=stage.initial_parallelism,
                 max_workers=stage.max_parallelism,
                 min_workers=stage.min_parallelism,
+                upstream_stages=upstream_stages,
             )
             self.stage_actor_refs[stage_id] = stage_master
             ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
@@ -141,132 +137,6 @@ class RayJobRunner:
             visit(stage_id)
         return order
 
-    def _next_ids(self, stage_id: str) -> tuple[str, str]:
-        counter = self._split_counters.get(stage_id, 0)
-        self._split_counters[stage_id] = counter + 1
-        return f"{stage_id}_split_{counter}", f"{stage_id}_batch_{counter}"
-
-    def _stream_source_batches(self, stage_id: str):
-        stage = self.job.stages[stage_id]
-        operator = stage.operator_class(stage.operator_config)
-        if not isinstance(operator, SourceOperator):
-            raise TypeError(f"Stage {stage_id} expected SourceOperator, got {type(operator)}")
-
-        try:
-            iterator = iter(operator.read())
-            try:
-                first_item = next(iterator)
-            except StopIteration:
-                return
-
-            index = 0
-
-            def normalize_batch(batch: Batch, idx: int) -> Batch:
-                batch_id = batch.batch_id or f"{stage_id}_batch_{idx}"
-                source_split = batch.split_id or f"{stage_id}_split_{idx}"
-                if batch.batch_id and batch.split_id:
-                    return batch
-                return batch.with_new_data(
-                    data=batch.to_table(),
-                    batch_id=batch_id,
-                    source_split=source_split,
-                )
-
-            if isinstance(first_item, Batch):
-                yield normalize_batch(first_item, index)
-                index += 1
-                for item in iterator:
-                    yield normalize_batch(item, index)
-                    index += 1
-                return
-
-            if isinstance(first_item, (pa.Table, pa.RecordBatch)):
-                yield Batch.from_arrow(
-                    first_item,
-                    batch_id=f"{stage_id}_batch_{index}",
-                    source_split=f"{stage_id}_split_{index}",
-                )
-                index += 1
-                for payload in iterator:
-                    yield Batch.from_arrow(
-                        payload,
-                        batch_id=f"{stage_id}_batch_{index}",
-                        source_split=f"{stage_id}_split_{index}",
-                    )
-                    index += 1
-                return
-
-            # Treat as records
-            batch_size = stage.operator_config.get("batch_size") or 1
-            buffer: List[Any] = [first_item]
-            for item in iterator:
-                buffer.append(item)
-                if len(buffer) >= batch_size:
-                    yield Batch.from_records(
-                        buffer,
-                        batch_id=f"{stage_id}_batch_{index}",
-                        source_split=f"{stage_id}_split_{index}",
-                    )
-                    index += 1
-                    buffer = []
-            if buffer:
-                yield Batch.from_records(
-                    buffer,
-                    batch_id=f"{stage_id}_batch_{index}",
-                    source_split=f"{stage_id}_split_{index}",
-                )
-        finally:
-            operator.close()
-
-    def _wait_for_capacity(self, stage_id: str) -> None:
-        if self._source_pending_limit <= 0:
-            return
-        actor_ref = self.stage_actor_refs[stage_id]
-        while True:
-            counters = ray.get(actor_ref.get_split_counters.remote())
-            backlog = counters["pending"] + counters["active"] + counters["inflight"]
-            if backlog < self._source_pending_limit:
-                return
-            time.sleep(0.05)
-
-    def _seed_sources(self) -> None:
-        if self._sources_seeded:
-            return
-
-        for stage_id, stage in self.job.stages.items():
-            if self._reverse_dag.get(stage_id):
-                continue  # Not a source stage
-
-            downstream_ids = self.job.dag_edges.get(stage_id, [])
-            if not downstream_ids:
-                continue
-
-            for batch in self._stream_source_batches(stage_id):
-                for downstream_id in downstream_ids:
-                    self._wait_for_capacity(downstream_id)
-
-                batch_ref = ray.put(batch)
-                for downstream_id in downstream_ids:
-                    split_id, batch_id = self._next_ids(downstream_id)
-                    split = Split(
-                        split_id=split_id,
-                        stage_id=downstream_id,
-                        data_range={
-                            "upstream_stage": stage_id,
-                            "batch_id": batch.batch_id,
-                        },
-                        parent_split_ids=[stage_id],
-                        metadata={
-                            "upstream_stage": stage_id,
-                            "batch_id": batch_id,
-                        },
-                    )
-                    split.record_count = len(batch)
-                    self.stage_actor_refs[downstream_id].enqueue_split.remote(
-                        split, payload_ref=[batch_ref]
-                    )
-
-        self._sources_seeded = True
 
     def _start_stage_loops(self) -> None:
         if not self.stage_actor_refs:
@@ -331,7 +201,6 @@ class RayJobRunner:
             self._running = True
 
         self._start_stage_loops()
-        self._seed_sources()
 
         try:
             while self._running:
@@ -359,8 +228,6 @@ class RayJobRunner:
         self.meta_service = None
         self.global_state_master = None
         self._initialized = False
-        self._sources_seeded = False
-        self._split_counters.clear()
 
     # ------------------------------------------------------------------
     # Checkpointing
@@ -438,9 +305,6 @@ class RayJobRunner:
         if not self._running:
             self.run()
             return
-
-        if not self._sources_seeded:
-            self._seed_sources()
 
         deadline = time.time() + timeout if timeout is not None else None
         while self._running:

@@ -15,7 +15,11 @@ from solstice.core.operator import Operator
 
 @ray.remote
 class StageWorker:
-    """Ray actor that executes an operator over batches without persisting state."""
+    """Ray actor that executes an operator over batches without persisting state.
+    
+    StageWorker is completely stateless - it only maintains ephemeral in-memory state
+    during batch processing. All persistent state management is handled by StageMaster.
+    """
 
     def __init__(
         self,
@@ -31,7 +35,7 @@ class StageWorker:
 
         self.logger = logging.getLogger(f"StageWorker-{stage_id}-{worker_id}")
 
-        # Metrics
+        # Ephemeral metrics (not persisted)
         self.processed_count = 0
         self.processing_times: List[float] = []
 
@@ -40,19 +44,38 @@ class StageWorker:
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
-    def process_split(self, split: Split, payload_ref: ray.ObjectRef) -> Dict[str, Any]:
-        """Materialise the batch referenced by ``payload_ref`` and run the operator."""
+    def process_split(
+        self, 
+        split: Split, 
+        payload_ref: Optional[ray.ObjectRef] = None,
+    ) -> Dict[str, Any]:
+        """Process a split with the operator.
+        
+        Args:
+            split: The split metadata
+            payload_ref: Optional batch payload reference (None for source operators)
+        
+        Returns:
+            Dictionary with split_id, output_ref (for downstream), and metrics
+        """
         start_time = time.time()
 
-        try:
-            batch: Batch = ray.get(payload_ref)
-        except Exception as exc:  # pragma: no cover - ray transport errors
-            self.logger.error(f"Failed to fetch payload for split {split.split_id}: {exc}")
-            raise
+        # For source operators, batch is None
+        # For other operators, get the batch from payload_ref
+        batch: Optional[Batch] = None
+        if payload_ref is not None:
+            batch = ray.get(payload_ref)
 
-        output_batch = self._run_operator(batch)
+        # Unified processing: all operators use process_split
+        output_batch = self.operator.process_split(split, batch)
 
-        self.processed_count += len(batch)
+        # Update metrics
+        if output_batch is not None:
+            self.processed_count += len(output_batch)
+        else:
+            # For sinks or operators that produce no output, count input
+            self.processed_count += len(batch)
+
         self.processing_times.append(time.time() - start_time)
         if len(self.processing_times) > 100:
             self.processing_times = self.processing_times[-100:]
@@ -64,7 +87,7 @@ class StageWorker:
         metrics = self.get_metrics()
 
         self.logger.debug(
-            f"Worker {self.worker_id} processed split {split.split_id} ({len(batch)} records)",
+            f"Worker {self.worker_id} processed split {split.split_id}",
         )
 
         return {
@@ -72,22 +95,6 @@ class StageWorker:
             "output_ref": output_ref,
             "metrics": metrics,
         }
-
-    def _run_operator(self, batch: Batch) -> Optional[Batch]:
-        """Normalize operator outputs to a :class:`Batch`."""
-        try:
-            output = self.operator.process_batch(batch)
-        except Exception as exc:
-            self.logger.error(f"Operator error in stage {self.stage_id}: {exc}", exc_info=True)
-            raise
-
-        if output is None:
-            return None
-        if isinstance(output, Batch):
-            return output
-        if isinstance(output, (pa.Table, pa.RecordBatch)):
-            return batch.with_new_data(output)
-        raise TypeError(f"Unsupported operator output type {type(output)!r}")
 
     # ------------------------------------------------------------------
     # Metrics / lifecycle

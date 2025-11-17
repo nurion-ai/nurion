@@ -162,7 +162,15 @@ class LocalJobRunner:
             if failure_injector:
                 failure_injector(stage_id, batch, operator)
 
-            processed_output = operator.process_batch(batch)
+            # Create a dummy split for local runner
+            from solstice.core.models import Split, SplitStatus
+            dummy_split = Split(
+                split_id=f"{stage_id}_split_local",
+                stage_id=stage_id,
+                data_range={},
+                status=SplitStatus.PENDING,
+            )
+            processed_output = operator.process_split(dummy_split, batch)
 
             if isinstance(processed_output, Batch):
                 processed = processed_output

@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import pyarrow as pa
 
 from solstice.core.operator import Operator
-from solstice.core.models import Batch, Record
+from solstice.core.models import Batch, Record, Split
 
 
 class MapBatchesOperator(Operator):
@@ -20,8 +20,11 @@ class MapBatchesOperator(Operator):
         if not callable(self.map_batches_fn):
             raise ValueError("map_batches_fn must be a callable")
 
-    def process_batch(self, batch: Batch) -> Batch:
+    def process_split(self, split: Split, batch: Optional[Batch] = None) -> Optional[Batch]:
         """Apply map function to entire batch (optimized for Arrow data)."""
+        if batch is None:
+            raise ValueError("MapBatchesOperator requires batch")
+        
         try:
             # Apply transformation. The function can return a Batch, Arrow object,
             # or an iterable of Record/dict for compatibility.
@@ -31,31 +34,7 @@ class MapBatchesOperator(Operator):
                 return result
 
             if isinstance(result, (pa.Table, pa.RecordBatch)):
-                return batch.replace(result)
-
-            if isinstance(result, Iterable):
-                materialized = list(result)
-                if not materialized:
-                    return Batch.empty(
-                        batch_id=batch.batch_id,
-                        source_split=batch.split_id,
-                        schema=batch.schema,
-                    )
-                element = materialized[0]
-                if isinstance(element, (Record, dict)):
-                    return Batch.from_records(
-                        materialized,
-                        batch_id=batch.batch_id,
-                        source_split=batch.split_id,
-                        metadata=batch.metadata,
-                    )
-                if isinstance(element, pa.RecordBatch):
-                    return Batch.from_arrow(
-                        materialized,
-                        batch_id=batch.batch_id,
-                        source_split=batch.split_id,
-                        metadata=batch.metadata,
-                    )
+                return batch.with_new_data(result)
 
             raise TypeError(
                 "map_batches_fn must return one of Batch, pyarrow.Table, "
@@ -64,11 +43,7 @@ class MapBatchesOperator(Operator):
             )
 
         except Exception as e:
-            import logging
-
-            logger = logging.getLogger(self.__class__.__name__)
-            logger.error(f"Error mapping batch {batch.batch_id}: {e}")
-
+            self.logger.error(f"Error mapping batch {batch.batch_id}: {e}")
             if self.config.get("skip_on_error", False):
                 # Return empty batch on error
                 return Batch.empty(
@@ -82,6 +57,6 @@ class MapBatchesOperator(Operator):
     def process(self, record):
         """Not used - batch processing is more efficient"""
         raise NotImplementedError(
-            "MapBatchesOperator uses process_batch(). "
+            "MapBatchesOperator uses process_split(). "
             "Use MapOperator for record-by-record processing."
         )
