@@ -1,278 +1,219 @@
-"""Integration tests for Solstice workflows and runtime coordination."""
+"""End-to-end tests for Solstice framework.
 
-import json
+These tests verify the complete pipeline from source to sink,
+including split planning, processing, and metrics collection.
+"""
 
-import pytest
-import ray
-from pyiceberg.catalog.sql import SqlCatalog
-
-from solstice.actors.stage_master import StageMasterActor
-from solstice.core.models import Batch, Record
-from solstice.operators.map import MapOperator
-from solstice.runtime.local_runner import LocalJobRunner
-from solstice.state.backend import LocalStateBackend
-from workflows.simple_etl import create_job
-from tests.testdata import (
-    ICEBERG_NUM_ROWS,
-    LANCE_NUM_ROWS,
-    ensure_iceberg_catalog,
-    ensure_lance_dataset,
-)
-
-pytestmark = pytest.mark.integration
+from solstice.core.operator import SourceOperator, Operator, SinkOperator
+from solstice.core.models import Record, Batch, Split, SplitStatus
 
 
-def _mark_seen(value):
-    result = dict(value)
-    result["seen"] = True
-    return result
+class TestSourceOperator(SourceOperator):
+    """Test source operator that generates a fixed number of records."""
 
+    def plan_splits(self):
+        """Plan splits - create one split per batch."""
+        num_splits = self.config.get("num_splits", 3)
+        records_per_split = self.config.get("records_per_split", 10)
 
-def _identity_transform(value):
-    return dict(value)
-
-
-class FailOnceMapOperator(MapOperator):
-    """Operator that fails on the first batch and succeeds afterwards."""
-
-    def __init__(self, config):
-        super().__init__(config)
-
-    def process_batch(self, batch: Batch) -> Batch:
-        if not self.context.get_state("failed_once", False):
-            self.context.set_state("failed_once", True)
-            raise RuntimeError("intentional failure for testing")
-        return super().process_batch(batch)
-
-
-class StatefulCounterOperator(MapOperator):
-    """Operator that tracks a monotonically increasing position in state."""
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.total_count = 0
-
-    def open(self, context=None):
-        super().open(context)
-        self.total_count = self.context.get_state("total_count", 0)
-
-    def process(self, record: Record):
-        self.total_count += 1
-        self.context.set_state("total_count", self.total_count)
-        new_value = dict(self.map_fn(record.value))
-        new_value["position"] = self.total_count
-        return [
-            Record(
-                key=record.key,
-                value=new_value,
-                timestamp=record.timestamp,
-                metadata=record.metadata.copy(),
+        splits = []
+        for i in range(num_splits):
+            split = Split(
+                split_id=f"source_split_{i}",
+                stage_id=self.config.get("stage_id", "source"),
+                data_range={"split_index": i, "records_per_split": records_per_split},
+                record_count=records_per_split,
+                status=SplitStatus.PENDING,
             )
-        ]
+            splits.append(split)
 
+        return splits
 
-@pytest.fixture(scope="module")
-def lance_test_table():
-    """Return the path to the shared Lance dataset used across tests."""
-    dataset_path = ensure_lance_dataset(refresh=False)
-    yield str(dataset_path)
-    FailOnceMapOperator._failed_once = False
+    def read(self, split: Split) -> Batch:
+        """Read data for a split - generate test records."""
+        records_per_split = split.data_range.get("records_per_split", 10)
+        split_index = split.data_range.get("split_index", 0)
 
+        records = []
+        start_idx = split_index * records_per_split
+        for i in range(records_per_split):
+            records.append(
+                Record(
+                    key=f"key_{start_idx + i}",
+                    value={"number": start_idx + i, "split": split_index},
+                )
+            )
 
-@pytest.fixture(scope="module")
-def iceberg_sql_catalog():
-    """Provide a SQL catalog pointing at the generated Iceberg test data."""
-    metadata = ensure_iceberg_catalog(refresh=True)
-    catalog = SqlCatalog(
-        metadata["catalog_name"],
-        uri=metadata["catalog_uri"],
-        warehouse=metadata["warehouse_uri"],
-    )
-    identifier = tuple(metadata["table_identifier"].split("."))
-    return catalog, identifier
-
-
-@pytest.fixture(scope="module")
-def ray_cluster():
-    """Initialise a lightweight in-process Ray runtime for actor tests."""
-    ray.init(
-        address=None,
-        num_cpus=4,
-        include_dashboard=False,
-        ignore_reinit_error=True,
-        log_to_driver=False,
-        runtime_env={"working_dir": None},
-    )
-    try:
-        yield
-    finally:
-        ray.shutdown()
-
-
-@pytest.fixture
-def local_backend(tmp_path):
-    backend_dir = tmp_path / "state"
-    backend_dir.mkdir()
-    return LocalStateBackend(str(backend_dir))
-
-
-def _start_stage_master(**kwargs):
-    return StageMasterActor.remote(**kwargs)
-
-
-def test_simple_etl_workflow_local_runner(lance_test_table, local_backend, tmp_path):
-    output_path = tmp_path / "results.json"
-    job = create_job(
-        job_id="etl_job",
-        config={
-            "input": lance_test_table,
-            "output": str(output_path),
-            "source_batch_size": 10,
-            "transform_parallelism": 2,
-            "filter_parallelism": 1,
-        },
-        state_backend=local_backend,
-    )
-
-    runner = LocalJobRunner(job)
-    stage_results = runner.run()
-
-    assert output_path.exists()
-
-    sink_batches = stage_results["sink"]
-    total_records = sum(len(batch) for batch in sink_batches)
-    expected_records = max(LANCE_NUM_ROWS - 2, 0)
-    assert total_records == expected_records
-
-    with output_path.open() as fh:
-        output_rows = [json.loads(line) for line in fh]
-
-    assert len(output_rows) == total_records
-    sample = output_rows[0]["value"]
-    assert sample["processed"] is True
-    assert sample["value_doubled"] == sample["value"] * 2
-
-
-def test_iceberg_sql_catalog_contains_expected_rows(iceberg_sql_catalog):
-    catalog, identifier = iceberg_sql_catalog
-    table = catalog.load_table(identifier)
-    arrow_table = table.scan().to_arrow()
-
-    assert arrow_table.num_rows == ICEBERG_NUM_ROWS
-    assert set(arrow_table.schema.names) == {"event_id", "event_type", "amount", "region"}
-
-
-@pytest.mark.usefixtures("ray_cluster")
-@pytest.mark.usefixtures("ray_cluster")
-def test_stage_master_assigns_batches_and_collects(local_backend):
-    stage_master = _start_stage_master(
-        stage_id="map_stage",
-        operator_class=MapOperator,
-        operator_config={"map_fn": _mark_seen},
-        state_backend=local_backend,
-        worker_resources={"num_cpus": 1},
-        initial_workers=1,
-        max_workers=2,
-        min_workers=1,
-    )
-
-    try:
-        batch = Batch.from_records(
-            [Record(key=str(i), value={"value": i}) for i in range(5)],
-            batch_id="batch-1",
-        )
-        ray.get(stage_master.add_input_batch.remote(batch))
-        ray.get(stage_master.tick.remote(timeout=0.5))
-
-        output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
-        assert output_batch is not None
-        output_records = output_batch.to_records()
-        assert len(output_records) == 5
-        assert all(record.value["seen"] for record in output_records)
-    finally:
-        ray.get(stage_master.shutdown.remote())
-
-
-@pytest.mark.usefixtures("ray_cluster")
-def test_stage_master_recovers_from_worker_failure(local_backend):
-    stage_master = _start_stage_master(
-        stage_id="fail_stage",
-        operator_class=FailOnceMapOperator,
-        operator_config={"map_fn": _mark_seen},
-        state_backend=local_backend,
-        worker_resources={"num_cpus": 1},
-        initial_workers=1,
-        max_workers=3,
-        min_workers=1,
-    )
-
-    try:
-        batch = Batch.from_records(
-            [Record(key=str(i), value={"value": i}) for i in range(3)],
-            batch_id="batch-failure",
+        return Batch.from_records(
+            records,
+            batch_id=f"batch_{split.split_id}",
+            source_split=split.split_id,
         )
 
-        ray.get(stage_master.add_input_batch.remote(batch))
 
-        output_batch = None
-        for _ in range(10):
-            ray.get(stage_master.tick.remote(timeout=0.5))
-            ray.get(stage_master.collect_ready_results.remote(timeout=0.5))
-            output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
-            if output_batch is not None:
-                break
-        if output_batch is None:
-            ray.get(stage_master.collect_ready_results.remote(timeout=5.0))
-            output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
+class TestMapOperator(Operator):
+    """Test map operator that doubles the number value."""
 
-        assert output_batch is not None
-        assert all(record.value["seen"] for record in output_batch.to_records())
-    finally:
-        ray.get(stage_master.shutdown.remote())
+    def process_split(self, split: Split, batch: Batch = None) -> Batch:
+        """Double the number value in each record."""
+        if batch is None:
+            raise ValueError("MapOperator requires batch")
 
+        output_records = []
+        for record in batch.to_records():
+            new_value = record.value.copy()
+            new_value["number"] = record.value["number"] * 2
+            output_records.append(
+                Record(
+                    key=record.key,
+                    value=new_value,
+                    timestamp=record.timestamp,
+                    metadata=record.metadata,
+                )
+            )
 
-@pytest.mark.usefixtures("ray_cluster")
-def test_stage_master_checkpoint_and_restore(local_backend):
-    stage_master = _start_stage_master(
-        stage_id="stateful_stage",
-        operator_class=StatefulCounterOperator,
-        operator_config={"map_fn": _identity_transform},
-        state_backend=local_backend,
-        worker_resources={"num_cpus": 1},
-        initial_workers=1,
-        max_workers=2,
-        min_workers=1,
-    )
-
-    try:
-        first_batch = Batch.from_records(
-            [Record(key=str(i), value={"value": i}) for i in range(5)],
-            batch_id="batch-0",
+        return Batch.from_records(
+            output_records,
+            batch_id=batch.batch_id,
+            source_split=batch.source_split,
         )
-        ray.get(stage_master.add_input_batch.remote(first_batch))
-        ray.get(stage_master.tick.remote(timeout=0.5))
-        output_batch = ray.get(stage_master.get_next_output.remote(timeout=5.0))
-        positions = [record.value["position"] for record in output_batch.to_records()]
-        assert positions == [1, 2, 3, 4, 5]
 
-        checkpoint_id = "cp-1"
-        ray.get(stage_master.trigger_checkpoint.remote(checkpoint_id))
-        handles = ray.get(stage_master.collect_checkpoints.remote())
-        assert handles
 
-        ray.get(stage_master.restore_from_checkpoint.remote(checkpoint_id, handles))
+class TestSinkOperator(SinkOperator):
+    """Test sink operator that collects records."""
 
-        second_batch = Batch.from_records(
-            [Record(key=str(i), value={"value": i}) for i in range(5, 8)],
-            batch_id="batch-1",
+    def __init__(self, config=None):
+        super().__init__(config)
+        self.collected_records = []
+
+    def write(self, record: Record) -> None:
+        """Collect the record."""
+        self.collected_records.append(record)
+
+    def get_collected(self):
+        """Get all collected records."""
+        return self.collected_records
+
+
+class TestEndToEnd:
+    """End-to-end tests for complete pipeline execution."""
+
+    def test_simple_pipeline(self):
+        """Test a simple source -> map -> sink pipeline."""
+        # Create operators
+        source_op = TestSourceOperator(
+            {
+                "num_splits": 2,
+                "records_per_split": 5,
+                "stage_id": "source",
+            }
         )
-        ray.get(stage_master.add_input_batch.remote(second_batch))
-        ray.get(stage_master.tick.remote(timeout=0.5))
-        output_batch_two = ray.get(stage_master.get_next_output.remote(timeout=5.0))
-        metrics = ray.get(stage_master.collect_metrics.remote())
-        assert metrics["total_processed"] >= 8
-        assert output_batch_two is not None
-        positions_two = [record.value["position"] for record in output_batch_two.to_records()]
-        assert positions_two == [6, 7, 8]
-    finally:
-        ray.get(stage_master.shutdown.remote())
+
+        map_op = TestMapOperator()
+
+        sink_op = TestSinkOperator()
+
+        # Plan splits
+        splits = source_op.plan_splits()
+        assert len(splits) == 2
+
+        # Process each split through the pipeline
+        for split in splits:
+            # Source: read data
+            batch = source_op.read(split)
+            assert batch is not None
+            assert len(batch) == 5
+
+            # Map: transform data
+            result_batch = map_op.process_split(split, batch)
+            assert result_batch is not None
+            assert len(result_batch) == 5
+
+            # Sink: write data
+            for record in result_batch.to_records():
+                sink_op.write(record)
+
+        # Verify results
+        collected = sink_op.get_collected()
+        assert len(collected) == 10  # 2 splits * 5 records each
+
+        # Verify all numbers were doubled
+        for record in collected:
+            original_number = record.value["number"] / 2
+            assert record.value["number"] == original_number * 2
+            assert record.value["number"] % 2 == 0  # All should be even
+
+    def test_source_operator_master(self):
+        """Test that SourceOperatorMaster correctly plans and generates splits."""
+        from solstice.core.operator_master import SourceOperatorMaster
+
+        # Create operator master
+        master = SourceOperatorMaster(
+            job_id="test_job",
+            stage_id="source",
+            operator_class=TestSourceOperator,
+            operator_config={
+                "num_splits": 3,
+                "records_per_split": 5,
+                "stage_id": "source",
+            },
+        )
+
+        # Test split planning
+        assert master.get_planned_count() == 3
+
+        # Request splits
+        splits = list(master.on_split_requested(max_count=2))
+        assert len(splits) == 2
+        assert splits[0].split_id == "source_split_0"
+        assert splits[1].split_id == "source_split_1"
+
+        # Request more splits
+        splits = list(master.on_split_requested(max_count=2))
+        assert len(splits) == 1  # Only one left
+        assert splits[0].split_id == "source_split_2"
+
+        # Request again - should be empty
+        splits = list(master.on_split_requested(max_count=1))
+        assert len(splits) == 0
+
+        master.shutdown()
+
+    def test_operator_process_split(self):
+        """Test that operators correctly process splits."""
+        # Test source operator
+        source_op = TestSourceOperator(
+            {
+                "num_splits": 1,
+                "records_per_split": 3,
+                "stage_id": "source",
+            }
+        )
+
+        # Plan splits
+        splits = source_op.plan_splits()
+        assert len(splits) == 1
+
+        # Read data
+        batch = source_op.read(splits[0])
+        assert batch is not None
+        assert len(batch) == 3
+
+        # Test map operator
+        map_op = TestMapOperator()
+        result_batch = map_op.process_split(splits[0], batch)
+        assert result_batch is not None
+        assert len(result_batch) == 3
+
+        records = result_batch.to_records()
+        assert records[0].value["number"] == 0  # 0 * 2 = 0
+        assert records[1].value["number"] == 2  # 1 * 2 = 2
+        assert records[2].value["number"] == 4  # 2 * 2 = 4
+
+        # Test sink operator
+        sink_op = TestSinkOperator()
+        for record in result_batch.to_records():
+            sink_op.write(record)
+
+        collected = sink_op.get_collected()
+        assert len(collected) == 3

@@ -167,49 +167,28 @@ def main():
     job.add_stage(filter_stage, upstream_stages=["square"])
     job.add_stage(sink_stage, upstream_stages=["filter"])
 
-    # Initialize and start job
+    runner = job.create_ray_runner()
+
     print("Initializing job...")
-    job.initialize()
+    runner.initialize()
 
     print("Starting job execution...")
-    job.start()
+    runner.run()
 
-    print()
-    print("Job is running. Will process 50 numbers.")
-    print("Checkpoints will be created every 10 seconds or 20 records.")
-    print()
+    # Get status and metrics after completion
+    status = runner.get_status()
+    print(f"\nFinal job status: {status}")
 
-    # Monitor for a bit
-    time.sleep(15)
-
-    # Trigger a manual checkpoint
-    print("\nTriggering manual checkpoint...")
-    checkpoint_id = job.trigger_checkpoint()
-    print(f"Checkpoint created: {checkpoint_id}")
-
-    # Let it run a bit more
-    time.sleep(5)
-
-    # Get status
-    status = job.get_status()
-    print(f"\nJob status: {status}")
-
-    # List checkpoints
-    checkpoints = job.list_checkpoints()
-    print(f"\nAvailable checkpoints: {checkpoints}")
-
-    # Wait for completion
-    print("\nWaiting for job to complete...")
-    job.wait_for_completion(timeout=60)
-
-    # Stop job
-    job.stop()
+    metrics = runner.get_metrics()
+    if metrics:
+        print(f"\nFinal job metrics: {metrics}")
 
     print("\n" + "=" * 80)
     print("Quickstart example completed!")
     print("=" * 80)
 
     # Cleanup
+    runner.shutdown()
     ray.shutdown()
 
 

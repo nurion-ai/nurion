@@ -95,7 +95,7 @@ class TestStateManager:
         """Setup test state manager"""
         self.test_dir = tempfile.mkdtemp()
         backend = LocalStateBackend(self.test_dir)
-        self.manager = StateManager(stage_id="stage1", state_backend=backend, worker_id="worker1")
+        self.manager = StateManager(stage_id="stage1", state_backend=backend)
         self.manager.activate_split("stage1_split_0")
 
     def teardown_method(self):
@@ -148,7 +148,6 @@ class TestStateManager:
         handle = handles[0]
 
         assert handle.checkpoint_id == "ckpt_001"
-        assert handle.worker_id == "worker1"
         assert handle.stage_id == "stage1"
         assert handle.size_bytes > 0
 
@@ -222,7 +221,6 @@ class TestCheckpointCoordinator:
             state_path="stage1/ckpt/worker1.pkl",
             offset={"pos": 100},
             size_bytes=1024,
-            worker_id="worker1",
         )
 
         self.coordinator.add_checkpoint_handle(checkpoint_id, "stage1", handle)
@@ -230,7 +228,6 @@ class TestCheckpointCoordinator:
         checkpoint = self.coordinator.checkpoints[checkpoint_id]
         assert "stage1" in checkpoint.handles
         assert len(checkpoint.handles["stage1"]) == 1
-        assert checkpoint.handles["stage1"][0].worker_id == "worker1"
 
     def test_finalize_checkpoint(self):
         """Test finalizing a checkpoint (writes real manifest file)"""
@@ -246,7 +243,6 @@ class TestCheckpointCoordinator:
                 state_path=f"{stage_id}/ckpt/worker1.pkl",
                 offset={"pos": 100},
                 size_bytes=1024,
-                worker_id="worker1",
             )
             self.coordinator.add_checkpoint_handle(checkpoint_id, stage_id, handle)
 
@@ -305,7 +301,6 @@ class TestCheckpointCoordinator:
                 state_path=f"stage1/ckpt_{i}/worker1.pkl",
                 offset={"pos": i},
                 size_bytes=100,
-                worker_id="worker1",
             )
             self.coordinator.add_checkpoint_handle(ckpt_id, "stage1", handle)
             self.coordinator.finalize_checkpoint(ckpt_id, ["stage1"])

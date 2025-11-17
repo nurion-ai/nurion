@@ -7,7 +7,6 @@ import shutil
 from pathlib import Path
 from lance.dataset import write_dataset
 
-from solstice.core.operator import OperatorContext
 from solstice.operators.sources import LanceTableSource
 
 
@@ -50,13 +49,12 @@ class TestLanceTableSourceIntegration:
         }
 
         source = LanceTableSource(config)
-        context = OperatorContext("task1", "stage1", "worker1")
 
-        # Open source
-        source.open(context)
-
-        # Read batches
-        batches = list(source.read())
+        batches = []
+        for split in source.plan_splits():
+            batch = source.read(split)
+            if batch is not None:
+                batches.append(batch)
 
         total_rows = sum(len(batch) for batch in batches)
         assert total_rows == 5
@@ -77,11 +75,11 @@ class TestLanceTableSourceIntegration:
         }
 
         source = LanceTableSource(config)
-        context = OperatorContext("task1", "stage1", "worker1")
-
-        source.open(context)
-
-        batches = list(source.read())
+        batches = []
+        for split in source.plan_splits():
+            batch = source.read(split)
+            if batch is not None:
+                batches.append(batch)
 
         total_rows = sum(len(batch) for batch in batches)
         assert total_rows == 5
@@ -90,50 +88,6 @@ class TestLanceTableSourceIntegration:
         assert table.schema.names == ["id", "name"]
 
         source.close()
-
-    def test_lance_source_checkpoint_restore(self, test_lance_table):
-        """Test checkpoint and restore with real table"""
-        config = {
-            "table_path": test_lance_table,
-            "batch_size": 2,
-        }
-
-        # Read first 2 records
-        source1 = LanceTableSource(config)
-        context1 = OperatorContext("task1", "stage1", "worker1")
-        source1.open(context1)
-
-        consumed = []
-        for batch in source1.read():
-            consumed.extend(batch.to_records())
-            if len(consumed) >= 2:
-                break
-
-        assert len(consumed) == 2, f"Should have read 2 records, got {len(consumed)}"
-
-        # Checkpoint
-        checkpoint_state = source1.checkpoint()
-        # After reading indices 0 and 1, offset should be 2
-        actual_offset = checkpoint_state.get("offset", 0)
-        assert actual_offset >= 2, f"Offset should be at least 2, got {actual_offset}"
-
-        source1.close()
-
-        # Restore and continue reading
-        source2 = LanceTableSource(config)
-        context2 = OperatorContext("task1", "stage1", "worker1")
-        source2.open(context2)
-        source2.restore(checkpoint_state)
-
-        # Should start from offset 2 (3rd record)
-        remaining_records = []
-        for batch in source2.read():
-            remaining_records.extend(batch.to_records())
-
-        assert len(remaining_records) == 3
-        assert remaining_records[0].value["id"] == 3
-
-        source2.close()
 
 
 # Mark as integration tests

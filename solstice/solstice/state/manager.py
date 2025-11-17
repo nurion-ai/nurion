@@ -16,13 +16,10 @@ class StateManager:
         self,
         stage_id: str,
         state_backend: StateBackend,
-        *,
-        worker_id: Optional[str] = None,
     ):
         """Create a state manager bound to a specific stage."""
         self.stage_id = stage_id
         self.state_backend = state_backend
-        self.worker_id = worker_id
         self.logger = logging.getLogger(self.__class__.__name__)
 
         # Split-scoped state
@@ -127,8 +124,6 @@ class StateManager:
     def checkpoint(
         self,
         checkpoint_id: str,
-        *,
-        worker_id: Optional[str] = None,
     ) -> List[CheckpointHandle]:
         """Persist state for all known splits to the backend."""
         handles: List[CheckpointHandle] = []
@@ -136,7 +131,6 @@ class StateManager:
             handle = self._checkpoint_split(
                 split_id,
                 checkpoint_id,
-                worker_id=worker_id,
             )
             if handle:
                 handles.append(handle)
@@ -146,8 +140,6 @@ class StateManager:
         self,
         split_id: str,
         checkpoint_id: str,
-        *,
-        worker_id: Optional[str] = None,
     ) -> Optional[CheckpointHandle]:
         operator_state = copy.deepcopy(self._split_operator_state.get(split_id, {}))
         keyed_state = copy.deepcopy(self._split_keyed_state.get(split_id, {}))
@@ -189,7 +181,6 @@ class StateManager:
             offset=offsets,
             size_bytes=size_bytes,
             metadata=metadata,
-            worker_id=worker_id or self.worker_id,
         )
 
         self.logger.info(

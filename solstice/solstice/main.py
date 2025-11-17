@@ -84,7 +84,6 @@ def parse_kwargs(ctx, param, value):
     "--workflow", required=True, type=str, help="Workflow module (e.g., workflows.simple_etl)"
 )
 @click.option("--job-id", required=False, type=str, help="Job ID (auto-generated if not provided)")
-@click.option("--restore-from", required=False, type=str, help="Checkpoint ID to restore from")
 @click.option("--log-level", default="INFO", type=str, help="Logging level")
 @click.option("--checkpoint-interval", default=300, type=int, help="Checkpoint interval in seconds")
 @click.option("--checkpoint-records", default=None, type=int, help="Checkpoint interval in records")
@@ -100,21 +99,16 @@ def parse_kwargs(ctx, param, value):
     type=str,
     help="State backend path (local) or bucket (s3)",
 )
-@click.option(
-    "--state-prefix", default="checkpoints", type=str, help="State backend prefix (for s3)"
-)
 @click.pass_context
 def main(
     ctx,
     workflow: str,
     job_id: Optional[str],
-    restore_from: Optional[str],
     log_level: str,
     checkpoint_interval: int,
     checkpoint_records: Optional[int],
     state_backend: str,
     state_path: str,
-    state_prefix: str,
 ):
     """
     Main entry point for running Solstice Streaming jobs
@@ -176,15 +170,10 @@ def main(
 
     logger.info(f"Job ID: {job_id}")
 
-    logger.info("Starting local Ray cluster")
-    ray.init(ignore_reinit_error=True)
-
-    logger.info(f"Ray cluster info: {ray.cluster_resources()}")
-
     try:
         # Create state backend
         if state_backend == "local":
-            backend = create_state_backend("local", base_path=state_path)
+            backend = create_state_backend("local", local_path=state_path)
         else:  # s3
             backend = create_state_backend("s3", s3_path=state_path)
 
@@ -211,56 +200,51 @@ def main(
             state_backend=backend,
         )
 
-        # Initialize job
-        logger.info("Initializing job...")
-        job.initialize()
+        runner = job.create_ray_runner()
+        runner.initialize()
 
-        # Restore from checkpoint if requested
-        if restore_from:
-            logger.info(f"Restoring from checkpoint: {restore_from}")
-            success = job.restore_from_checkpoint(restore_from)
-            if not success:
-                logger.error("Failed to restore from checkpoint")
-                sys.exit(1)
+        logger.info("Ray cluster info: %s", ray.cluster_resources())
 
-        # Start job
-        logger.info("Starting job execution...")
-        job.start()
-
-        # Monitor job
-        logger.info("Job is running. Press Ctrl+C to stop.")
-        logger.info("=" * 80)
+        available_checkpoints = runner.list_checkpoints()
+        if available_checkpoints:
+            latest_checkpoint = available_checkpoints[-1]
+            logger.info("Restoring from latest checkpoint: %s", latest_checkpoint)
+            restored = runner.restore_from_checkpoint(latest_checkpoint)
+            if not restored:
+                logger.warning("Checkpoint restore failed; continuing with fresh state.")
 
         # Setup signal handler for graceful shutdown
         def signal_handler(signum, frame):
             logger.info("\nReceived interrupt signal. Shutting down...")
-            job.stop()
+            runner.stop()
             logger.info("Job stopped successfully")
             sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        # Monitor loop
-        while job.is_running:
-            time.sleep(10)
+        logger.info("Starting job execution...")
+        logger.info("Job is running. Press Ctrl+C to stop.")
+        logger.info("=" * 80)
 
-            # Print status
-            status = job.get_status()
-            logger.info(f"Job Status: {status}")
-
-            # Print metrics
-            metrics = job.get_metrics()
-            if metrics:
-                logger.info(f"Job Metrics: {metrics}")
+        runner.run()
 
         logger.info("Job completed successfully")
+
+        status = runner.get_status()
+        logger.info("Final job status: %s", status)
+
+        metrics = runner.get_metrics()
+        if metrics:
+            logger.info("Final job metrics: %s", metrics)
 
     except Exception as e:
         logger.error(f"Job failed with error: {e}", exc_info=True)
         sys.exit(1)
 
     finally:
+        if "runner" in locals():
+            runner.shutdown()
         logger.info("Shutting down Ray")
         ray.shutdown()
 

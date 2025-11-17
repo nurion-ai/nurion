@@ -102,7 +102,6 @@ class GlobalStateMaster:
                             size_bytes=handle.get("size_bytes", 0),
                             timestamp=handle.get("timestamp", time.time()),
                             metadata=handle.get("metadata", {}),
-                            worker_id=handle.get("worker_id"),
                         )
                         self.checkpoint_coordinator.add_checkpoint_handle(
                             checkpoint_id=checkpoint_id,
