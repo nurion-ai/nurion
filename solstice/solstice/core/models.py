@@ -128,6 +128,51 @@ class WorkerMetrics:
     memory_usage: float = 0.0
     timestamp: float = field(default_factory=time.time)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "worker_id": self.worker_id,
+            "stage_id": self.stage_id,
+            "processing_rate": self.processing_rate,
+            "backlog_size": self.backlog_size,
+            "cpu_usage": self.cpu_usage,
+            "memory_usage": self.memory_usage,
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class StageMetrics:
+    """Metrics reported by a stage master"""
+
+    stage_id: str
+    worker_count: int
+    input_records: int
+    output_records: int
+    total_processing_rate: float  # records/sec
+    pending_splits: int
+    inflight_results: int
+    output_buffer_size: int
+    backpressure_active: bool
+    uptime_secs: float
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "stage_id": self.stage_id,
+            "worker_count": self.worker_count,
+            "input_records": self.input_records,
+            "output_records": self.output_records,
+            "total_processing_rate": self.total_processing_rate,
+            "pending_splits": self.pending_splits,
+            "inflight_results": self.inflight_results,
+            "output_buffer_size": self.output_buffer_size,
+            "backpressure_active": self.backpressure_active,
+            "uptime_secs": self.uptime_secs,
+            "timestamp": self.timestamp,
+        }
+
 
 @dataclass
 class CheckpointHandle:

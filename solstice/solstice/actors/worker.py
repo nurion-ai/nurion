@@ -99,7 +99,7 @@ class StageWorker:
     # ------------------------------------------------------------------
     # Metrics / lifecycle
     # ------------------------------------------------------------------
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> WorkerMetrics:
         """Return current worker metrics."""
         if self.processing_times:
             avg_time = sum(self.processing_times) / len(self.processing_times)
@@ -107,22 +107,12 @@ class StageWorker:
         else:
             processing_rate = 0.0
 
-        metrics = WorkerMetrics(
+        return WorkerMetrics(
             worker_id=self.worker_id,
             stage_id=self.stage_id,
             processing_rate=processing_rate,
             backlog_size=0,
         )
-
-        return {
-            "worker_id": metrics.worker_id,
-            "stage_id": metrics.stage_id,
-            "processing_rate": metrics.processing_rate,
-            "backlog_size": metrics.backlog_size,
-            "cpu_usage": metrics.cpu_usage,
-            "memory_usage": metrics.memory_usage,
-            "timestamp": metrics.timestamp,
-        }
 
     def health_check(self) -> bool:
         """Ray health check hook."""

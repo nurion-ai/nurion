@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pyarrow as pa
 from lance.dataset import LanceDataset
 
-from solstice.core.models import Batch
+from solstice.core.models import Batch, Split, SplitStatus
 from solstice.operators.sources.base import ArrowStreamingSource
 
 
@@ -43,14 +43,55 @@ class LanceTableSource(ArrowStreamingSource):
 
         self.scanner = self.table.scanner(**scanner_kwargs)
 
-    def read(self) -> Iterable[Batch]:
-        if not self.scanner:
-            raise RuntimeError("Source not opened. Call open() first.")
+    def plan_splits(self) -> List[Split]:
+        if not self.table_path:
+            raise ValueError("table_path is required for LanceTableSource")
 
-        metadata = {"table": self.table_path}
-        for record_batch in self.scanner.to_batches():
-            table = pa.Table.from_batches([record_batch])
-            yield from self._emit_table(table, metadata=metadata)
+        stage_id = (self.config or {}).get("stage_id", "lance_source")
+        data_range = {
+            "table_path": self.table_path,
+            "columns": list(self.columns) if self.columns else None,
+            "filter": self.filter_expr,
+        }
+        return [
+            Split(
+                split_id=f"{stage_id}_split_0",
+                stage_id=stage_id,
+                data_range=data_range,
+                metadata={"table_path": self.table_path},
+                status=SplitStatus.PENDING,
+            )
+        ]
+
+    def read(self, split: Split) -> Optional[Batch]:
+        table_path = split.data_range.get("table_path") or self.table_path
+        if not table_path:
+            raise ValueError("Split missing table_path for LanceTableSource")
+
+        dataset = LanceDataset(table_path)
+        scanner_kwargs: Dict[str, Any] = {}
+
+        columns = split.data_range.get("columns") or self.columns
+        if columns:
+            scanner_kwargs["columns"] = list(columns)
+
+        filter_expr = split.data_range.get("filter") or self.filter_expr
+        if filter_expr:
+            scanner_kwargs["filter"] = filter_expr
+
+        table = dataset.scanner(**scanner_kwargs).to_table()
+        if table.num_rows == 0:
+            return None
+
+        metadata = dict(split.metadata)
+        metadata.update({"table_path": table_path, "source": "LanceTableSource"})
+
+        return Batch.from_arrow(
+            table,
+            batch_id=f"{split.stage_id}_batch_{split.split_id}",
+            source_split=split.split_id,
+            metadata=metadata,
+        )
 
     def close(self) -> None:
         self.scanner = None

@@ -17,6 +17,7 @@ from solstice.core.models import (
     Split,
     SplitStatus,
     WorkerMetrics,
+    StageMetrics,
 )
 from solstice.state.backend import StateBackend
 from solstice.state.manager import StateManager
@@ -307,8 +308,9 @@ class StageMasterActor:
         if not split:
             return
 
-        metrics_payload = result.get("metrics")
-        self.worker_metrics[result["worker_id"]] = WorkerMetrics(**metrics_payload)
+        metrics = result.get("metrics")
+        if metrics and isinstance(metrics, WorkerMetrics):
+            self.worker_metrics[result["worker_id"]] = metrics
 
         output_ref = result.get("output_ref")
         split.status = SplitStatus.COMPLETED
@@ -418,7 +420,7 @@ class StageMasterActor:
             "output": len(self.output_buffer),
         }
 
-    def collect_metrics(self) -> Dict[str, Any]:
+    def collect_metrics(self) -> StageMetrics:
         metric_refs = []
         for worker_id, worker_ref in self.workers.items():
             metric_refs.append((worker_id, worker_ref.get_metrics.remote()))
@@ -426,24 +428,24 @@ class StageMasterActor:
         for worker_id, ref in metric_refs:
             try:
                 metrics = ray.get(ref, timeout=5)
-                self.worker_metrics[worker_id] = WorkerMetrics(**metrics)
+                self.worker_metrics[worker_id] = metrics
             except Exception:
                 continue
 
         total_rate = sum(metric.processing_rate for metric in self.worker_metrics.values())
 
-        return {
-            "stage_id": self.stage_id,
-            "worker_count": len(self.workers),
-            "input_records": self.input_records,
-            "output_records": self.output_records,
-            "total_processing_rate": total_rate,
-            "pending_splits": len(self.pending_splits),
-            "inflight_results": len(self._pending_results),
-            "output_buffer_size": len(self.output_buffer),
-            "backpressure_active": self.backpressure_active,
-            "uptime_secs": time.time() - self.start_time,
-        }
+        return StageMetrics(
+            stage_id=self.stage_id,
+            worker_count=len(self.workers),
+            input_records=self.input_records,
+            output_records=self.output_records,
+            total_processing_rate=total_rate,
+            pending_splits=len(self.pending_splits),
+            inflight_results=len(self._pending_results),
+            output_buffer_size=len(self.output_buffer),
+            backpressure_active=self.backpressure_active,
+            uptime_secs=time.time() - self.start_time,
+        )
 
     def get_backpressure_signal(self) -> Optional[BackpressureSignal]:
         if not self.backpressure_active:

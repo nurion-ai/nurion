@@ -50,8 +50,11 @@ class TestLanceTableSourceIntegration:
 
         source = LanceTableSource(config)
 
-        # Read batches
-        batches = list(source.read())
+        batches = []
+        for split in source.plan_splits():
+            batch = source.read(split)
+            if batch is not None:
+                batches.append(batch)
 
         total_rows = sum(len(batch) for batch in batches)
         assert total_rows == 5
@@ -72,7 +75,11 @@ class TestLanceTableSourceIntegration:
         }
 
         source = LanceTableSource(config)
-        batches = list(source.read())
+        batches = []
+        for split in source.plan_splits():
+            batch = source.read(split)
+            if batch is not None:
+                batches.append(batch)
 
         total_rows = sum(len(batch) for batch in batches)
         assert total_rows == 5

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Iterator, Optional, Union
+from typing import Any, Dict, Iterable, Iterator, Optional, Union, List
 
 import pyarrow as pa
 
-from solstice.core.models import Batch
+from solstice.core.models import Batch, Split, SplitStatus
 from solstice.core.operator import SourceOperator
 
 
@@ -33,6 +33,26 @@ class ArrowStreamingSource(SourceOperator):
             self._emitted_offset = 0
         self._batch_counter = 0
         self._split_counter = 0
+
+    def plan_splits(self) -> List[Split]:
+        """Default split planning for Arrow-based sources.
+
+        By default we create a single split that captures the operator configuration.
+        Subclasses can override this to produce more fine-grained work units.
+        """
+        config_copy = dict(self.config) if isinstance(self.config, dict) else {}
+        stage_id = config_copy.get("stage_id", "source")
+        split_id = f"{self.__class__.__name__.lower()}_planned_split_0"
+
+        return [
+            Split(
+                split_id=split_id,
+                stage_id=stage_id,
+                data_range={"config": config_copy},
+                metadata={"source": self.__class__.__name__},
+                status=SplitStatus.PENDING,
+            )
+        ]
 
     def restore(self, state: Dict[str, Any]) -> None:
         super().restore(state)
