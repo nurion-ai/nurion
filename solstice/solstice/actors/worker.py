@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
-import pyarrow as pa
 import ray  # type: ignore[import]
 
-from solstice.core.models import Batch, Record, Split, WorkerMetrics
+from solstice.core.models import Batch, Split, WorkerMetrics
 from solstice.core.operator import Operator
 
 
 @ray.remote
 class StageWorker:
     """Ray actor that executes an operator over batches without persisting state.
-    
+
     StageWorker is completely stateless - it only maintains ephemeral in-memory state
     during batch processing. All persistent state management is handled by StageMaster.
     """
@@ -45,16 +44,16 @@ class StageWorker:
     # Execution
     # ------------------------------------------------------------------
     def process_split(
-        self, 
-        split: Split, 
+        self,
+        split: Split,
         payload_ref: Optional[ray.ObjectRef] = None,
     ) -> Dict[str, Any]:
         """Process a split with the operator.
-        
+
         Args:
             split: The split metadata
             payload_ref: Optional batch payload reference (None for source operators)
-        
+
         Returns:
             Dictionary with split_id, output_ref (for downstream), and metrics
         """

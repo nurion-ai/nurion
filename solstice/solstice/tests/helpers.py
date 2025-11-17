@@ -15,4 +15,3 @@ def mark_seen(value: Dict[str, Any]) -> Dict[str, Any]:
 def identity_transform(value: Dict[str, Any]) -> Dict[str, Any]:
     """Return a shallow copy of ``value``."""
     return dict(value)
-

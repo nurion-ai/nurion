@@ -1,7 +1,7 @@
 """Job definition and DAG specification."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from solstice.core.stage import Stage
 from solstice.state.backend import LocalStateBackend, StateBackend

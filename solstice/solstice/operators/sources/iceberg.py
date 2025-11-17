@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 from pyiceberg.catalog import load_catalog
 
 from solstice.core.models import Batch, Split, SplitStatus

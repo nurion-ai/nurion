@@ -243,7 +243,7 @@ def main(
         sys.exit(1)
 
     finally:
-        if 'runner' in locals():
+        if "runner" in locals():
             runner.shutdown()
         logger.info("Shutting down Ray")
         ray.shutdown()

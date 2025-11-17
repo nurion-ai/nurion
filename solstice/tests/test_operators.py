@@ -19,7 +19,9 @@ class TestMapOperator:
         operator = MapOperator({"map_fn": double_value})
 
         batch = Batch.from_records([Record(key="1", value={"value": 5})], batch_id="test")
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         assert result_batch is not None
@@ -36,7 +38,9 @@ class TestMapOperator:
         operator = MapOperator({"map_fn": failing_fn, "skip_on_error": True})
 
         batch = Batch.from_records([Record(key="1", value={"data": "test"})], batch_id="test")
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         assert result_batch is None  # Empty result returns None
@@ -52,7 +56,9 @@ class TestMapOperator:
         operator = MapOperator({"map_fn": transform})
 
         batch = Batch.from_records([Record(key="1", value={"a": 3, "b": 4})], batch_id="test")
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         assert result_batch is not None
@@ -75,8 +81,12 @@ class TestFlatMapOperator:
 
         operator = FlatMapOperator({"flatmap_fn": split_fn})
 
-        batch = Batch.from_records([Record(key="1", value={"part1": "A", "part2": "B"})], batch_id="test")
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        batch = Batch.from_records(
+            [Record(key="1", value={"part1": "A", "part2": "B"})], batch_id="test"
+        )
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         assert result_batch is not None
@@ -94,7 +104,9 @@ class TestFlatMapOperator:
         operator = FlatMapOperator({"flatmap_fn": empty_fn})
 
         batch = Batch.from_records([Record(key="1", value={"data": "test"})], batch_id="test")
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         assert result_batch is None  # Empty result returns None
@@ -107,22 +119,30 @@ class TestFlatMapOperator:
             return [{"index": i, "data": record["data"]} for i in range(count)]
 
         operator = FlatMapOperator({"flatmap_fn": split_by_count})
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
 
         # 1 output
-        batch1 = Batch.from_records([Record(key="1", value={"count": 1, "data": "A"})], batch_id="test1")
+        batch1 = Batch.from_records(
+            [Record(key="1", value={"count": 1, "data": "A"})], batch_id="test1"
+        )
         result1 = operator.process_split(split, batch1)
         assert result1 is not None
         assert len(result1.to_records()) == 1
 
         # 3 outputs
-        batch2 = Batch.from_records([Record(key="2", value={"count": 3, "data": "B"})], batch_id="test2")
+        batch2 = Batch.from_records(
+            [Record(key="2", value={"count": 3, "data": "B"})], batch_id="test2"
+        )
         result2 = operator.process_split(split, batch2)
         assert result2 is not None
         assert len(result2.to_records()) == 3
 
         # 0 outputs
-        batch3 = Batch.from_records([Record(key="3", value={"count": 0, "data": "C"})], batch_id="test3")
+        batch3 = Batch.from_records(
+            [Record(key="3", value={"count": 0, "data": "C"})], batch_id="test3"
+        )
         result3 = operator.process_split(split, batch3)
         assert result3 is None  # Empty result returns None
 
@@ -154,7 +174,9 @@ class TestMapBatchesOperator:
             batch_id="batch1",
         )
 
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         result_records = result_batch.to_records()
@@ -172,7 +194,9 @@ class TestMapBatchesOperator:
         operator = MapBatchesOperator({"map_batches_fn": failing_fn, "skip_on_error": True})
 
         batch = Batch.from_records([Record(key="1", value={"data": "test"})], batch_id="batch1")
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
 
         result_batch = operator.process_split(split, batch)
         assert result_batch is not None
@@ -188,7 +212,9 @@ class TestMapBatchesOperator:
             avg = total / len(records) if records else 0
             return Batch.from_records(
                 [
-                    Record(key="aggregated", value={"total": total, "count": len(records), "avg": avg})
+                    Record(
+                        key="aggregated", value={"total": total, "count": len(records), "avg": avg}
+                    )
                 ],
                 batch_id=batch.batch_id,
                 source_split=batch.source_split,
@@ -205,7 +231,9 @@ class TestMapBatchesOperator:
             batch_id="batch1",
         )
 
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
         result_batch = operator.process_split(split, batch)
 
         assert result_batch is not None
@@ -226,7 +254,9 @@ class TestFilterOperator:
             return record["value"] % 2 == 0
 
         operator = FilterOperator({"filter_fn": is_even})
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
 
         # Test even number (should pass)
         batch1 = Batch.from_records([Record(key="1", value={"value": 4})], batch_id="test1")
@@ -246,21 +276,28 @@ class TestFilterOperator:
             return record.get("score", 0) > 0.5 and record.get("count", 0) > 10
 
         operator = FilterOperator({"filter_fn": is_valid})
-        split = Split(split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING)
+        split = Split(
+            split_id="test_split", stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
+        )
 
         # Should pass
-        batch1 = Batch.from_records([Record(key="1", value={"score": 0.8, "count": 20})], batch_id="test1")
+        batch1 = Batch.from_records(
+            [Record(key="1", value={"score": 0.8, "count": 20})], batch_id="test1"
+        )
         result1 = operator.process_split(split, batch1)
         assert result1 is not None
         assert len(result1.to_records()) == 1
 
         # Should fail (low score)
-        batch2 = Batch.from_records([Record(key="2", value={"score": 0.3, "count": 20})], batch_id="test2")
+        batch2 = Batch.from_records(
+            [Record(key="2", value={"score": 0.3, "count": 20})], batch_id="test2"
+        )
         result2 = operator.process_split(split, batch2)
         assert result2 is None  # Empty result returns None
 
         # Should fail (low count)
-        batch3 = Batch.from_records([Record(key="3", value={"score": 0.8, "count": 5})], batch_id="test3")
+        batch3 = Batch.from_records(
+            [Record(key="3", value={"score": 0.8, "count": 5})], batch_id="test3"
+        )
         result3 = operator.process_split(split, batch3)
         assert result3 is None  # Empty result returns None
-

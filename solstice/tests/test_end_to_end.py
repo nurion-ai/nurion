@@ -15,7 +15,7 @@ class TestSourceOperator(SourceOperator):
         """Plan splits - create one split per batch."""
         num_splits = self.config.get("num_splits", 3)
         records_per_split = self.config.get("records_per_split", 10)
-        
+
         splits = []
         for i in range(num_splits):
             split = Split(
@@ -26,14 +26,14 @@ class TestSourceOperator(SourceOperator):
                 status=SplitStatus.PENDING,
             )
             splits.append(split)
-        
+
         return splits
 
     def read(self, split: Split) -> Batch:
         """Read data for a split - generate test records."""
         records_per_split = split.data_range.get("records_per_split", 10)
         split_index = split.data_range.get("split_index", 0)
-        
+
         records = []
         start_idx = split_index * records_per_split
         for i in range(records_per_split):
@@ -43,7 +43,7 @@ class TestSourceOperator(SourceOperator):
                     value={"number": start_idx + i, "split": split_index},
                 )
             )
-        
+
         return Batch.from_records(
             records,
             batch_id=f"batch_{split.split_id}",
@@ -58,7 +58,7 @@ class TestMapOperator(Operator):
         """Double the number value in each record."""
         if batch is None:
             raise ValueError("MapOperator requires batch")
-        
+
         output_records = []
         for record in batch.to_records():
             new_value = record.value.copy()
@@ -71,7 +71,7 @@ class TestMapOperator(Operator):
                     metadata=record.metadata,
                 )
             )
-        
+
         return Batch.from_records(
             output_records,
             batch_id=batch.batch_id,
@@ -101,14 +101,16 @@ class TestEndToEnd:
     def test_simple_pipeline(self):
         """Test a simple source -> map -> sink pipeline."""
         # Create operators
-        source_op = TestSourceOperator({
-            "num_splits": 2,
-            "records_per_split": 5,
-            "stage_id": "source",
-        })
-        
+        source_op = TestSourceOperator(
+            {
+                "num_splits": 2,
+                "records_per_split": 5,
+                "stage_id": "source",
+            }
+        )
+
         map_op = TestMapOperator()
-        
+
         sink_op = TestSinkOperator()
 
         # Plan splits
@@ -180,11 +182,13 @@ class TestEndToEnd:
     def test_operator_process_split(self):
         """Test that operators correctly process splits."""
         # Test source operator
-        source_op = TestSourceOperator({
-            "num_splits": 1,
-            "records_per_split": 3,
-            "stage_id": "source",
-        })
+        source_op = TestSourceOperator(
+            {
+                "num_splits": 1,
+                "records_per_split": 3,
+                "stage_id": "source",
+            }
+        )
 
         # Plan splits
         splits = source_op.plan_splits()
@@ -213,4 +217,3 @@ class TestEndToEnd:
 
         collected = sink_op.get_collected()
         assert len(collected) == 3
-

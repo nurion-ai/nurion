@@ -1,12 +1,11 @@
 """Batch processing operators"""
 
-from collections.abc import Iterable
 from typing import Any, Dict, Optional
 
 import pyarrow as pa
 
 from solstice.core.operator import Operator
-from solstice.core.models import Batch, Record, Split
+from solstice.core.models import Batch, Split
 
 
 class MapBatchesOperator(Operator):
@@ -24,7 +23,7 @@ class MapBatchesOperator(Operator):
         """Apply map function to entire batch (optimized for Arrow data)."""
         if batch is None:
             raise ValueError("MapBatchesOperator requires batch")
-        
+
         try:
             # Apply transformation. The function can return a Batch, Arrow object,
             # or an iterable of Record/dict for compatibility.

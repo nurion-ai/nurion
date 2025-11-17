@@ -6,14 +6,13 @@ import logging
 import time
 import uuid
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional
 
 import ray  # type: ignore[import]
 import ray.actor  # type: ignore[import]
 
 from solstice.core.models import (
     BackpressureSignal,
-    Batch,
     Split,
     SplitStatus,
     WorkerMetrics,
@@ -24,6 +23,7 @@ from solstice.state.manager import StateManager
 
 EPHEMERAL_METADATA_KEYS = {"batch_id", "worker_id", "task_id"}
 BACKPRESSURE_QUEUE_RATIO_THRESHOLD = 0.7
+
 
 @ray.remote(max_concurrency=4)
 class StageMasterActor:
@@ -70,10 +70,8 @@ class StageMasterActor:
         )
         if operator_master is not None:
             self.operator_master = operator_master
-            self.logger.info(
-                "Created operator master for stage %s", self.stage_id
-            )
-        
+            self.logger.info("Created operator master for stage %s", self.stage_id)
+
         del temp_operator
 
         # State & split tracking
@@ -185,14 +183,16 @@ class StageMasterActor:
         if payload_ref is not None:
             self.split_payloads[split.split_id] = payload_ref
         self.pending_splits.append(split)
-        
+
         # Activate split state (for checkpointing)
         self.state_manager.activate_split(split.split_id, metadata=split.metadata)
 
         if len(self.pending_splits) >= self.max_queue_size and not self.backpressure_active:
             self.backpressure_active = True
             self.logger.warning(
-                "Backpressure activated for stage %s (queue=%d)", self.stage_id, len(self.pending_splits)
+                "Backpressure activated for stage %s (queue=%d)",
+                self.stage_id,
+                len(self.pending_splits),
             )
 
     def _sanitize_metadata(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -214,7 +214,7 @@ class StageMasterActor:
                 # Request splits from operator master if available
                 if self.operator_master is not None:
                     self._request_splits_from_master()
-                
+
                 self._schedule_pending_splits()
                 self._drain_completed_results(timeout=0.0)
                 time.sleep(poll_interval)
@@ -228,16 +228,16 @@ class StageMasterActor:
         """Request splits from operator master."""
         if self.operator_master is None:
             return
-        
+
         # Check if we have capacity
         available_capacity = self.max_queue_size - len(self.pending_splits)
         if available_capacity <= 0:
             return
-        
+
         splits = self.operator_master.on_split_requested(max_count=available_capacity)
         for split in splits:
             self.enqueue_split(split, payload_ref=None)
-    
+
     def _schedule_pending_splits(self) -> None:
         while self.pending_splits:
             worker_id = self._select_worker()
@@ -246,12 +246,12 @@ class StageMasterActor:
             split = self.pending_splits.popleft()
             split.status = SplitStatus.RUNNING
             worker_ref = self.workers[worker_id]
-            
+
             # For source stages, no payload_ref needed
             payload_ref = self.split_payloads.get(split.split_id)
-            
+
             result_ref = worker_ref.process_split.remote(
-                split, 
+                split,
                 payload_ref=payload_ref,
             )
             self._pending_results[result_ref] = split.split_id
@@ -314,18 +314,18 @@ class StageMasterActor:
 
         output_ref = result.get("output_ref")
         split.status = SplitStatus.COMPLETED
-        
+
         self.input_records += split.record_count
         if output_ref is not None:
             output_batch = ray.get(output_ref, timeout=1)
             if output_batch is not None:
                 self.output_records += len(output_batch)
-        
+
         # Clear split state after processing
         self.state_manager.clear_split(split_id)
 
         self.operator_master.on_split_completed(split_id)
-        
+
         if output_ref and self.downstream_stage_refs:
             self._fan_out_downstream(split, output_ref)
 
@@ -468,14 +468,14 @@ class StageMasterActor:
     def shutdown(self) -> None:
         self.logger.info("Shutting down stage %s", self.stage_id)
         self.stop()
-        
+
         # Shutdown operator master if exists
         if self.operator_master is not None:
             try:
                 self.operator_master.shutdown()
             except Exception as exc:
                 self.logger.warning("Error shutting down operator master: %s", exc)
-        
+
         for worker_id in list(self.workers.keys()):
             self._remove_worker(worker_id)
         self.pending_splits.clear()

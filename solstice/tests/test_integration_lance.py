@@ -90,6 +90,5 @@ class TestLanceTableSourceIntegration:
         source.close()
 
 
-
 # Mark as integration tests
 pytestmark = pytest.mark.integration

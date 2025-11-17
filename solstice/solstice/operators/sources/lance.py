@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-import pyarrow as pa
 from lance.dataset import LanceDataset
 
 from solstice.core.models import Batch, Split, SplitStatus

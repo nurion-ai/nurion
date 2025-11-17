@@ -164,6 +164,7 @@ class LocalJobRunner:
 
             # Create a dummy split for local runner
             from solstice.core.models import Split, SplitStatus
+
             dummy_split = Split(
                 split_id=f"{stage_id}_split_local",
                 stage_id=stage_id,

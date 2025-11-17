@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 
 import ray
 import ray.actor
-import pyarrow as pa
 
 from solstice.actors.meta_service import MetaService
 from solstice.actors.state_master import GlobalStateMaster
@@ -67,9 +66,7 @@ class RayJobRunner:
             checkpoint_interval_records=self.job.checkpoint_interval_records,
         )
 
-        ray.get(
-            self.meta_service.set_global_state_master.remote(self.global_state_master)
-        )
+        ray.get(self.meta_service.set_global_state_master.remote(self.global_state_master))
 
         self._reverse_dag = self.job.build_reverse_dag()
         for stage_id, stage in self.job.stages.items():
@@ -137,7 +134,6 @@ class RayJobRunner:
             visit(stage_id)
         return order
 
-
     def _start_stage_loops(self) -> None:
         if not self.stage_actor_refs:
             return
@@ -156,9 +152,7 @@ class RayJobRunner:
                 try:
                     ray.get(run_ref)
                 except Exception as exc:
-                    self.logger.error(
-                        "Stage %s run loop failed: %s", stage_id, exc, exc_info=True
-                    )
+                    self.logger.error("Stage %s run loop failed: %s", stage_id, exc, exc_info=True)
                     raise
                 else:
                     self.logger.error(
@@ -246,17 +240,13 @@ class RayJobRunner:
             self.initialize()
 
         if checkpoint_id is None:
-            checkpoint_id = ray.get(
-                self.global_state_master.get_latest_checkpoint.remote()
-            )
+            checkpoint_id = ray.get(self.global_state_master.get_latest_checkpoint.remote())
             if not checkpoint_id:
                 self.logger.error("No checkpoint available to restore job %s", self.job.job_id)
                 return False
 
         self.logger.info("Restoring job %s from checkpoint %s", self.job.job_id, checkpoint_id)
-        success = ray.get(
-            self.global_state_master.restore_from_checkpoint.remote(checkpoint_id)
-        )
+        success = ray.get(self.global_state_master.restore_from_checkpoint.remote(checkpoint_id))
         if success:
             self.logger.info("Successfully restored job %s from %s", self.job.job_id, checkpoint_id)
         else:
@@ -316,9 +306,7 @@ class RayJobRunner:
             time.sleep(0.5)
 
             if deadline is not None and time.time() > deadline:
-                raise TimeoutError(
-                    f"Timeout while waiting for job {self.job.job_id} to complete."
-                )
+                raise TimeoutError(f"Timeout while waiting for job {self.job.job_id} to complete.")
 
     # ------------------------------------------------------------------
     # Properties
