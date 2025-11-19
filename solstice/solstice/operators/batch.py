@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 import pyarrow as pa
 
 from solstice.core.operator import Operator
-from solstice.core.models import Batch, Split
+from solstice.core.models import Split, SplitPayload
 
 
 class MapBatchesOperator(Operator):
@@ -19,7 +19,9 @@ class MapBatchesOperator(Operator):
         if not callable(self.map_batches_fn):
             raise ValueError("map_batches_fn must be a callable")
 
-    def process_split(self, split: Split, batch: Optional[Batch] = None) -> Optional[Batch]:
+    def process_split(
+        self, split: Split, batch: Optional[SplitPayload] = None
+    ) -> Optional[SplitPayload]:
         """Apply map function to entire batch (optimized for Arrow data)."""
         if batch is None:
             raise ValueError("MapBatchesOperator requires batch")
@@ -29,7 +31,7 @@ class MapBatchesOperator(Operator):
             # or an iterable of Record/dict for compatibility.
             result = self.map_batches_fn(batch)
 
-            if isinstance(result, Batch):
+            if isinstance(result, SplitPayload):
                 return result
 
             if isinstance(result, (pa.Table, pa.RecordBatch)):
@@ -42,14 +44,10 @@ class MapBatchesOperator(Operator):
             )
 
         except Exception as e:
-            self.logger.error(f"Error mapping batch {batch.batch_id}: {e}")
+            self.logger.error(f"Error mapping batch {batch.split_id}: {e}")
             if self.config.get("skip_on_error", False):
                 # Return empty batch on error
-                return Batch.empty(
-                    batch_id=batch.batch_id,
-                    source_split=batch.split_id,
-                    schema=batch.schema,
-                )
+                return SplitPayload.empty(split_id=batch.split_id, schema=batch.schema)
             else:
                 raise
 

@@ -17,6 +17,7 @@ dependencies = [
     "pylance>=0.38.0",
     "pyiceberg[sqlalchemy]>=0.10.0",
     "sqlalchemy>=2.0.0",
+    "py-spy>=0.4.1",
 ]
 
 [project.scripts]

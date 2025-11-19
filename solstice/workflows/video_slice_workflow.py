@@ -1,0 +1,143 @@
+"""Video workflow that performs ffmpeg scene detection, slicing, filtering, and hashing."""
+
+from __future__ import annotations
+
+import functools
+import logging
+from typing import Any, Dict
+
+from solstice.core.job import Job
+from solstice.core.stage import Stage
+from solstice.operators.filter import FilterOperator
+from solstice.operators.map import MapOperator
+from solstice.operators.sinks import FileSink
+from solstice.operators.sources import LanceTableSource
+from solstice.operators.video import (
+    FFmpegSceneDetectOperator,
+    FFmpegSliceOperator,
+    attach_slice_hash,
+    keep_every_n,
+)
+from solstice.state.backend import StateBackend
+
+DEFAULT_FILTER_MODULO = 10
+DEFAULT_MIN_SLICE_DURATION = 0.5
+DEFAULT_SCENE_THRESHOLD = 0.35
+
+
+def create_job(
+    job_id: str,
+    config: Dict[str, Any],
+    state_backend: StateBackend,
+) -> Job:
+    """Create the ffmpeg-driven video slicing workflow."""
+
+    logger = logging.getLogger(__name__)
+    logger.info("Creating video slice workflow")
+
+    input_path = config.get("input") or config.get("input_table")
+    output_path = config.get("output") or config.get("output_path")
+
+    if not input_path:
+        raise ValueError("'input' or 'input_table' is required for video slice workflow")
+    if not output_path:
+        raise ValueError("'output' or 'output_path' is required for video slice workflow")
+
+    filter_modulo = int(config.get("filter_modulo", DEFAULT_FILTER_MODULO))
+    min_slice_duration = float(config.get("min_slice_duration", DEFAULT_MIN_SLICE_DURATION))
+    scene_threshold = float(config.get("scene_threshold", DEFAULT_SCENE_THRESHOLD))
+    slice_dir = config.get("slice_dir")
+    if not slice_dir:
+        raise ValueError("'slice_dir' is required for video slice workflow")
+
+    job = Job(
+        job_id=job_id,
+        state_backend=state_backend,
+        checkpoint_interval_secs=config.get("checkpoint_interval_secs", 600),
+        checkpoint_interval_records=config.get("checkpoint_interval_records"),
+        config=config,
+    )
+
+    source_stage = Stage(
+        stage_id="video_source",
+        operator_class=LanceTableSource,
+        operator_config={
+            "table_path": input_path,
+            "batch_size": config.get("source_batch_size", 128),
+        },
+        parallelism=1,
+        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+    )
+
+    scene_stage = Stage(
+        stage_id="scene_detect",
+        operator_class=FFmpegSceneDetectOperator,
+        operator_config={
+            "scene_threshold": scene_threshold,
+            "min_scene_duration": min_slice_duration,
+        },
+        parallelism=config.get("scene_parallelism", (2, 6)),
+        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+    )
+
+    slice_stage = Stage(
+        stage_id="slice",
+        operator_class=FFmpegSliceOperator,
+        operator_config={
+            "slice_dir": slice_dir,
+            "min_scene_duration": min_slice_duration,
+        },
+        parallelism=config.get("slice_parallelism", (2, 4)),
+        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+    )
+
+    filter_stage = Stage(
+        stage_id="filter",
+        operator_class=FilterOperator,
+        operator_config={
+            "filter_fn": functools.partial(keep_every_n, modulo=filter_modulo),
+            "skip_on_error": False,
+        },
+        parallelism=config.get("filter_parallelism", 2),
+        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
+    )
+
+    hash_stage = Stage(
+        stage_id="hash",
+        operator_class=MapOperator,
+        operator_config={
+            "map_fn": attach_slice_hash,
+            "skip_on_error": False,
+        },
+        parallelism=config.get("hash_parallelism", 2),
+        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+    )
+
+    sink_stage = Stage(
+        stage_id="sink",
+        operator_class=FileSink,
+        operator_config={
+            "output_path": output_path,
+            "format": config.get("output_format", "json"),
+            "buffer_size": config.get("sink_buffer_size", 256),
+        },
+        parallelism=1,
+        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+    )
+
+    job.add_stage(source_stage)
+    job.add_stage(scene_stage, upstream_stages=["video_source"])
+    job.add_stage(slice_stage, upstream_stages=["scene_detect"])
+    job.add_stage(filter_stage, upstream_stages=["slice"])
+    job.add_stage(hash_stage, upstream_stages=["filter"])
+    job.add_stage(sink_stage, upstream_stages=["hash"])
+
+    logger.info(
+        "Video slice workflow created with %d stages (filter_modulo=%d, threshold=%.2f)",
+        len(job.stages),
+        filter_modulo,
+        scene_threshold,
+    )
+
+    return job
+

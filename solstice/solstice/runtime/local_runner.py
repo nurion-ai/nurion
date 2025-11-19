@@ -3,23 +3,23 @@ Utility runtime for executing Solstice workflows locally (synchronously).
 
 This runner is intended for tests and developer experiments where spinning up
 Ray actors is overkill. It evaluates the job DAG produced by a workflow and
-invokes each operator in topological order, propagating `Batch` objects between
-stages.
+invokes each operator in topological order, propagating `SplitPayload` objects
+between stages.
 occurs within a single process.
 """
 
 from __future__ import annotations
 
 import itertools
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from solstice.core.job import Job
 import pyarrow as pa
 
-from solstice.core.models import Batch, Record
+from solstice.core.models import Record, SplitPayload
 from solstice.core.operator import Operator, SourceOperator
 
-BatchHook = Callable[[str, Batch, Operator], None]
+BatchHook = Callable[[str, SplitPayload, Operator], None]
 StageHook = Callable[[str, Operator], None]
 
 
@@ -37,7 +37,7 @@ class LocalJobRunner:
         before_batch: Optional[BatchHook] = None,
         after_batch: Optional[BatchHook] = None,
         failure_injector: Optional[BatchHook] = None,
-    ) -> Dict[str, List[Batch]]:
+    ) -> Dict[str, List[SplitPayload]]:
         """
         Execute the job DAG and return the batches emitted by each stage.
 
@@ -47,7 +47,7 @@ class LocalJobRunner:
         """
         reverse_dag = self._build_reverse_dag()
         stage_order = self._topological_order(reverse_dag)
-        stage_results: Dict[str, List[Batch]] = {}
+        stage_results: Dict[str, List[SplitPayload]] = {}
 
         for stage_id in stage_order:
             stage = self.job.stages[stage_id]
@@ -87,59 +87,28 @@ class LocalJobRunner:
         stage_id: str,
         operator_config: Dict[str, Any],
         operator: Operator,
-    ) -> List[Batch]:
+    ) -> List[SplitPayload]:
         if not isinstance(operator, SourceOperator):
             raise TypeError(f"Stage {stage_id} expected SourceOperator, got {type(operator)}")
 
-        items = list(operator.read())
+        batches: List[SplitPayload] = []
+        splits = operator.plan_splits()
 
-        if not items:
-            return []
+        for index, split in enumerate(splits):
+            batch = operator.process_split(split)
+            if batch is None:
+                continue
 
-        first_item = items[0]
-
-        if isinstance(first_item, Batch):
-            normalized: List[Batch] = []
-            for index, batch in enumerate(items):
-                batch_id = batch.batch_id or f"{stage_id}_batch_{index}"
-                source_split = batch.source_split or f"{stage_id}_split_{index}"
-                if batch.batch_id and batch.source_split:
-                    normalized.append(batch)
-                else:
-                    normalized.append(
-                        batch.with_new_data(
-                            data=batch.to_table(),
-                            batch_id=batch_id,
-                            source_split=source_split,
-                        )
-                    )
-            return normalized
-
-        if isinstance(first_item, (pa.Table, pa.RecordBatch)):
-            arrow_batches: List[Batch] = []
-            for index, payload in enumerate(items):
-                arrow_batches.append(
-                    Batch.from_arrow(
-                        payload,
-                        batch_id=f"{stage_id}_batch_{index}",
-                        source_split=f"{stage_id}_split_{index}",
+            split_id = batch.split_id or split.split_id
+            if batch.split_id:
+                batches.append(batch)
+            else:
+                batches.append(
+                    batch.with_new_data(
+                        data=batch.to_table(),
+                        split_id=split_id,
                     )
                 )
-            return arrow_batches
-
-        records: List[Union[Record, Dict[str, Any]]] = items  # type: ignore[assignment]
-        batch_size = operator_config.get("batch_size") or len(records) or 1
-        batches: List[Batch] = []
-
-        for index, start in enumerate(range(0, len(records), batch_size)):
-            chunk = records[start : start + batch_size]
-            batches.append(
-                Batch.from_records(
-                    chunk,
-                    batch_id=f"{stage_id}_batch_{index}",
-                    source_split=f"{stage_id}_split_{index}",
-                )
-            )
 
         return batches
 
@@ -147,13 +116,13 @@ class LocalJobRunner:
         self,
         stage_id: str,
         operator: Operator,
-        input_batches: Iterable[Batch],
+        input_batches: Iterable[SplitPayload],
         *,
         before_batch: Optional[BatchHook] = None,
         after_batch: Optional[BatchHook] = None,
         failure_injector: Optional[BatchHook] = None,
-    ) -> List[Batch]:
-        output_batches: List[Batch] = []
+    ) -> List[SplitPayload]:
+        output_batches: List[SplitPayload] = []
 
         for index, batch in enumerate(input_batches):
             if before_batch:
@@ -173,7 +142,9 @@ class LocalJobRunner:
             )
             processed_output = operator.process_split(dummy_split, batch)
 
-            if isinstance(processed_output, Batch):
+            if processed_output is None:
+                processed = None
+            elif isinstance(processed_output, SplitPayload):
                 processed = processed_output
             elif isinstance(processed_output, (pa.Table, pa.RecordBatch)):
                 processed = batch.with_new_data(data=processed_output)
@@ -183,9 +154,9 @@ class LocalJobRunner:
                 )
 
             if after_batch:
-                after_batch(stage_id, processed, operator)
+                after_batch(stage_id, processed if processed is not None else batch, operator)
 
-            if len(processed):
+            if processed is not None and len(processed):
                 output_batches.append(processed)
 
         return output_batches

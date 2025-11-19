@@ -83,15 +83,9 @@ class RayJobRunner:
             upstream_stages = self._reverse_dag.get(stage_id, [])
             stage_master = StageMasterActor.options(name=actor_name).remote(
                 job_id=self.job.job_id,
-                stage_id=stage.stage_id,
-                operator_class=stage.operator_class,
-                operator_config=stage.operator_config,
                 state_backend=self.job.state_backend,
-                worker_resources=stage.worker_resources,
-                actor_name=actor_name,
-                max_workers=stage.max_parallelism,
-                min_workers=stage.min_parallelism,
                 upstream_stages=upstream_stages,
+                stage=stage,
             )
             self.stage_actor_refs[stage_id] = stage_master
             ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
@@ -137,11 +131,15 @@ class RayJobRunner:
     def _start_stage_loops(self) -> None:
         if not self.stage_actor_refs:
             return
+        started: List[str] = []
         for stage_id, actor_ref in self.stage_actor_refs.items():
             if stage_id in self.stage_run_refs:
                 continue
             run_ref = actor_ref.run.remote(poll_interval=self._stage_run_poll_interval)
             self.stage_run_refs[stage_id] = run_ref
+            started.append(stage_id)
+        if started:
+            self.logger.debug("Started stage run loops for: %s", ", ".join(sorted(started)))
 
     def _check_stage_run_refs(self) -> None:
         if not self.stage_run_refs:
@@ -163,6 +161,10 @@ class RayJobRunner:
     def _stop_stage_loops(self) -> None:
         if not self.stage_actor_refs:
             return
+        if self.stage_run_refs and self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "Stopping stage run loops for: %s", ", ".join(sorted(self.stage_run_refs.keys()))
+            )
         stop_refs = []
         for actor_ref in self.stage_actor_refs.values():
             stop_refs.append(actor_ref.stop.remote())
@@ -177,16 +179,29 @@ class RayJobRunner:
         self.stage_run_refs.clear()
 
     def _is_pipeline_idle(self) -> bool:
-        for actor_ref in self.stage_actor_refs.values():
+        pipeline_idle = True
+        counters_by_stage: Dict[str, Dict[str, int]] = {}
+        for stage_id, actor_ref in self.stage_actor_refs.items():
             counters = ray.get(actor_ref.get_split_counters.remote())
+            counters_by_stage[stage_id] = counters
             if (
-                counters["pending"]
-                or counters["active"]
-                or counters["inflight"]
-                or counters["output"]
+                counters.get("pending")
+                or counters.get("active")
+                or counters.get("inflight")
+                or counters.get("output")
             ):
-                return False
-        return True
+                pipeline_idle = False
+        if not pipeline_idle:
+            for stage_id, counters in counters_by_stage.items():
+                self.logger.debug(
+                    "Stage %s activity: pending=%d active=%d inflight=%d output=%d",
+                    stage_id,
+                    counters.get("pending", 0),
+                    counters.get("active", 0),
+                    counters.get("inflight", 0),
+                    counters.get("output", 0),
+                )
+        return pipeline_idle
 
     def run(self, *, poll_interval: float = 0.05) -> None:
         self.initialize()
@@ -210,6 +225,7 @@ class RayJobRunner:
             raise
 
     def _stop(self) -> None:
+        self.logger.debug("Stopping job %s (running=%s)", self.job.job_id, self._running)
         self._stop_stage_loops()
         if self._running and self.meta_service is not None:
             ray.get(self.meta_service.stop_job.remote())

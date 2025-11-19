@@ -8,8 +8,9 @@ from typing import Any, Dict, List, Optional, Type
 
 import ray  # type: ignore[import]
 
-from solstice.core.models import Batch, Split, WorkerMetrics
+from solstice.core.models import Split, SplitPayload, WorkerMetrics
 from solstice.core.operator import Operator
+from solstice.utils.logging import create_ray_logger
 
 
 @ray.remote
@@ -32,7 +33,7 @@ class StageWorker:
         self.operator_config = operator_config or {}
         self.operator: Operator = operator_class(self.operator_config)
 
-        self.logger = logging.getLogger(f"StageWorker-{stage_id}-{worker_id}")
+        self.logger = create_ray_logger(f"StageWorker-{stage_id}-{worker_id}")
 
         # Ephemeral metrics (not persisted)
         self.processed_count = 0
@@ -61,19 +62,45 @@ class StageWorker:
 
         # For source operators, batch is None
         # For other operators, get the batch from payload_ref
-        batch: Optional[Batch] = None
+        batch: Optional[SplitPayload] = None
         if payload_ref is not None:
-            batch = ray.get(payload_ref)
+            try:
+                batch = ray.get(payload_ref)
+            except Exception as exc:
+                self.logger.error(
+                    "Worker %s failed to fetch payload for split %s: %s",
+                    self.worker_id,
+                    split.split_id,
+                    exc,
+                )
+                raise
+
+        self.logger.debug(
+            "Worker %s processing split %s (payload=%s)",
+            self.worker_id,
+            split.split_id,
+            payload_ref is not None,
+        )
 
         # Unified processing: all operators use process_split
-        output_batch = self.operator.process_split(split, batch)
+        try:
+            output_batch = self.operator.process_split(split, batch)
+        except Exception as exc:
+            self.logger.exception(
+                "Operator %s failed to process split %s on worker %s",
+                type(self.operator).__name__,
+                split.split_id,
+                self.worker_id,
+            )
+            raise
 
         # Update metrics
         if output_batch is not None:
             self.processed_count += len(output_batch)
         else:
             # For sinks or operators that produce no output, count input
-            self.processed_count += len(batch)
+            if batch is not None:
+                self.processed_count += len(batch)
 
         self.processing_times.append(time.time() - start_time)
         if len(self.processing_times) > 100:
@@ -85,14 +112,23 @@ class StageWorker:
 
         metrics = self.get_metrics()
 
+        duration = time.time() - start_time
+        input_size = len(batch) if batch is not None else 0
+        output_size = len(output_batch) if output_batch is not None else 0
         self.logger.debug(
-            f"Worker {self.worker_id} processed split {split.split_id}",
+            "Worker %s processed split %s in %.3fs (in=%d, out=%d)",
+            self.worker_id,
+            split.split_id,
+            duration,
+            input_size,
+            output_size,
         )
 
         return {
             "split_id": split.split_id,
             "output_ref": output_ref,
             "metrics": metrics,
+            "worker_id": self.worker_id,
         }
 
     # ------------------------------------------------------------------

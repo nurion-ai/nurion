@@ -9,11 +9,10 @@ from typing import Any, Dict, List, Optional
 import pyarrow as pa
 from lance.dataset import write_dataset
 
-from solstice.core.models import Record
-from solstice.operators.sinks.base import Sink
+from solstice.core.models import Split, SplitPayload
+from solstice.core.operator import SinkOperator
 
-
-class LanceSink(Sink):
+class LanceSink(SinkOperator):
     """Sink that writes records to a Lance table."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -30,19 +29,15 @@ class LanceSink(Sink):
         self.buffer: List[Dict[str, Any]] = []
         self.table = None
 
-    def open(self, context) -> None:
-        super().open(context)
-        Path(self.table_path).parent.mkdir(parents=True, exist_ok=True)
-        self.logger.info(f"Initialized Lance sink: {self.table_path}")
-
-    def write(self, record: Record) -> None:
-        self.buffer.append(record.value)
+    def process_split(
+        self, split: Split, batch: Optional[SplitPayload] = None
+    ) -> Optional[SplitPayload]:
+        if batch is None:
+            raise ValueError("LanceSink requires a batch")
+        self.buffer.extend(batch.to_pylist())
         if len(self.buffer) >= self.buffer_size:
             self._flush()
-
-    def close(self) -> None:
-        self._flush()
-        self.logger.info(f"Closed Lance sink: {self.table_path}")
+        return None
 
     def _flush(self) -> None:
         if not self.buffer:

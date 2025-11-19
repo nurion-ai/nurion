@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
-from solstice.core.models import Batch, Split, SplitStatus
+from solstice.core.models import Split, SplitPayload, SplitStatus
 from solstice.operators.sources.base import ArrowStreamingSource
 
 
@@ -31,23 +31,6 @@ class FileSource(ArrowStreamingSource):
         self.current_file_idx = 0
         self.current_row_idx = 0
 
-    def open(self, context) -> None:
-        super().open(context)
-        if self._context:
-            self.current_file_idx = self._context.get_state("file_idx", 0)
-            self.current_row_idx = self._context.get_state("row_idx", 0)
-            self._resume_offset = self.current_row_idx
-            self._emitted_offset = self.current_row_idx
-        else:
-            self.current_file_idx = 0
-            self.current_row_idx = 0
-
-    def restore(self, state: Dict[str, Any]) -> None:
-        super().restore(state)
-        self.current_file_idx = state.get("file_idx", self.current_file_idx)
-        self.current_row_idx = state.get("row_idx", self.current_row_idx)
-        self._resume_offset = self.current_row_idx
-        self._emitted_offset = self.current_row_idx
 
     def plan_splits(self) -> List[Split]:
         if not self.file_paths:
@@ -67,7 +50,7 @@ class FileSource(ArrowStreamingSource):
             )
         return splits
 
-    def read(self, split: Split) -> Optional[Batch]:
+    def read(self, split: Split) -> Optional[SplitPayload]:
         file_path = split.data_range.get("file_path")
         if not file_path:
             raise ValueError("Split missing file_path for FileSource")
@@ -79,10 +62,9 @@ class FileSource(ArrowStreamingSource):
         metadata = dict(split.metadata)
         metadata.update({"file": file_path, "format": self.file_format})
 
-        return Batch.from_arrow(
+        return SplitPayload.from_arrow(
             table,
-            batch_id=f"{split.stage_id}_batch_{split.split_id}",
-            source_split=split.split_id,
+            split_id=split.split_id,
             metadata=metadata,
         )
 

@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from lance.dataset import LanceDataset
 
-from solstice.core.models import Batch, Split, SplitStatus
+from solstice.core.models import Split, SplitPayload, SplitStatus
 from solstice.operators.sources.base import ArrowStreamingSource
 
 
@@ -24,23 +24,6 @@ class LanceTableSource(ArrowStreamingSource):
         self.table: Optional[LanceDataset] = None
         self.scanner = None
 
-    def open(self, context) -> None:
-        super().open(context)
-        if not self.table_path:
-            raise ValueError("table_path is required for LanceTableSource")
-
-        if not Path(self.table_path).exists():
-            raise FileNotFoundError(f"Lance table not found: {self.table_path}")
-
-        self.table = LanceDataset(self.table_path)
-
-        scanner_kwargs: Dict[str, Any] = {}
-        if self.columns:
-            scanner_kwargs["columns"] = list(self.columns)
-        if self.filter_expr:
-            scanner_kwargs["filter"] = self.filter_expr
-
-        self.scanner = self.table.scanner(**scanner_kwargs)
 
     def plan_splits(self) -> List[Split]:
         if not self.table_path:
@@ -62,7 +45,7 @@ class LanceTableSource(ArrowStreamingSource):
             )
         ]
 
-    def read(self, split: Split) -> Optional[Batch]:
+    def read(self, split: Split) -> Optional[SplitPayload]:
         table_path = split.data_range.get("table_path") or self.table_path
         if not table_path:
             raise ValueError("Split missing table_path for LanceTableSource")
@@ -85,10 +68,9 @@ class LanceTableSource(ArrowStreamingSource):
         metadata = dict(split.metadata)
         metadata.update({"table_path": table_path, "source": "LanceTableSource"})
 
-        return Batch.from_arrow(
+        return SplitPayload.from_arrow(
             table,
-            batch_id=f"{split.stage_id}_batch_{split.split_id}",
-            source_split=split.split_id,
+            split_id=split.split_id,
             metadata=metadata,
         )
 

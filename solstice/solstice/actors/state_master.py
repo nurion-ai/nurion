@@ -8,6 +8,7 @@ import ray
 from solstice.core.models import CheckpointHandle
 from solstice.state.checkpoint import CheckpointCoordinator
 from solstice.state.backend import StateBackend
+from solstice.utils.logging import create_ray_logger
 
 
 @ray.remote
@@ -24,7 +25,7 @@ class GlobalStateMaster:
         self.job_id = job_id
         self.state_backend = state_backend
 
-        self.logger = logging.getLogger("GlobalStateMaster")
+        self.logger = create_ray_logger(f"GlobalStateMaster-{job_id}")
 
         # Checkpoint coordination
         self.checkpoint_coordinator = CheckpointCoordinator(

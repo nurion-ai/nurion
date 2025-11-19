@@ -5,7 +5,7 @@ including split planning, processing, and metrics collection.
 """
 
 from solstice.core.operator import SourceOperator, Operator, SinkOperator
-from solstice.core.models import Record, Batch, Split, SplitStatus
+from solstice.core.models import Record, Split, SplitPayload, SplitStatus
 
 
 class TestSourceOperator(SourceOperator):
@@ -29,7 +29,7 @@ class TestSourceOperator(SourceOperator):
 
         return splits
 
-    def read(self, split: Split) -> Batch:
+    def read(self, split: Split) -> SplitPayload:
         """Read data for a split - generate test records."""
         records_per_split = split.data_range.get("records_per_split", 10)
         split_index = split.data_range.get("split_index", 0)
@@ -44,17 +44,16 @@ class TestSourceOperator(SourceOperator):
                 )
             )
 
-        return Batch.from_records(
+        return SplitPayload.from_records(
             records,
-            batch_id=f"batch_{split.split_id}",
-            source_split=split.split_id,
+            split_id=split.split_id,
         )
 
 
 class TestMapOperator(Operator):
     """Test map operator that doubles the number value."""
 
-    def process_split(self, split: Split, batch: Batch = None) -> Batch:
+    def process_split(self, split: Split, batch: SplitPayload = None) -> SplitPayload:
         """Double the number value in each record."""
         if batch is None:
             raise ValueError("MapOperator requires batch")
@@ -72,10 +71,9 @@ class TestMapOperator(Operator):
                 )
             )
 
-        return Batch.from_records(
+        return SplitPayload.from_records(
             output_records,
-            batch_id=batch.batch_id,
-            source_split=batch.source_split,
+            split_id=batch.split_id,
         )
 
 

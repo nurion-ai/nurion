@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import ray
 
 from solstice.state.backend import StateBackend
+from solstice.utils.logging import create_ray_logger
 
 
 @ray.remote
@@ -22,7 +23,7 @@ class MetaService:
         self.state_backend = state_backend
         self.config = config
 
-        self.logger = logging.getLogger("MetaService")
+        self.logger = create_ray_logger(f"MetaService-{job_id}")
 
         # DAG representation
         self.stages: Dict[str, Dict[str, Any]] = {}  # stage_id -> stage config
