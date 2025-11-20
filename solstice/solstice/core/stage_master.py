@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 import time
 import uuid
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
-import ray  # type: ignore[import]
-import ray.actor  # type: ignore[import]
+import ray 
+import ray.actor
 
 from solstice.core.models import (
     BackpressureSignal,
@@ -22,13 +21,12 @@ from solstice.state.backend import StateBackend
 from solstice.state.manager import StateManager
 from solstice.utils.logging import create_ray_logger
 from solstice.core.stage import Stage
+from solstice.core.worker import ProcessResult
 
 BACKPRESSURE_QUEUE_RATIO_THRESHOLD = 0.7
 
 
-@ray.remote(max_concurrency=4)
 class StageMasterActor:
-    """Ray actor that manages split scheduling for a single stage."""
 
     def __init__(
         self,
@@ -45,22 +43,12 @@ class StageMasterActor:
 
         self.logger = create_ray_logger(f"StageMaster-{self.stage_id}")
 
-        # Create operator master if needed
-        if self.stage.operator_master_class is not None:
-            self.operator_master = self.stage.operator_master_class(
-                job_id=job_id,
-                stage=stage,
-                state_backend=state_backend,
-            )
-            self.logger.info("Created operator master for stage %s", self.stage_id)
-        else:
-            self.operator_master = None
-
         # State & split tracking
         self.state_manager = StateManager(stage_id=self.stage_id, state_backend=state_backend)
         self.pending_splits: Deque[Split] = deque()
-        self.split_payloads: Dict[str, ray.ObjectRef] = {}
+        self.split_payloads: Dict[str, Optional[str]] = {}
         self.splits: Dict[str, Split] = {}
+        self.max_split_attempts = self.stage.operator_config.get("max_split_attempts", 3)
         self.downstream_stage_refs: Dict[str, ray.actor.ActorHandle] = {}
         self.downstream_split_counters: Dict[str, int] = {}
 
@@ -68,6 +56,7 @@ class StageMasterActor:
         self.workers: Dict[str, ray.actor.ActorHandle] = {}
         self.worker_active_counts: Dict[str, int] = {}
         self.worker_metrics: Dict[str, WorkerMetrics] = {}
+        self.max_active_splits_per_worker = self.stage.operator_config.get("max_active_splits_per_worker", 10)
 
         # Assignment tracking
         self._pending_results: Dict[ray.ObjectRef, str] = {}
@@ -75,21 +64,17 @@ class StageMasterActor:
 
         # Runtime bookkeeping
         self.backpressure_active = False
-        self.input_records = 0
-        self.output_records = 0
         self.start_time = time.time()
         self._running = False
         self.current_checkpoint_id: Optional[str] = None
+        self.max_queue_size = self.stage.operator_config.get("max_queue_size", 1000)
 
         # Spawn initial workers
-        for _ in range(self.min_workers):
+        for _ in range(self.stage.min_parallelism):
             self._create_worker()
 
         self.logger.info(
-            "Stage %s initialised with %d workers (job=%s)",
-            self.stage_id,
-            len(self.workers),
-            self.job_id,
+            f"Stage {self.stage_id} initialised with {len(self.workers)} workers (job={self.job_id})",
         )
 
     # ------------------------------------------------------------------
@@ -97,13 +82,11 @@ class StageMasterActor:
     # ------------------------------------------------------------------
     def _create_worker(self) -> str:
         worker_id = f"{self.stage_id}_worker_{len(self.workers)}_{uuid.uuid4().hex[:6]}"
-        from solstice.actors.worker import StageWorker
+        from solstice.core.worker import StageWorker
 
-        worker_ref = StageWorker.options(**self.worker_resources).remote(
+        worker_ref = StageWorker.options(**self.stage.worker_resources).remote(
             worker_id=worker_id,
-            stage_id=self.stage_id,
-            operator_class=self.operator_class,
-            operator_config=self.operator_config,
+            stage=self.stage,
         )
 
         self.workers[worker_id] = worker_ref
@@ -123,14 +106,11 @@ class StageMasterActor:
             self.logger.warning("Failed to shutdown worker %s cleanly: %s", worker_id, exc)
         else:
             self.logger.info(
-                "Removed worker %s from stage %s (workers=%d)",
-                worker_id,
-                self.stage_id,
-                len(self.workers),
+                f"Removed worker {worker_id} from stage {self.stage_id} (workers={len(self.workers)})",
             )
 
     def scale_workers(self, target_count: int) -> None:
-        target_count = max(self.min_workers, min(target_count, self.max_workers))
+        target_count = max(self.stage.min_parallelism, min(target_count, self.stage.max_parallelism))
         current = len(self.workers)
         if target_count == current:
             return
@@ -170,18 +150,18 @@ class StageMasterActor:
     # ------------------------------------------------------------------
     # Split lifecycle
     # ------------------------------------------------------------------
-    def enqueue_split(self, split: Split, payload_ref: Optional[ray.ObjectRef] = None) -> None:
+    def enqueue_split(
+        self,
+        split: Split,
+        payload_ref: Optional[str] = None,
+    ) -> None:
         """Receive a new split from upstream (or create one for source stages)."""
+        self.logger.debug(f"Enqueuing split {split.split_id} (payload={payload_ref})")
         split.status = SplitStatus.PENDING
         self.splits[split.split_id] = split
-        if payload_ref is not None:
-            self.split_payloads[split.split_id] = payload_ref
+        self.split_payloads[split.split_id] = payload_ref
         self.pending_splits.append(split)
-        self.logger.debug(
-            "Enqueued split %s (pending=%d)",
-            split.split_id,
-            len(self.pending_splits),
-        )
+        self.logger.debug( f"Enqueued split {split.split_id} (pending={len(self.pending_splits)})")
 
         # Activate split state (for checkpointing)
         self.state_manager.activate_split(split.split_id)
@@ -189,9 +169,7 @@ class StageMasterActor:
         if len(self.pending_splits) >= self.max_queue_size and not self.backpressure_active:
             self.backpressure_active = True
             self.logger.warning(
-                "Backpressure activated for stage %s (queue=%d)",
-                self.stage_id,
-                len(self.pending_splits),
+                f"Backpressure activated for stage {self.stage_id} (queue={len(self.pending_splits)})",
             )
 
     # ------------------------------------------------------------------
@@ -225,19 +203,15 @@ class StageMasterActor:
             # For source stages, no payload_ref needed
             payload_ref = self.split_payloads.get(split.split_id)
 
-            result_ref = worker_ref.process_split.remote(
+            process_result_ref = worker_ref.process_split.remote(
                 split,
                 payload_ref=payload_ref,
             )
-            self._pending_results[result_ref] = split.split_id
+            self._pending_results[process_result_ref] = split.split_id
             self._split_to_worker[split.split_id] = worker_id
             self.worker_active_counts[worker_id] += 1
             self.logger.debug(
-                "Dispatched split %s to worker %s (pending=%d, inflight=%d)",
-                split.split_id,
-                worker_id,
-                len(self.pending_splits),
-                len(self._pending_results),
+                f"Dispatched split {split.split_id} to worker {worker_id} (pending={len(self.pending_splits)}, inflight={len(self._pending_results)})",
             )
 
         if len(self.pending_splits) < self.max_queue_size * BACKPRESSURE_QUEUE_RATIO_THRESHOLD:
@@ -266,9 +240,7 @@ class StageMasterActor:
         )
 
         if ready_refs:
-            self.logger.debug(
-                "Stage %s draining %d completed results", self.stage_id, len(ready_refs)
-            )
+            self.logger.debug(f"Stage {self.stage_id} draining {len(ready_refs)} completed results")
         for ref in ready_refs:
             split_id = self._pending_results.pop(ref, None)
             if split_id is None:
@@ -279,69 +251,55 @@ class StageMasterActor:
                     0, self.worker_active_counts[worker_id] - 1
                 )
             try:
-                result = ray.get(ref, timeout=5)
+                process_result = ray.get(ref, timeout=5)
             except Exception as exc:
                 self.logger.error(
-                    "Failed to fetch result for split %s from worker %s: %s",
-                    split_id,
-                    worker_id,
-                    exc,
+                    f"Stage {self.stage_id} failed to fetch result for split {split_id} from worker {worker_id}: {exc}",
                 )
-                self._requeue_split(split_id)
+                if not self._requeue_split(split_id):
+                    raise
                 continue
-            self._handle_worker_result(split_id, worker_id, result)
+            self._handle_worker_result(process_result)
 
-    def _requeue_split(self, split_id: str) -> None:
+    def _requeue_split(self, split_id: str) -> bool:
         split = self.splits.get(split_id)
         if not split:
-            return
+            self.logger.error(f"Split {split_id} not found")
+            return False
         split.status = SplitStatus.PENDING
+        split.attempt += 1
+        if split.attempt > self.max_split_attempts:
+            self.logger.error(f"Split {split_id} has exceeded the maximum number of attempts ({self.max_split_attempts}), giving up")
+            self.splits.pop(split_id, None)
+            self.split_payloads.pop(split_id, None)
+            return False
         self.pending_splits.appendleft(split)
-        self.logger.info(
-            "Re-queued split %s for stage %s (pending=%d)",
-            split_id,
-            self.stage_id,
-            len(self.pending_splits),
-        )
+        self.logger.info(f"Requeued split {split_id} for stage {self.stage_id} (pending={len(self.pending_splits)})")
+        return True
 
-    def _handle_worker_result(
-        self, split_id: str, worker_id: str, result: Dict[str, Any]
-    ) -> None:
+    def _handle_worker_result(self, process_result: ProcessResult) -> None:
+        split_id = process_result.input_split_id
         split = self.splits.pop(split_id, None)
         self.split_payloads.pop(split_id, None)
         if not split:
             return
-
-        metrics = result.get("metrics")
-        if metrics and isinstance(metrics, WorkerMetrics):
-            self.worker_metrics[worker_id] = metrics
-
-        output_ref = result.get("output_ref")
         split.status = SplitStatus.COMPLETED
-
-        self.input_records += split.record_count
-        if output_ref is not None:
-            output_batch = ray.get(output_ref, timeout=1)
-            if output_batch is not None:
-                self.output_records += len(output_batch)
-
         # Clear split state after processing
         self.state_manager.clear_split(split_id)
 
-        if self.operator_master is not None:
-            self.operator_master.on_event(split_id)
-
-        if output_ref and self.downstream_stage_refs:
-            self._fan_out_downstream(split, output_ref)
+        if process_result.output_ref and self.downstream_stage_refs:
+            self._fan_out_downstream(split, process_result.output_ref)
+        worker_metrics = process_result.worker_metrics
         self.logger.debug(
-            "Completed split %s on worker %s (input=%d, output_total=%d)",
-            split_id,
-            worker_id,
-            self.input_records,
-            self.output_records,
+            f"Completed split {split_id} on worker {worker_metrics.worker_id} (input={worker_metrics.input_records}, output={worker_metrics.output_records})",
         )
+        self.worker_metrics[worker_metrics.worker_id] = worker_metrics
 
-    def _fan_out_downstream(self, split: Split, output_ref: ray.ObjectRef) -> None:
+    def _fan_out_downstream(
+        self,
+        split: Split,
+        output_ref: str,
+    ) -> None:
         for downstream_id, actor_ref in self.downstream_stage_refs.items():
             next_id = self._next_downstream_split_id(downstream_id)
             downstream_split = split.derive_output_split(
@@ -350,10 +308,7 @@ class StageMasterActor:
             )
             actor_ref.enqueue_split.remote(downstream_split, output_ref)
             self.logger.debug(
-                "Forwarded split %s to downstream %s as %s",
-                split.split_id,
-                downstream_id,
-                next_id,
+                f"Forwarded split {split.split_id} to downstream {downstream_id} as {next_id}",
             )
 
     def _next_downstream_split_id(self, downstream_stage: str) -> str:
@@ -432,7 +387,6 @@ class StageMasterActor:
             "pending": len(self.pending_splits),
             "active": len(self._split_to_worker),
             "inflight": len(self._pending_results),
-            "output": self.output_records,
         }
 
     def collect_metrics(self) -> StageMetrics:
@@ -447,14 +401,13 @@ class StageMasterActor:
             except Exception:
                 continue
 
-        total_rate = sum(metric.processing_rate for metric in self.worker_metrics.values())
 
         return StageMetrics(
             stage_id=self.stage_id,
             worker_count=len(self.workers),
-            input_records=self.input_records,
-            output_records=self.output_records,
-            total_processing_rate=total_rate,
+            input_records=sum(metric.input_records for metric in self.worker_metrics.values()),
+            output_records=sum(metric.output_records for metric in self.worker_metrics.values()),
+            total_processing_time=sum(metric.processing_time for metric in self.worker_metrics.values()),
             pending_splits=len(self.pending_splits),
             inflight_results=len(self._pending_results),
             backpressure_active=self.backpressure_active,
@@ -482,13 +435,6 @@ class StageMasterActor:
     def shutdown(self) -> None:
         self.logger.info("Shutting down stage %s", self.stage_id)
         self.stop()
-
-        # Shutdown operator master if exists
-        if self.operator_master is not None:
-            try:
-                self.operator_master.shutdown()
-            except Exception as exc:
-                self.logger.warning("Error shutting down operator master: %s", exc)
 
         for worker_id in list(self.workers.keys()):
             self._remove_worker(worker_id)

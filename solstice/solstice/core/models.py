@@ -43,12 +43,8 @@ class Split:
     parent_split_ids: List[str] = field(default_factory=list)
     attempt: int = 0
     status: SplitStatus = SplitStatus.PENDING
-    assigned_worker: Optional[str] = None
-    retry_count: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    record_count: int = 0
-    is_terminal: bool = False
 
     def lineage(self) -> Dict[str, Any]:
         """Return lineage metadata for downstream operators."""
@@ -68,10 +64,6 @@ class Split:
             parent_split_ids=list(self.parent_split_ids),
             attempt=self.attempt,
             status=status,
-            assigned_worker=self.assigned_worker,
-            retry_count=self.retry_count,
-            record_count=self.record_count,
-            is_terminal=self.is_terminal,
         )
         updated.created_at = self.created_at
         updated.updated_at = time.time()
@@ -81,8 +73,6 @@ class Split:
         self,
         target_stage_id: Optional[str] = None,
         split_id: Optional[str] = None,
-        record_count: Optional[int] = None,
-        is_terminal: Optional[bool] = None,
     ) -> "Split":
         """Produce a new split metadata object for downstream consumption."""
         derived_stage_id = target_stage_id or self.stage_id
@@ -99,10 +89,6 @@ class Split:
             parent_split_ids=parent_ids,
             attempt=0,
             status=SplitStatus.PENDING,
-            assigned_worker=None,
-            retry_count=0,
-            record_count=record_count if record_count is not None else self.record_count,
-            is_terminal=self.is_terminal if is_terminal is None else is_terminal,
         )
 
 
@@ -112,8 +98,9 @@ class WorkerMetrics:
 
     worker_id: str
     stage_id: str
-    processing_rate: float  # records/sec
-    backlog_size: int
+    input_records: int
+    output_records: int
+    processing_time: float
     cpu_usage: float = 0.0
     memory_usage: float = 0.0
     timestamp: float = field(default_factory=time.time)
@@ -123,8 +110,9 @@ class WorkerMetrics:
         return {
             "worker_id": self.worker_id,
             "stage_id": self.stage_id,
-            "processing_rate": self.processing_rate,
-            "backlog_size": self.backlog_size,
+            "input_records": self.input_records,
+            "output_records": self.output_records,
+            "processing_time": self.processing_time,
             "cpu_usage": self.cpu_usage,
             "memory_usage": self.memory_usage,
             "timestamp": self.timestamp,
@@ -139,7 +127,7 @@ class StageMetrics:
     worker_count: int
     input_records: int
     output_records: int
-    total_processing_rate: float  # records/sec
+    total_processing_time: float  # seconds
     pending_splits: int
     inflight_results: int
     output_buffer_size: int
@@ -205,17 +193,15 @@ class BackpressureSignal:
 class Record:
     """A single record flowing through the pipeline"""
 
-    key: Optional[str] = None
-    value: Any = None
+    key: str = field(default="")
+    value: Dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "key": self.key,
             "value": self.value,
             "timestamp": self.timestamp,
-            "metadata": self.metadata,
         }
 
 
@@ -304,7 +290,7 @@ class SplitPayload:
 
     def with_new_data(
         self,
-        data: Union[pa.Table, pa.RecordBatch],
+        data: Union[pa.Table, pa.RecordBatch, List[Record]],
         split_id: Optional[str] = None,
     ) -> "SplitPayload":
         """Return a new batch with the provided Arrow payload and optional overrides."""
@@ -312,6 +298,8 @@ class SplitPayload:
             table = data
         elif isinstance(data, pa.RecordBatch):
             table = pa.Table.from_batches([data])
+        elif isinstance(data, List[Record]):
+            table = pa.Table.from_pylist([record.value for record in data])
         else:
             raise TypeError(f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}")
         return SplitPayload(

@@ -8,21 +8,21 @@ from typing import Any, Dict, List, Optional
 
 import ray
 import ray.actor
+from solstice.utils.logging import create_ray_logger
 
 from solstice.actors.meta_service import MetaService
-from solstice.actors.state_master import GlobalStateMaster
 from solstice.core.job import Job
-from solstice.actors.stage_master import StageMasterActor
+from solstice.state.state_master import GlobalStateMaster
 
 
 class RayJobRunner:
     """Control-plane responsible for running a :class:`Job` on Ray."""
 
-    def __init__(self, job: Job, *, ray_init_kwargs: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, job: Job, ray_init_kwargs: Optional[dict[str, Any]] = None) -> None:
         self.job = job
         self._ray_init_kwargs = ray_init_kwargs or {}
 
-        self.logger = logging.getLogger(f"RayJobRunner-{job.job_id}")
+        self.logger = create_ray_logger(f"RayJobRunner-{job.job_id}")
 
         self.meta_service: Optional[ray.actor.ActorHandle] = None
         self.global_state_master: Optional[ray.actor.ActorHandle] = None
@@ -81,12 +81,14 @@ class RayJobRunner:
         for stage_id, stage in self.job.stages.items():
             actor_name = f"{self.job.job_id}:{stage_id}"
             upstream_stages = self._reverse_dag.get(stage_id, [])
-            stage_master = StageMasterActor.options(name=actor_name).remote(
-                job_id=self.job.job_id,
-                state_backend=self.job.state_backend,
-                upstream_stages=upstream_stages,
-                stage=stage,
-            )
+            stage_master = ray.remote(stage.master_class)\
+                .options(name=actor_name, max_concurrency=10)\
+                .remote(
+                    job_id=self.job.job_id,
+                    state_backend=self.job.state_backend,
+                    upstream_stages=upstream_stages,
+                    stage=stage,
+                )
             self.stage_actor_refs[stage_id] = stage_master
             ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
 

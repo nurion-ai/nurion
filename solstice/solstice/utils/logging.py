@@ -20,7 +20,7 @@ def create_ray_logger(name: str, level: Optional[int] = None) -> logging.Logger:
     logger = logging.getLogger(name)
 
     if level is None:
-        env_level = os.getenv("SOLSTICE_LOG_LEVEL", "INFO").upper()
+        env_level = os.getenv("SOLSTICE_LOG_LEVEL", "DEBUG").upper()
         level = getattr(logging, env_level, logging.INFO)
 
     logger.setLevel(level)

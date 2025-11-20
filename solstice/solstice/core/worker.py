@@ -1,0 +1,147 @@
+"""StageWorker actor for executing operator logic over splits."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+import ray
+
+from solstice.core.models import Split, SplitPayload, WorkerMetrics
+from solstice.core.stage import Stage
+from solstice.core.operator import Operator
+from solstice.utils.logging import create_ray_logger
+
+@dataclass
+class ProcessResult:
+    """Result of a split processing"""
+
+    input_split_id: str
+    input_records: int
+    output_records: int
+    processing_time: float
+    output_ref: Optional[bytes] = None
+    worker_metrics: WorkerMetrics = field(default_factory=WorkerMetrics)
+
+@ray.remote
+class StageWorker:
+    """Ray actor that executes an operator over batches without persisting state.
+
+    StageWorker is completely stateless - it only maintains ephemeral in-memory state
+    during batch processing. All persistent state management is handled by StageMaster.
+    """
+
+    def __init__(
+        self,
+        worker_id: str,
+        stage: Stage,   
+    ):
+        self.worker_id = worker_id
+        self.stage_id = stage.stage_id
+        self.operator: Operator = stage.operator_class(stage.operator_config)
+
+        self.logger = create_ray_logger(f"StageWorker-{self.stage_id}-{self.worker_id}")
+
+        # Ephemeral metrics (not persisted)
+        self.total_input_records = 0
+        self.total_output_records = 0
+        self.total_processing_time = 0.0
+
+        self.logger.info(f"StageWorker {worker_id} initialised for stage {self.stage_id}")
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+    def process_split(
+        self,
+        split: Split,
+        payload_ref: Optional[str] = None,
+    ) -> ProcessResult:
+        """Process a split with the operator.
+
+        Args:
+            split: The split metadata
+            payload_ref: Optional batch payload reference (None for source operators)
+
+        Returns:
+            Dictionary with split_id, output_ref (for downstream), and metrics
+        """
+        start_time = time.time()
+
+        # For source operators, batch is None
+        # For other operators, get the batch from payload_ref
+        payload: Optional[SplitPayload] = None
+        if payload_ref is not None:
+            try:
+                payload = ray.get(ray.ObjectRef.from_binary(payload_ref))
+            except Exception as exc:
+                self.logger.error(
+                    f"Worker {self.worker_id} failed to fetch payload for split {split.split_id}: {exc}",
+                )
+                raise
+
+        self.logger.debug(
+            f"Worker {self.worker_id} processing split {split.split_id} (payload={payload_ref})",
+        )
+
+        # Unified processing: all operators use process_split
+        try:
+            output_payload = self.operator.process_split(split, payload)
+        except Exception as exc:
+            self.logger.error(
+                f"Operator {type(self.operator).__name__} failed to process split {split.split_id} on worker {self.worker_id}",
+            )
+            raise
+
+        input_records = len(payload) if payload is not None else 0
+        output_records = len(output_payload) if output_payload is not None else 0
+
+        output_ref: Optional[ray.ObjectRef] = None
+        if output_payload:
+            output_ref = ray.put(output_payload)
+
+        # Update metrics
+        self.total_input_records += input_records
+        self.total_output_records += output_records
+
+        duration = time.time() - start_time
+        self.total_processing_time += duration
+
+        self.logger.debug(
+            f"Worker {self.worker_id} processed split {split.split_id} in {duration:.3f}s (in={input_records}, out={output_records})",
+        )
+
+        return ProcessResult(
+            input_split_id=split.split_id,
+            input_records=input_records,
+            output_records=output_records,
+            processing_time=duration,
+            output_ref=output_ref.binary() if output_ref else None,
+            worker_metrics=self.get_metrics(),
+        )
+
+    # ------------------------------------------------------------------
+    # Metrics / lifecycle
+    # ------------------------------------------------------------------
+    def get_metrics(self) -> WorkerMetrics:
+        """Return current worker metrics."""
+        return WorkerMetrics(
+            worker_id=self.worker_id,
+            stage_id=self.stage_id,
+            processing_time=self.total_processing_time,
+            input_records=self.total_input_records,
+            output_records=self.total_output_records,
+        )
+
+    def health_check(self) -> bool:
+        """Ray health check hook."""
+        return True
+
+    def shutdown(self) -> None:
+        """Gracefully close the operator."""
+        self.logger.info(f"Shutting down StageWorker {self.worker_id}")
+        try:
+            self.operator.close()
+        except Exception as exc:
+            self.logger.error(f"Error closing operator in worker {self.worker_id}: {exc}")

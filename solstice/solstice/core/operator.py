@@ -17,6 +17,7 @@ class Operator(ABC):
     ):
         self.config = config or {}
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.worker_id = worker_id
 
 
     @abstractmethod
@@ -74,20 +75,3 @@ class SourceOperator(Operator):
 
 class SinkOperator(Operator):
     """Base class for sink operators"""
-
-    def create_operator_master(
-        self,
-        job_id: str,
-        stage_id: str,
-        operator_class: type,
-        operator_config: Dict[str, Any],
-    ) -> Optional[Any]:
-        """Create a SinkOperatorMaster for controlling output propagation."""
-        from solstice.core.operator_master import SinkOperatorMaster
-
-        return SinkOperatorMaster(
-            job_id=job_id,
-            stage_id=stage_id,
-            operator_class=operator_class,
-            operator_config=operator_config,
-        )

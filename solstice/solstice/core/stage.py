@@ -4,7 +4,6 @@ from typing import Any, Dict, Optional, Tuple, Type, Union
 import logging
 
 from solstice.core.operator import Operator
-from solstice.core.operator_master import OperatorMaster
 
 
 class Stage:
@@ -15,9 +14,9 @@ class Stage:
         stage_id: str,
         operator_class: Type[Operator],
         operator_config: Optional[Dict[str, Any]] = None,
+        master_class: Optional[Type["StageMasterActor"]] = None,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
-        operator_master_class: Optional[Type[OperatorMaster]] = None,
     ):
         """
         Initialize a stage.
@@ -26,6 +25,7 @@ class Stage:
             stage_id: Unique identifier for the stage
             operator_class: Class of the operator to execute
             operator_config: Configuration for the operator
+            master_class: Class of the stage master to use
             parallelism: Number of workers. Can be:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
@@ -41,7 +41,9 @@ class Stage:
         self.stage_id = stage_id
         self.operator_class = operator_class
         self.operator_config = operator_config or {}
-        self.operator_master_class = operator_master_class
+
+        from solstice.core.stage_master import StageMasterActor
+        self.master_class = master_class or StageMasterActor
 
         # Parse parallelism parameter
         if isinstance(parallelism, int):
@@ -83,5 +85,4 @@ class Stage:
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,
-            "operator_master_class": f"{self.operator_master_class.__module__}.{self.operator_master_class.__name__}" if self.operator_master_class else None,
         }

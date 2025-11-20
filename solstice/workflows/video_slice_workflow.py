@@ -12,6 +12,7 @@ from solstice.operators.filter import FilterOperator
 from solstice.operators.map import MapOperator
 from solstice.operators.sinks import FileSink
 from solstice.operators.sources import LanceTableSource
+from solstice.operators.sources.lance import LanceSourceStageMaster
 from solstice.operators.video import (
     FFmpegSceneDetectOperator,
     FFmpegSliceOperator,
@@ -62,9 +63,10 @@ def create_job(
         stage_id="video_source",
         operator_class=LanceTableSource,
         operator_config={
-            "table_path": input_path,
-            "batch_size": config.get("source_batch_size", 128),
+            "dataset_uri": input_path,
+            "split_size": 2,
         },
+        master_class=LanceSourceStageMaster,
         parallelism=1,
         worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
     )
