@@ -191,6 +191,7 @@ class StageMasterActor:
         self._running = True
         self.logger.info("Stage %s run loop started", self.stage_id)
         try:
+
             def need_running() -> bool:
                 return self._running and (
                     not all(self.upstream_finished.values())

@@ -68,7 +68,7 @@ def create_job(
         },
         master_class=LanceSourceStageMaster,
         parallelism=1,
-        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     scene_stage = Stage(
@@ -79,7 +79,7 @@ def create_job(
             "min_scene_duration": min_slice_duration,
         },
         parallelism=config.get("scene_parallelism", (2, 6)),
-        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     slice_stage = Stage(
@@ -90,7 +90,7 @@ def create_job(
             "min_scene_duration": min_slice_duration,
         },
         parallelism=config.get("slice_parallelism", (2, 4)),
-        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     filter_stage = Stage(
@@ -112,7 +112,7 @@ def create_job(
             "skip_on_error": False,
         },
         parallelism=config.get("hash_parallelism", 2),
-        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     sink_stage = Stage(
@@ -124,7 +124,7 @@ def create_job(
             "buffer_size": config.get("sink_buffer_size", 256),
         },
         parallelism=1,
-        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},
+        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     job.add_stage(source_stage)

@@ -40,13 +40,9 @@ class FileSource(SourceOperator):
         if not table or table.num_rows == 0:
             return None
 
-        metadata = dict(split.metadata)
-        metadata.update({"file": file_path, "format": self.file_format})
-
         return SplitPayload.from_arrow(
             table,
             split_id=split.split_id,
-            metadata=metadata,
         )
 
     def _advance_file(self, file_idx: int) -> None:

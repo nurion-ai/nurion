@@ -47,18 +47,9 @@ class IcebergSource(SourceOperator):
         if arrow_table.num_rows == 0:
             return None
 
-        metadata = dict(split.metadata)
-        metadata.update(
-            {
-                "table": table_name,
-                "catalog_uri": catalog_uri,
-            }
-        )
-
         return SplitPayload.from_arrow(
             arrow_table,
             split_id=split.split_id,
-            metadata=metadata,
         )
 
     def close(self) -> None:

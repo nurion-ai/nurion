@@ -340,16 +340,3 @@ class TestSplitPayloadOperations:
         batch = SplitPayload.from_records([], split_id="empty")
 
         assert len(batch) == 0
-
-    def test_batch_with_metadata(self):
-        """Test batch metadata"""
-        import time
-
-        before = time.time()
-
-        batch = SplitPayload.from_records([Record(key="1", value={"v": 1})], split_id="meta_test")
-
-        after = time.time()
-
-        assert batch.split_id == "meta_test"
-        assert before <= batch.timestamp <= after

@@ -1,6 +1,5 @@
 """Core data models for the streaming framework"""
 
-import json
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -194,7 +193,6 @@ class SplitPayload:
 
     SOLSTICE_KEY_COLUMN = "__solstice_key"
     SOLSTICE_TS_COLUMN = "__solstice_timestamp"
-    SOLSTICE_METADATA_COLUMN = "__solstice_metadata_json"
 
     def __len__(self) -> int:
         return self.data.num_rows
@@ -233,13 +231,12 @@ class SplitPayload:
         rows: List[Record] = []
         key_col_present = self.SOLSTICE_KEY_COLUMN in self.data.column_names
         ts_col_present = self.SOLSTICE_TS_COLUMN in self.data.column_names
-
         for row in self.data.to_pylist():
             key = row.pop(self.SOLSTICE_KEY_COLUMN, None) if key_col_present else None
             timestamp = row.pop(self.SOLSTICE_TS_COLUMN, None) if ts_col_present else self.timestamp
             rows.append(
                 Record(
-                    key=key,
+                    key=key or "",
                     value=row,
                     timestamp=timestamp if timestamp is not None else time.time(),
                 )
@@ -256,7 +253,7 @@ class SplitPayload:
 
     def with_new_data(
         self,
-        data: Union[pa.Table, pa.RecordBatch, List[Record]],
+        data: Union[pa.Table, pa.RecordBatch, Sequence[Record]],
         split_id: Optional[str] = None,
     ) -> "SplitPayload":
         """Return a new batch with the provided Arrow payload and optional overrides."""
@@ -264,8 +261,10 @@ class SplitPayload:
             table = data
         elif isinstance(data, pa.RecordBatch):
             table = pa.Table.from_batches([data])
-        elif isinstance(data, List[Record]):
-            table = pa.Table.from_pylist([record.value for record in data])
+        elif isinstance(data, Sequence):
+            if not all(isinstance(item, Record) for item in data):
+                raise TypeError("Expected an iterable of Record instances")
+            table = pa.Table.from_pylist(self._rows_from_records(data))
         else:
             raise TypeError(
                 f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}"
@@ -316,16 +315,7 @@ class SplitPayload:
         rows: List[Dict[str, Any]] = []
         for record in records:
             if isinstance(record, Record):
-                row: Dict[str, Any] = {}
-                if isinstance(record.value, dict):
-                    row.update(record.value)
-                else:
-                    row["value"] = record.value
-                row[cls.SOLSTICE_KEY_COLUMN] = record.key
-                row[cls.SOLSTICE_TS_COLUMN] = record.timestamp
-                if record.metadata:
-                    row[cls.SOLSTICE_METADATA_COLUMN] = json.dumps(record.metadata)
-                rows.append(row)
+                rows.append(cls._record_to_row(record))
             else:
                 rows.append(dict(record))
 
@@ -344,3 +334,18 @@ class SplitPayload:
         else:
             table = pa.table({})
         return cls(data=table, split_id=split_id)
+
+    @classmethod
+    def _record_to_row(cls, record: Record) -> Dict[str, Any]:
+        row: Dict[str, Any] = {}
+        if isinstance(record.value, dict):
+            row.update(record.value)
+        else:
+            row["value"] = record.value
+        row[cls.SOLSTICE_KEY_COLUMN] = record.key
+        row[cls.SOLSTICE_TS_COLUMN] = record.timestamp
+        return row
+
+    @classmethod
+    def _rows_from_records(cls, records: Sequence[Record]) -> List[Dict[str, Any]]:
+        return [cls._record_to_row(record) for record in records]

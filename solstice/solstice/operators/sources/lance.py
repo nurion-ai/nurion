@@ -33,11 +33,11 @@ class LanceTableSource(SourceOperator):
         )
         table = fragment_scanner.to_table()
         if table.num_rows == 0:
-            return SplitPayload.empty(split_id=f"{split.split_id}:read_{self.worker_id}")
+            return SplitPayload.empty(split_id=f"{split.split_id}:{self.worker_id}")
 
         return SplitPayload.from_arrow(
             table,
-            split_id=f"{split.split_id}:read_{self.worker_id}",
+            split_id=f"{split.split_id}:{self.worker_id}",
         )
 
     def close(self) -> None:

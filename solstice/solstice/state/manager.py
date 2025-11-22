@@ -28,7 +28,6 @@ class StateManager:
         self._split_keyed_state: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._split_offsets: Dict[str, Dict[str, Any]] = {}
         self._split_attempts: Dict[str, int] = {}
-        self._split_metadata: Dict[str, Dict[str, Any]] = {}
 
         # Last snapshot for delta calculations (future use)
         self._last_checkpoint_state: Dict[str, Dict[str, Any]] = {}
@@ -41,8 +40,6 @@ class StateManager:
         split_id: str,
         *,
         attempt: int = 0,
-        parents: Optional[Iterable[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Set the active split context for subsequent state operations."""
         self._active_split_id = split_id
@@ -51,19 +48,12 @@ class StateManager:
         self._split_offsets.setdefault(split_id, {})
         self._split_attempts.setdefault(split_id, attempt)
 
-        if metadata:
-            self._split_metadata.setdefault(split_id, {}).update(metadata)
-        if parents:
-            parent_list = list(parents)
-            self._split_metadata.setdefault(split_id, {}).setdefault("parents", parent_list)
-
     def clear_split(self, split_id: str) -> None:
         """Release all state associated with a split."""
         self._split_operator_state.pop(split_id, None)
         self._split_keyed_state.pop(split_id, None)
         self._split_offsets.pop(split_id, None)
         self._split_attempts.pop(split_id, None)
-        self._split_metadata.pop(split_id, None)
         self._last_checkpoint_state.pop(split_id, None)
         if self._active_split_id == split_id:
             self._active_split_id = None
@@ -144,9 +134,8 @@ class StateManager:
         operator_state = copy.deepcopy(self._split_operator_state.get(split_id, {}))
         keyed_state = copy.deepcopy(self._split_keyed_state.get(split_id, {}))
         offsets = copy.deepcopy(self._split_offsets.get(split_id, {}))
-        metadata = copy.deepcopy(self._split_metadata.get(split_id, {}))
 
-        if not operator_state and not keyed_state and not offsets and not metadata:
+        if not operator_state and not keyed_state and not offsets:
             # No meaningful state to persist
             return None
 
@@ -157,7 +146,6 @@ class StateManager:
             "operator_state": operator_state,
             "keyed_state": keyed_state,
             "offset": offsets,
-            "metadata": metadata,
         }
 
         state_path = f"{self.stage_id}/splits/{split_id}/checkpoints/{checkpoint_id}.pkl"
@@ -169,7 +157,6 @@ class StateManager:
             "operator_state": operator_state,
             "keyed_state": keyed_state,
             "offset": offsets,
-            "metadata": metadata,
         }
 
         handle = CheckpointHandle(
@@ -180,7 +167,6 @@ class StateManager:
             state_path=state_path,
             offset=offsets,
             size_bytes=size_bytes,
-            metadata=metadata,
         )
 
         self.logger.info(
@@ -213,14 +199,12 @@ class StateManager:
         self._split_operator_state[split_id] = state.get("operator_state", {})
         self._split_keyed_state[split_id] = state.get("keyed_state", {})
         self._split_offsets[split_id] = state.get("offset", {})
-        self._split_metadata[split_id] = state.get("metadata", {})
         self._split_attempts[split_id] = state.get("attempt", state.get("split_attempt", 0))
 
         self._last_checkpoint_state[split_id] = {
             "operator_state": copy.deepcopy(self._split_operator_state[split_id]),
             "keyed_state": copy.deepcopy(self._split_keyed_state[split_id]),
             "offset": copy.deepcopy(self._split_offsets[split_id]),
-            "metadata": copy.deepcopy(self._split_metadata[split_id]),
         }
 
         # Make the restored split active by default for backwards compatibility.

@@ -1,11 +1,12 @@
 """Stage definition and management"""
 
-from typing import Any, Dict, Optional, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, Union
 import logging
 
 from solstice.core.operator import Operator
 
-from solstice.core.stage_master import StageMasterActor
+if TYPE_CHECKING:
+    from solstice.core.stage_master import StageMasterActor
 
 
 class Stage:

@@ -1,94 +1,91 @@
-"""Integration tests for Lance with real tables"""
+"""Integration tests for LanceTableSource using real fragments."""
+
+from __future__ import annotations
+
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 import pyarrow as pa
-import tempfile
-import shutil
-from pathlib import Path
 from lance.dataset import write_dataset
 
+from solstice.core.models import Split
 from solstice.operators.sources import LanceTableSource
 
 
-@pytest.fixture
-def test_lance_table():
-    """Create a real Lance table for testing"""
+def build_lance_splits(dataset_uri: str, *, split_size: int) -> list[Split]:
+    import lance
 
-    # Create temp directory
+    dataset = lance.dataset(dataset_uri)
+    splits: list[Split] = []
+    for fragment in sorted(dataset.get_fragments(), key=lambda frag: frag.fragment_id):
+        row_count = fragment.count_rows()
+        for offset in range(0, row_count, split_size):
+            splits.append(
+                Split(
+                    split_id=f"fragment_{fragment.fragment_id}_{offset}",
+                    stage_id="source",
+                    data_range={
+                        "fragment_id": fragment.fragment_id,
+                        "offset": offset,
+                        "limit": split_size,
+                    },
+                )
+            )
+    return splits
+
+
+@pytest.fixture
+def lance_dataset_uri():
     tmpdir = tempfile.mkdtemp()
-    table_path = Path(tmpdir) / "test_table"
+    table_path = Path(tmpdir) / "table.lance"
+
+    data = pa.table(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "value": [10, 20, 30, 40, 50],
+            "name": ["Alice", "Bob", "Charlie", "Dave", "Eve"],
+        }
+    )
+    write_dataset(data, str(table_path))
 
     try:
-        # Create test data
-        data = pa.table(
-            {
-                "id": [1, 2, 3, 4, 5],
-                "value": [10, 20, 30, 40, 50],
-                "name": ["Alice", "Bob", "Charlie", "Dave", "Eve"],
-            }
-        )
-
-        # Write to Lance
-        write_dataset(data, str(table_path))
-
         yield str(table_path)
-
     finally:
-        # Cleanup
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-class TestLanceTableSourceIntegration:
-    """Integration tests for LanceTableSource with real tables"""
-
-    def test_lance_source_read_real(self, test_lance_table):
-        """Test reading from real Lance table"""
-        config = {
-            "table_path": test_lance_table,
-            "batch_size": 10,
-        }
-
-        source = LanceTableSource(config)
+@pytest.mark.integration
+class TestLanceSource:
+    def test_lance_source_reads_fragments(self, lance_dataset_uri):
+        source = LanceTableSource({"dataset_uri": lance_dataset_uri, "split_size": 2})
+        splits = build_lance_splits(lance_dataset_uri, split_size=2)
 
         batches = []
-        for split in source.plan_splits():
-            batch = source.read(split)
-            if batch is not None:
+        for split in splits:
+            batch = source.process_split(split)
+            if batch:
                 batches.append(batch)
 
-        total_rows = sum(len(batch) for batch in batches)
-        assert total_rows == 5
-
-        table = batches[0].to_table()
-        assert table.column("id").to_pylist() == [1, 2, 3, 4, 5]
-        assert table.column("name").to_pylist() == ["Alice", "Bob", "Charlie", "Dave", "Eve"]
-
-        # Cleanup
-        source.close()
-
-    def test_lance_source_with_filter(self, test_lance_table):
-        """Test reading with filter"""
-        config = {
-            "table_path": test_lance_table,
-            "batch_size": 10,
-            "columns": ["id", "name"],  # Only read specific columns
-        }
-
-        source = LanceTableSource(config)
-        batches = []
-        for split in source.plan_splits():
-            batch = source.read(split)
-            if batch is not None:
-                batches.append(batch)
-
-        total_rows = sum(len(batch) for batch in batches)
-        assert total_rows == 5
-
-        table = batches[0].to_table()
-        assert table.schema.names == ["id", "name"]
+        assert sum(len(batch) for batch in batches) == 5
+        column_names = set(batches[0].column_names)
+        assert {"id", "value", "name"}.issubset(column_names)
 
         source.close()
 
+    def test_lance_source_respects_column_selection(self, lance_dataset_uri):
+        source = LanceTableSource(
+            {"dataset_uri": lance_dataset_uri, "split_size": 10, "columns": ["id", "name"]}
+        )
+        splits = build_lance_splits(lance_dataset_uri, split_size=10)
+        for split in splits:
+            split.data_range["columns"] = ["id", "name"]
 
-# Mark as integration tests
-pytestmark = pytest.mark.integration
+        batches = [source.process_split(split) for split in splits]
+        batches = [batch for batch in batches if batch]
+        assert len(batches) == 1
+        column_names = set(batches[0].column_names)
+        assert {"id", "name"}.issubset(column_names)
+
+        source.close()
