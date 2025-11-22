@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from pyiceberg.catalog import load_catalog
 
-from solstice.core.models import Split, SplitPayload, SplitStatus
-from solstice.operators.sources.base import ArrowStreamingSource
+from solstice.core.models import Split, SplitPayload
+from solstice.core.operator import SourceOperator
 
-
-class IcebergSource(ArrowStreamingSource):
+class IcebergSource(SourceOperator):
     """Source operator for reading from Iceberg tables."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -23,27 +22,6 @@ class IcebergSource(ArrowStreamingSource):
         self.catalog = None
         self.table = None
         self.scan = None
-
-    def plan_splits(self) -> List[Split]:
-        if not self.catalog_uri or not self.table_name:
-            raise ValueError("catalog_uri and table_name are required for IcebergSource")
-
-        stage_id = (self.config or {}).get("stage_id", "iceberg_source")
-        data_range = {
-            "catalog_uri": self.catalog_uri,
-            "table_name": self.table_name,
-            "filter": self.filter_expr,
-            "snapshot_id": self.snapshot_id,
-        }
-        return [
-            Split(
-                split_id=f"{stage_id}_split_0",
-                stage_id=stage_id,
-                data_range=data_range,
-                metadata={"table": self.table_name},
-                status=SplitStatus.PENDING,
-            )
-        ]
 
     def read(self, split: Split) -> Optional[SplitPayload]:
         catalog_uri = split.data_range.get("catalog_uri") or self.catalog_uri

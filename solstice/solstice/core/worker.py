@@ -21,7 +21,7 @@ class ProcessResult:
     input_records: int
     output_records: int
     processing_time: float
-    output_ref: Optional[bytes] = None
+    output_split: Split
     worker_metrics: WorkerMetrics = field(default_factory=WorkerMetrics)
 
 @ray.remote
@@ -67,10 +67,11 @@ class StageWorker:
         Returns:
             Dictionary with split_id, output_ref (for downstream), and metrics
         """
+        self.logger.debug(
+            f"Worker {self.worker_id} processing split {split.split_id} (payload={payload_ref})",
+        )
         start_time = time.time()
 
-        # For source operators, batch is None
-        # For other operators, get the batch from payload_ref
         payload: Optional[SplitPayload] = None
         if payload_ref is not None:
             try:
@@ -81,11 +82,6 @@ class StageWorker:
                 )
                 raise
 
-        self.logger.debug(
-            f"Worker {self.worker_id} processing split {split.split_id} (payload={payload_ref})",
-        )
-
-        # Unified processing: all operators use process_split
         try:
             output_payload = self.operator.process_split(split, payload)
         except Exception as exc:
@@ -111,13 +107,19 @@ class StageWorker:
         self.logger.debug(
             f"Worker {self.worker_id} processed split {split.split_id} in {duration:.3f}s (in={input_records}, out={output_records})",
         )
+        output_split = split.derive_output_split(
+            target_split_id=f"{split.split_id}:read_{self.worker_id}",
+            data_range={
+                "object_ref": output_ref.binary() if output_ref else None,
+            },
+        )
 
         return ProcessResult(
             input_split_id=split.split_id,
             input_records=input_records,
             output_records=output_records,
             processing_time=duration,
-            output_ref=output_ref.binary() if output_ref else None,
+            output_split=output_split,
             worker_metrics=self.get_metrics(),
         )
 

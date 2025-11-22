@@ -60,11 +60,11 @@ def create_job(
     )
 
     source_stage = Stage(
-        stage_id="video_source",
+        stage_id="source",
         operator_class=LanceTableSource,
         operator_config={
             "dataset_uri": input_path,
-            "split_size": 2,
+            "split_size": 10,
         },
         master_class=LanceSourceStageMaster,
         parallelism=1,
@@ -72,7 +72,7 @@ def create_job(
     )
 
     scene_stage = Stage(
-        stage_id="scene_detect",
+        stage_id="detect",
         operator_class=FFmpegSceneDetectOperator,
         operator_config={
             "scene_threshold": scene_threshold,
@@ -128,11 +128,11 @@ def create_job(
     )
 
     job.add_stage(source_stage)
-    job.add_stage(scene_stage, upstream_stages=["video_source"])
-    job.add_stage(slice_stage, upstream_stages=["scene_detect"])
-    job.add_stage(filter_stage, upstream_stages=["slice"])
-    job.add_stage(hash_stage, upstream_stages=["filter"])
-    job.add_stage(sink_stage, upstream_stages=["hash"])
+    job.add_stage(scene_stage, upstream_stages=[source_stage.stage_id])
+    job.add_stage(slice_stage, upstream_stages=[scene_stage.stage_id])
+    job.add_stage(filter_stage, upstream_stages=[slice_stage.stage_id])
+    job.add_stage(hash_stage, upstream_stages=[filter_stage.stage_id])
+    job.add_stage(sink_stage, upstream_stages=[hash_stage.stage_id])
 
     logger.info(
         "Video slice workflow created with %d stages (filter_modulo=%d, threshold=%.2f)",

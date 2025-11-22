@@ -7,13 +7,13 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 import lance
 
 from solstice.core.models import Split, SplitPayload
-from solstice.operators.sources.base import ArrowStreamingSource
 from solstice.operators.sources.source import SourceStageMaster
 from solstice.state.backend import StateBackend
 from solstice.core.stage import Stage
+from solstice.core.operator import SourceOperator
 
 
-class LanceTableSource(ArrowStreamingSource):
+class LanceTableSource(SourceOperator):
     """Source operator for reading from Lance tables."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -69,8 +69,8 @@ class LanceSourceStageMaster(SourceStageMaster):
             row_count = frag.count_rows()
             for i in range(0, row_count, self.split_size):
                 yield Split(
-                    split_id=f"lance_{self.stage.stage_id}_{i}",
-                    stage_id="lance_source",
+                    split_id=f"{self.stage.stage_id}_{i}",
+                    stage_id=self.stage.stage_id,
                     data_range={
                         "filter": self.filter,
                         "columns": self.columns,

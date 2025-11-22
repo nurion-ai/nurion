@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 from solstice.core.models import Record, SplitPayload
 from solstice.core.operator import Operator
 
+import pyarrow as pa
+
 
 def _lavfi_movie_expr(path: Path) -> str:
     escaped = str(path).replace("\\", "\\\\").replace("'", "\\'")
@@ -106,23 +108,23 @@ class FFmpegSceneDetectOperator(Operator):
         self.min_scene_duration = float(cfg.get("min_scene_duration", 0.5))
 
     def process_split(
-        self, split, batch: Optional[SplitPayload] = None
+        self, split, payload: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
-        if batch is None:
-            raise ValueError("FFmpegSceneDetectOperator requires a batch")
+        if payload is None:
+            raise ValueError("FFmpegSceneDetectOperator requires a payload")
 
-        rows = batch.to_pylist()
-        output_records: List[Record] = []
+        rows = payload.to_table().to_pylist()
+        output_records: List[Dict[str, Any]] = []
 
         for row in rows:
             video_path = row.get("video_path")
             if not video_path:
-                continue
+                raise ValueError(f"Missing video path for row {row}")
 
             local_path = Path(video_path)
             if not local_path.exists():
                 self.logger.error("Missing video binary at %s", video_path)
-                continue
+                raise FileNotFoundError(f"Missing video binary at {video_path}")
 
             metadata = _probe_video_metadata(local_path)
             duration = metadata.get("duration_sec") or row.get("duration_sec")
@@ -159,14 +161,15 @@ class FFmpegSceneDetectOperator(Operator):
                         ),
                     }
                 )
-                output_records.append(Record(value=record))
+                output_records.append(record)
 
+        self.logger.info(f"Produced {len(output_records)} output records for split {payload.split_id}")
         if not output_records:
             return None
 
-        return SplitPayload.from_records(
-            output_records,
-            split_id=batch.split_id,
+        return SplitPayload.from_arrow(
+            pa.Table.from_pylist(output_records),
+            split_id=f"{payload.split_id}:scene-detect-{self.worker_id}",
         )
 
 
@@ -220,27 +223,23 @@ class FFmpegSliceOperator(Operator):
             raise ValueError("FFmpegSliceOperator requires a batch")
 
         rows = batch.to_pylist()
-        outputs: List[Record] = []
+        outputs: List[Dict[str, Any]] = []
 
         for row in rows:
             video_path = row.get("video_path")
             if not video_path:
-                continue
+                raise ValueError(f"Missing video path for row {row}")
 
             local_source = Path(video_path)
             if not local_source.exists():
                 self.logger.error("Missing video binary for %s", video_path)
-                continue
+                raise FileNotFoundError(f"Missing video binary at {video_path}")
 
             start = float(row.get("scene_start_sec", 0.0))
             end = float(row.get("scene_end_sec", start + self.min_duration))
             dest_path = self._build_slice_path(row)
 
-            try:
-                self._cut_scene(local_source, start, end, dest_path)
-            except subprocess.CalledProcessError as exc:
-                self.logger.error("ffmpeg slice failed for %s: %s", dest_path, exc)
-                continue
+            self._cut_scene(local_source, start, end, dest_path)
 
             record = dict(row)
             record.update(
@@ -250,14 +249,14 @@ class FFmpegSliceOperator(Operator):
                     "slice_size_bytes": dest_path.stat().st_size if dest_path.exists() else 0,
                 }
             )
-            outputs.append(Record(value=record))
+            outputs.append(record)
 
         if not outputs:
             return None
 
-        return SplitPayload.from_records(
-            outputs,
-            split_id=batch.split_id,
+        return SplitPayload.from_arrow(
+            pa.Table.from_pylist(outputs),
+            split_id=f"{batch.split_id}:slice-{self.worker_id}",
         )
 
 

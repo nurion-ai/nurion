@@ -10,15 +10,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 import pyarrow as pa
 
 
-class SplitStatus(str, Enum):
-    """Status of a split"""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
 class CheckpointStatus(str, Enum):
     """Status of a checkpoint"""
 
@@ -42,7 +33,6 @@ class Split:
     data_range: Dict[str, Any]  # offset, file path, key range, etc.
     parent_split_ids: List[str] = field(default_factory=list)
     attempt: int = 0
-    status: SplitStatus = SplitStatus.PENDING
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -55,40 +45,22 @@ class Split:
             "attempt": self.attempt,
         }
 
-    def with_status(self, status: SplitStatus) -> "Split":
-        """Return a copy of the split with an updated status timestamp."""
-        updated = Split(
-            split_id=self.split_id,
-            stage_id=self.stage_id,
-            data_range=dict(self.data_range),
-            parent_split_ids=list(self.parent_split_ids),
-            attempt=self.attempt,
-            status=status,
-        )
-        updated.created_at = self.created_at
-        updated.updated_at = time.time()
-        return updated
-
     def derive_output_split(
         self,
+        target_split_id: str,
         target_stage_id: Optional[str] = None,
-        split_id: Optional[str] = None,
+        data_range: Optional[Dict[str, Any]] = None,
     ) -> "Split":
         """Produce a new split metadata object for downstream consumption."""
         derived_stage_id = target_stage_id or self.stage_id
-        derived_split_id = split_id or self.split_id
-
-        parent_ids = list(self.parent_split_ids)
-        if self.split_id not in parent_ids:
-            parent_ids.append(self.split_id)
+        derived_split_id = target_split_id or self.split_id
 
         return Split(
             split_id=derived_split_id,
             stage_id=derived_stage_id,
-            data_range=dict(self.data_range),
-            parent_split_ids=parent_ids,
+            data_range=data_range or {},
+            parent_split_ids=[self.split_id],
             attempt=0,
-            status=SplitStatus.PENDING,
         )
 
 
@@ -257,20 +229,10 @@ class SplitPayload:
         rows: List[Record] = []
         key_col_present = self.SOLSTICE_KEY_COLUMN in self.data.column_names
         ts_col_present = self.SOLSTICE_TS_COLUMN in self.data.column_names
-        metadata_col_present = self.SOLSTICE_METADATA_COLUMN in self.data.column_names
 
         for row in self.data.to_pylist():
             key = row.pop(self.SOLSTICE_KEY_COLUMN, None) if key_col_present else None
             timestamp = row.pop(self.SOLSTICE_TS_COLUMN, None) if ts_col_present else self.timestamp
-            metadata_json = (
-                row.pop(self.SOLSTICE_METADATA_COLUMN, None) if metadata_col_present else None
-            )
-            if isinstance(metadata_json, str) and metadata_json:
-                metadata = json.loads(metadata_json)
-            elif isinstance(metadata_json, dict):
-                metadata = metadata_json
-            else:
-                metadata = {}
             rows.append(
                 Record(
                     key=key,

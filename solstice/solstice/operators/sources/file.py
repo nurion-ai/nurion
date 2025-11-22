@@ -10,11 +10,11 @@ import pyarrow as pa
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
-from solstice.core.models import Split, SplitPayload, SplitStatus
-from solstice.operators.sources.base import ArrowStreamingSource
+from solstice.core.models import Split, SplitPayload
+from solstice.core.operator import SourceOperator
 
 
-class FileSource(ArrowStreamingSource):
+class FileSource(SourceOperator):
     """Source operator for reading from local files (JSON, Parquet, CSV)."""
 
     SUPPORTED_FORMATS = {"json", "parquet", "csv"}
@@ -30,25 +30,6 @@ class FileSource(ArrowStreamingSource):
 
         self.current_file_idx = 0
         self.current_row_idx = 0
-
-
-    def plan_splits(self) -> List[Split]:
-        if not self.file_paths:
-            raise ValueError("file_paths is required for FileSource")
-
-        stage_id = (self.config or {}).get("stage_id", "file_source")
-        splits: List[Split] = []
-        for idx, file_path in enumerate(self.file_paths):
-            splits.append(
-                Split(
-                    split_id=f"{stage_id}_file_{idx}",
-                    stage_id=stage_id,
-                    data_range={"file_path": file_path, "format": self.file_format},
-                    metadata={"file_path": file_path},
-                    status=SplitStatus.PENDING,
-                )
-            )
-        return splits
 
     def read(self, split: Split) -> Optional[SplitPayload]:
         file_path = split.data_range.get("file_path")

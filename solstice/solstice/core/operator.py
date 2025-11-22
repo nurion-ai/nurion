@@ -22,7 +22,7 @@ class Operator(ABC):
 
     @abstractmethod
     def process_split(
-        self, split: Split, batch: Optional[SplitPayload] = None
+        self, split: Split, payload: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
         pass
 
@@ -47,30 +47,17 @@ class SourceOperator(Operator):
         pass
 
     def process_split(
-        self, split: Split, batch: Optional[SplitPayload] = None
+        self, split: Split, payload: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
         """Process a split for source operators.
 
-        For source operators, batch is None and split contains all metadata.
+        For source operators, payload is None and split contains all metadata.
         This method calls read() with the split.
         """
-        if batch is not None:
-            raise ValueError("Source operators should not receive batch, only split")
+        if payload is not None:
+            raise ValueError("Source operators should not receive payload, only split")
 
-        # Call read() with the split
-        result = self.read(split)
-
-        if result is None:
-            return None
-
-        # Ensure split_id matches the split metadata
-        if result.split_id != split.split_id:
-            result = result.with_new_data(
-                data=result.to_table(),
-                split_id=split.split_id,
-            )
-
-        return result
+        return self.read(split)
 
 
 class SinkOperator(Operator):
