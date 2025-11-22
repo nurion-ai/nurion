@@ -5,6 +5,8 @@ import logging
 
 from solstice.core.operator import Operator
 
+from solstice.core.stage_master import StageMasterActor
+
 
 class Stage:
     """Represents a stage in the processing pipeline"""
@@ -43,6 +45,7 @@ class Stage:
         self.operator_config = operator_config or {}
 
         from solstice.core.stage_master import StageMasterActor
+
         self.master_class = master_class or StageMasterActor
 
         # Parse parallelism parameter

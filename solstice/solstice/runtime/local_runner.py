@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from solstice.core.job import Job
 import pyarrow as pa
 
-from solstice.core.models import Record, SplitPayload
+from solstice.core.models import SplitPayload
 from solstice.core.operator import Operator, SourceOperator
 
 BatchHook = Callable[[str, SplitPayload, Operator], None]

@@ -1,6 +1,5 @@
 """Global State Master for coordinating checkpoints"""
 
-import logging
 import time
 from typing import Any, Dict, List, Optional
 import ray

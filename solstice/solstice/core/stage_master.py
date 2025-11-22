@@ -7,9 +7,9 @@ import time
 import uuid
 from collections import deque
 from collections import defaultdict
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional
 
-import ray 
+import ray
 import ray.actor
 
 from solstice.core.models import (
@@ -26,6 +26,7 @@ from solstice.core.worker import ProcessResult
 
 BACKPRESSURE_QUEUE_RATIO_THRESHOLD = 0.7
 
+
 @dataclass
 class StageStatus:
     pending_splits: int
@@ -34,8 +35,8 @@ class StageStatus:
     backpressure_active: bool
     upstream_finished: dict[str, bool]
 
-class StageMasterActor:
 
+class StageMasterActor:
     def __init__(
         self,
         job_id: str,
@@ -63,7 +64,9 @@ class StageMasterActor:
         self.workers: Dict[str, ray.actor.ActorHandle] = {}
         self.worker_active_splits = defaultdict(int)
         self.worker_metrics: Dict[str, WorkerMetrics] = {}
-        self.max_active_splits_per_worker = self.stage.operator_config.get("max_active_splits_per_worker", 100)
+        self.max_active_splits_per_worker = self.stage.operator_config.get(
+            "max_active_splits_per_worker", 100
+        )
 
         # Assignment tracking
         self._inflight_results: Dict[ray.ObjectRef, Split] = {}
@@ -92,10 +95,7 @@ class StageMasterActor:
         from solstice.core.worker import StageWorker
 
         worker_name = f"{self.stage_id}:{worker_id}"
-        worker_ref = StageWorker.options(
-            name=worker_name,
-            **self.stage.worker_resources
-        ).remote(
+        worker_ref = StageWorker.options(name=worker_name, **self.stage.worker_resources).remote(
             worker_id=worker_id,
             stage=self.stage,
         )
@@ -120,7 +120,9 @@ class StageMasterActor:
             )
 
     def scale_workers(self, target_count: int) -> None:
-        target_count = max(self.stage.min_parallelism, min(target_count, self.stage.max_parallelism))
+        target_count = max(
+            self.stage.min_parallelism, min(target_count, self.stage.max_parallelism)
+        )
         current = len(self.workers)
         if target_count == current:
             return
@@ -151,7 +153,7 @@ class StageMasterActor:
         self.downstream_stage_refs = dict(downstream)
         for stage_id in downstream:
             self.downstream_split_counters.setdefault(stage_id, 0)
-        self.logger.info( 
+        self.logger.info(
             f"Stage {self.stage_id} connected to downstream stages: {', '.join(sorted(downstream.keys())) or '<none>'}"
         )
 
@@ -189,13 +191,16 @@ class StageMasterActor:
         self._running = True
         self.logger.info("Stage %s run loop started", self.stage_id)
         try:
-            need_running = lambda: self._running and \
-                    (not all(self.upstream_finished.values()) or \
-                        len(self._pending_splits) > 0 or \
-                        len(self._inflight_results) > 0)
+            def need_running() -> bool:
+                return self._running and (
+                    not all(self.upstream_finished.values())
+                    or len(self._pending_splits) > 0
+                    or len(self._inflight_results) > 0
+                )
+
             while need_running():
                 self._schedule_pending_splits()
-                self._drain_completed_results(timeout=poll_interval*2)
+                self._drain_completed_results(timeout=poll_interval * 2)
                 time.sleep(poll_interval)
             for actor_ref in self.downstream_stage_refs.values():
                 actor_ref.set_upstream_finished.remote(self.stage_id)
@@ -226,7 +231,9 @@ class StageMasterActor:
             self.backpressure_active = False
 
     def _select_worker(self) -> Optional[str]:
-        candidates = [(worker_id, self.worker_active_splits[worker_id]) for worker_id in self.workers.keys()]
+        candidates = [
+            (worker_id, self.worker_active_splits[worker_id]) for worker_id in self.workers.keys()
+        ]
         candidates = [item for item in candidates if item[1] < self.max_active_splits_per_worker]
         if not candidates:
             return None
@@ -263,17 +270,23 @@ class StageMasterActor:
                 if not self._requeue_split(split):
                     raise
                 continue
-            self.logger.debug(f"Stage {self.stage_id} received result for split {split_id} from worker {worker_id}")
+            self.logger.debug(
+                f"Stage {self.stage_id} received result for split {split_id} from worker {worker_id}"
+            )
             self._handle_worker_result(process_result)
 
     def _requeue_split(self, split: Split) -> bool:
         split.attempt += 1
         split_id = split.split_id
         if split.attempt > self.max_split_attempts:
-            self.logger.error(f"Split {split_id} has exceeded the maximum number of attempts ({self.max_split_attempts}), giving up")
+            self.logger.error(
+                f"Split {split_id} has exceeded the maximum number of attempts ({self.max_split_attempts}), giving up"
+            )
             return False
         self._pending_splits.append(split)
-        self.logger.info(f"Requeued split {split_id} for stage {self.stage_id} (pending={len(self._pending_splits)})")
+        self.logger.info(
+            f"Requeued split {split_id} for stage {self.stage_id} (pending={len(self._pending_splits)})"
+        )
         return True
 
     def _handle_worker_result(self, process_result: ProcessResult) -> None:
@@ -296,7 +309,9 @@ class StageMasterActor:
                 )
             self._fan_out_downstream(process_result.output_split)
         worker_metrics = process_result.worker_metrics
-        self.worker_active_splits[worker_metrics.worker_id] = self.worker_active_splits[worker_metrics.worker_id] - 1
+        self.worker_active_splits[worker_metrics.worker_id] = (
+            self.worker_active_splits[worker_metrics.worker_id] - 1
+        )
         self.logger.debug(
             f"Completed split {input_split_id} on worker {worker_metrics.worker_id} (input={worker_metrics.input_records}, output={worker_metrics.output_records})",
         )
@@ -396,13 +411,14 @@ class StageMasterActor:
             except Exception:
                 continue
 
-
         return StageMetrics(
             stage_id=self.stage_id,
             worker_count=len(self.workers),
             input_records=sum(metric.input_records for metric in self.worker_metrics.values()),
             output_records=sum(metric.output_records for metric in self.worker_metrics.values()),
-            total_processing_time=sum(metric.processing_time for metric in self.worker_metrics.values()),
+            total_processing_time=sum(
+                metric.processing_time for metric in self.worker_metrics.values()
+            ),
             pending_splits=len(self._pending_splits),
             inflight_results=len(self._inflight_results),
             backpressure_active=self.backpressure_active,

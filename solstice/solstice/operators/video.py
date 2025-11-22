@@ -9,7 +9,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from solstice.core.models import Record, SplitPayload
+from solstice.core.models import SplitPayload
 from solstice.core.operator import Operator
 
 import pyarrow as pa
@@ -22,6 +22,7 @@ def _lavfi_movie_expr(path: Path) -> str:
 
 def _run_ffprobe_scene_detection(video_path: Path, threshold: float) -> List[float]:
     import logging
+
     logger = logging.getLogger(__name__)
     movie_expr = _lavfi_movie_expr(video_path)
     filtergraph = f"{movie_expr},select=gt(scene\\,{threshold})"
@@ -38,7 +39,9 @@ def _run_ffprobe_scene_detection(video_path: Path, threshold: float) -> List[flo
     ]
     logger.debug(f"Running ffprobe command: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
-    logger.debug(f"ffprobe completed for {video_path}, stdout length={len(result.stdout)}, stderr length={len(result.stderr)}")
+    logger.debug(
+        f"ffprobe completed for {video_path}, stdout length={len(result.stdout)}, stderr length={len(result.stderr)}"
+    )
     data = json.loads(result.stdout or "{}")
     frames = data.get("frames", [])
     boundaries = []
@@ -55,6 +58,7 @@ def _run_ffprobe_scene_detection(video_path: Path, threshold: float) -> List[flo
 
 def _probe_video_metadata(video_path: Path) -> Dict[str, Any]:
     import logging
+
     logger = logging.getLogger(__name__)
     cmd = [
         "ffprobe",
@@ -122,7 +126,9 @@ class FFmpegSceneDetectOperator(Operator):
             raise ValueError("FFmpegSceneDetectOperator requires a payload")
 
         rows = payload.to_table().to_pylist()
-        self.logger.debug(f"FFmpegSceneDetectOperator processing {len(rows)} rows for split {split.split_id}")
+        self.logger.debug(
+            f"FFmpegSceneDetectOperator processing {len(rows)} rows for split {split.split_id}"
+        )
         output_records: List[Dict[str, Any]] = []
 
         for idx, row in enumerate(rows):
@@ -135,13 +141,15 @@ class FFmpegSceneDetectOperator(Operator):
                 self.logger.error("Missing video binary at %s", video_path)
                 raise FileNotFoundError(f"Missing video binary at {video_path}")
 
-            self.logger.debug(f"Processing video {idx+1}/{len(rows)}: {video_path}")
+            self.logger.debug(f"Processing video {idx + 1}/{len(rows)}: {video_path}")
             metadata = _probe_video_metadata(local_path)
             duration = metadata.get("duration_sec") or row.get("duration_sec")
             if not duration:
                 duration = self.min_scene_duration
 
-            self.logger.debug(f"Running scene detection for {video_path} (duration={duration:.2f}s, threshold={self.scene_threshold})")
+            self.logger.debug(
+                f"Running scene detection for {video_path} (duration={duration:.2f}s, threshold={self.scene_threshold})"
+            )
             boundaries = _run_ffprobe_scene_detection(local_path, self.scene_threshold)
             self.logger.debug(f"Found {len(boundaries)} scene boundaries for {video_path}")
             scenes: List[tuple[float, float]] = []
@@ -175,7 +183,9 @@ class FFmpegSceneDetectOperator(Operator):
                 )
                 output_records.append(record)
 
-        self.logger.info(f"Produced {len(output_records)} output records for split {payload.split_id}")
+        self.logger.info(
+            f"Produced {len(output_records)} output records for split {payload.split_id}"
+        )
         if not output_records:
             return None
 
@@ -228,9 +238,7 @@ class FFmpegSliceOperator(Operator):
         ]
         subprocess.run(cmd, check=True)
 
-    def process_split(
-        self, split, batch: Optional[SplitPayload] = None
-    ) -> Optional[SplitPayload]:
+    def process_split(self, split, batch: Optional[SplitPayload] = None) -> Optional[SplitPayload]:
         if batch is None:
             raise ValueError("FFmpegSliceOperator requires a batch")
 
@@ -298,4 +306,3 @@ def keep_every_n(record_value: Dict[str, Any], modulo: int) -> bool:
     if modulo <= 0:
         return True
     return rank % modulo == 0
-

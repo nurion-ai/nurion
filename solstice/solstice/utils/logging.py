@@ -27,12 +27,9 @@ def create_ray_logger(name: str, level: Optional[int] = None) -> logging.Logger:
 
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
-        formatter = logging.Formatter(
-            os.getenv("SOLSTICE_LOG_FORMAT", DEFAULT_FORMAT)
-        )
+        formatter = logging.Formatter(os.getenv("SOLSTICE_LOG_FORMAT", DEFAULT_FORMAT))
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
     logger.propagate = False
     return logger
-

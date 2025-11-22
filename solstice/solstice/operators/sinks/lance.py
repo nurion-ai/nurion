@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
@@ -11,6 +10,7 @@ from lance.dataset import write_dataset
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SinkOperator
+
 
 class LanceSink(SinkOperator):
     """Sink that writes records to a Lance table."""

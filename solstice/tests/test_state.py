@@ -347,9 +347,7 @@ class TestSplitPayloadOperations:
 
         before = time.time()
 
-        batch = SplitPayload.from_records(
-            [Record(key="1", value={"v": 1})], split_id="meta_test"
-        )
+        batch = SplitPayload.from_records([Record(key="1", value={"v": 1})], split_id="meta_test")
 
         after = time.time()
 

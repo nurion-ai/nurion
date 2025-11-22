@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 import ray
 
@@ -12,6 +12,7 @@ from solstice.core.models import Split, SplitPayload, WorkerMetrics
 from solstice.core.stage import Stage
 from solstice.core.operator import Operator
 from solstice.utils.logging import create_ray_logger
+
 
 @dataclass
 class ProcessResult:
@@ -24,6 +25,7 @@ class ProcessResult:
     output_split: Split
     worker_metrics: WorkerMetrics = field(default_factory=WorkerMetrics)
 
+
 @ray.remote
 class StageWorker:
     """Ray actor that executes an operator over batches without persisting state.
@@ -35,7 +37,7 @@ class StageWorker:
     def __init__(
         self,
         worker_id: str,
-        stage: Stage,   
+        stage: Stage,
     ):
         self.worker_id = worker_id
         self.stage_id = stage.stage_id
@@ -107,7 +109,7 @@ class StageWorker:
             self.logger.debug(
                 f"Worker {self.worker_id} operator.process_split completed for split {split.split_id}, output_records={len(output_payload) if output_payload else 0}",
             )
-        except Exception as exc:
+        except Exception:
             self.logger.error(
                 f"Operator {type(self.operator).__name__} failed to process split {split.split_id} on worker {self.worker_id}",
             )

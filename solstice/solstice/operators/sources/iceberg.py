@@ -8,6 +8,7 @@ from pyiceberg.catalog import load_catalog
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator
 
+
 class IcebergSource(SourceOperator):
     """Source operator for reading from Iceberg tables."""
 

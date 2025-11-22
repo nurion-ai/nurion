@@ -3,7 +3,7 @@
 import time
 
 from abc import abstractmethod
-from typing import Iterator, List, Any
+from typing import Iterator, List
 
 from solstice.core.stage import Stage
 from solstice.core.models import Split
@@ -23,8 +23,7 @@ class SourceStageMaster(StageMasterActor):
     ):
         super().__init__(job_id, state_backend, stage, upstream_stages)
 
-        self.logger.info( f"Source operator master for stage {self.stage_id}")
-
+        self.logger.info(f"Source operator master for stage {self.stage_id}")
 
     def run(self, poll_interval: float = 0.05) -> bool:
         if self._running:
@@ -34,15 +33,19 @@ class SourceStageMaster(StageMasterActor):
         try:
             split_iterator = self.fetch_splits()
             has_more_splits = True
-            need_running = lambda: self._running and \
-                    (has_more_splits or \
-                        len(self._pending_splits) > 0 or \
-                        len(self._inflight_results) > 0)
+
+            def need_running() -> bool:
+                return self._running and (
+                    has_more_splits
+                    or len(self._pending_splits) > 0
+                    or len(self._inflight_results) > 0
+                )
+
             while need_running():
-                self.logger.debug(f"This is a source stage, requesting splits from source")
+                self.logger.debug("This is a source stage, requesting splits from source")
                 has_more_splits = self._request_splits_from_source(split_iterator)
                 self._schedule_pending_splits()
-                self._drain_completed_results(timeout=poll_interval*2)
+                self._drain_completed_results(timeout=poll_interval * 2)
                 time.sleep(poll_interval)
             for actor_ref in self.downstream_stage_refs.values():
                 actor_ref.set_upstream_finished.remote(self.stage_id)
@@ -62,7 +65,9 @@ class SourceStageMaster(StageMasterActor):
             for split in split_iterator:
                 self.enqueue_split(split, payload_ref=None)
                 if self.backpressure_active:
-                    self.logger.warning(f"Backpressure active for stage {self.stage_id}, stop enqueuing splits")
+                    self.logger.warning(
+                        f"Backpressure active for stage {self.stage_id}, stop enqueuing splits"
+                    )
                     return True  # Iterator might still have more splits
             # Iterator exhausted
             return False
@@ -73,4 +78,3 @@ class SourceStageMaster(StageMasterActor):
     @abstractmethod
     def fetch_splits(self) -> Iterator[Split]:
         raise NotImplementedError("fetch_splits must be implemented by subclasses")
-

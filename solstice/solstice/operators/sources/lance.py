@@ -24,7 +24,6 @@ class LanceTableSource(SourceOperator):
             raise ValueError("dataset_uri is required for LanceTableSource")
 
     def read(self, split: Split) -> Optional[SplitPayload]:
-        from lance.dataset import ColumnOrdering
         dataset = lance.dataset(self.dataset_uri)
         fragment = dataset.get_fragment(split.data_range.pop("fragment_id"))
         fragment_scanner = fragment.scanner(
@@ -44,10 +43,17 @@ class LanceTableSource(SourceOperator):
     def close(self) -> None:
         self.dataset_uri = None
 
+
 class LanceSourceStageMaster(SourceStageMaster):
     """Planner for Lance tables."""
 
-    def __init__(self, job_id: str, state_backend: StateBackend, stage: Stage, upstream_stages: List[str] | None = None):
+    def __init__(
+        self,
+        job_id: str,
+        state_backend: StateBackend,
+        stage: Stage,
+        upstream_stages: List[str] | None = None,
+    ):
         super().__init__(job_id, state_backend, stage, upstream_stages)
         self.config = stage.operator_config or {}
         self.dataset_uri: str = self.config.get("dataset_uri")
@@ -59,7 +65,7 @@ class LanceSourceStageMaster(SourceStageMaster):
         # self.table_name: str = config.get("table_name")
         # if not self.dataset_uri and (not self.namespace or not self.table_name):
         #     raise ValueError("dataset_uri or (namespace and table_name) is required for LancePlanner")
-        
+
         self.dataset = lance.dataset(self.dataset_uri)
         self.split_size = self.config.get("split_size", 1024)
 

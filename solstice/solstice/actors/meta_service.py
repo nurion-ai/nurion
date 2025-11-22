@@ -1,7 +1,6 @@
 """Meta Service for managing job DAG and global coordination"""
 
 import time
-import logging
 from typing import Any, Dict, List, Optional
 import ray
 

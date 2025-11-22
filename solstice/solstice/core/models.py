@@ -5,7 +5,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import pyarrow as pa
 
@@ -267,7 +267,9 @@ class SplitPayload:
         elif isinstance(data, List[Record]):
             table = pa.Table.from_pylist([record.value for record in data])
         else:
-            raise TypeError(f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}")
+            raise TypeError(
+                f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}"
+            )
         return SplitPayload(
             data=table,
             split_id=split_id or self.split_id,
@@ -298,7 +300,9 @@ class SplitPayload:
         elif isinstance(data, pa.RecordBatch):
             table = pa.Table.from_batches([data])
         else:
-            raise TypeError(f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}")
+            raise TypeError(
+                f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}"
+            )
         return cls(data=table, split_id=split_id)
 
     @classmethod

@@ -1,9 +1,9 @@
 """Base operator interface"""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Optional
 
-from solstice.core.models import Record, SplitPayload, Split
+from solstice.core.models import SplitPayload, Split
 import logging
 
 
@@ -19,7 +19,6 @@ class Operator(ABC):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.worker_id = worker_id
 
-
     @abstractmethod
     def process_split(
         self, split: Split, payload: Optional[SplitPayload] = None
@@ -32,7 +31,6 @@ class Operator(ABC):
 
 
 class SourceOperator(Operator):
-
     @abstractmethod
     def read(self, split: Split) -> Optional[SplitPayload]:
         """Read data for a specific split.

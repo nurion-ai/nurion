@@ -18,9 +18,7 @@ class TestMapOperator:
 
         operator = MapOperator({"map_fn": double_value})
         split_id = "test_split"
-        batch = SplitPayload.from_records(
-            [Record(key="1", value={"value": 5})], split_id=split_id
-        )
+        batch = SplitPayload.from_records([Record(key="1", value={"value": 5})], split_id=split_id)
         split = Split(
             split_id=split_id, stage_id="test_stage", data_range={}, status=SplitStatus.PENDING
         )

@@ -1,6 +1,6 @@
 """Filter operator"""
 
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
 from solstice.core.operator import Operator
 from solstice.core.models import Split, SplitPayload
@@ -16,7 +16,9 @@ class FilterOperator(Operator):
         if not callable(self.filter_fn):
             raise ValueError("filter_fn must be a callable returning bool")
 
-    def process_split(self, split: Split, batch: Optional[SplitPayload] = None) -> Optional[SplitPayload]:
+    def process_split(
+        self, split: Split, batch: Optional[SplitPayload] = None
+    ) -> Optional[SplitPayload]:
         """Filter record based on predicate"""
         try:
             # Apply filter

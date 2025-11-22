@@ -81,14 +81,16 @@ class RayJobRunner:
         for stage_id, stage in self.job.stages.items():
             actor_name = stage_id
             upstream_stages = self._reverse_dag.get(stage_id, [])
-            stage_master = ray.remote(stage.master_class)\
-                .options(name=actor_name, max_concurrency=10)\
+            stage_master = (
+                ray.remote(stage.master_class)
+                .options(name=actor_name, max_concurrency=10)
                 .remote(
                     job_id=self.job.job_id,
                     state_backend=self.job.state_backend,
                     upstream_stages=upstream_stages,
                     stage=stage,
                 )
+            )
             self.stage_actor_refs[stage_id] = stage_master
             ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
 
@@ -206,7 +208,9 @@ class RayJobRunner:
         try:
             while self._running:
                 if deadline is not None and time.time() > deadline:
-                    raise TimeoutError(f"Timeout while waiting for job {self.job.job_id} to complete.")
+                    raise TimeoutError(
+                        f"Timeout while waiting for job {self.job.job_id} to complete."
+                    )
                 self._check_stage_run_refs()
                 if self._is_pipeline_idle():
                     self.logger.info("All stages idle; stopping job %s", self.job.job_id)
