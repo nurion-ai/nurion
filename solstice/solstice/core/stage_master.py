@@ -53,7 +53,7 @@ class StageMasterActor:
 
         # State & split tracking
         self.state_manager = StateManager(stage_id=self.stage_id, state_backend=state_backend)
-        self._pending_splits: Deque[Tuple[Split, Optional[str]]] = deque()
+        self._pending_splits: Deque[Split] = deque()
         self.max_split_attempts = self.stage.operator_config.get("max_split_attempts", 3)
         self.downstream_stage_refs: Dict[str, ray.actor.ActorHandle] = {}
         self.downstream_split_counters: Dict[str, int] = {}
@@ -66,7 +66,7 @@ class StageMasterActor:
         self.max_active_splits_per_worker = self.stage.operator_config.get("max_active_splits_per_worker", 100)
 
         # Assignment tracking
-        self._inflight_results: Dict[ray.ObjectRef, str] = {}
+        self._inflight_results: Dict[ray.ObjectRef, Split] = {}
         self._split_to_worker: Dict[str, str] = {}
 
         # Runtime bookkeeping
@@ -91,7 +91,11 @@ class StageMasterActor:
         worker_id = f"{self.stage_id}_worker_{len(self.workers)}_{uuid.uuid4().hex[:6]}"
         from solstice.core.worker import StageWorker
 
-        worker_ref = StageWorker.options(**self.stage.worker_resources).remote(
+        worker_name = f"{self.stage_id}:{worker_id}"
+        worker_ref = StageWorker.options(
+            name=worker_name,
+            **self.stage.worker_resources
+        ).remote(
             worker_id=worker_id,
             stage=self.stage,
         )
@@ -154,11 +158,16 @@ class StageMasterActor:
     def enqueue_split(
         self,
         split: Split,
-        payload_ref: Optional[str] = None,
+        payload_ref: Optional[ray.ObjectRef] = None,
     ) -> None:
         """Receive a new split from upstream (or create one for source stages)."""
-        self._pending_splits.append((split, payload_ref))
-        self.logger.debug( f"Enqueued split {split.split_id} (payload={payload_ref}) (pending={len(self._pending_splits)})")
+        # payload_ref is intentionally ignored; object references are carried inside split.data_range.
+        self._pending_splits.append(split)
+        obj_ref = split.data_range.get("object_ref")
+        self.logger.debug(
+            f"Enqueued split {split.split_id} (object_ref={obj_ref}) "
+            f"(pending={len(self._pending_splits)})"
+        )
 
         self.state_manager.activate_split(split.split_id)
 
@@ -184,7 +193,7 @@ class StageMasterActor:
                     (not all(self.upstream_finished.values()) or \
                         len(self._pending_splits) > 0 or \
                         len(self._inflight_results) > 0)
-            while need_running:
+            while need_running():
                 self._schedule_pending_splits()
                 self._drain_completed_results(timeout=poll_interval*2)
                 time.sleep(poll_interval)
@@ -203,15 +212,15 @@ class StageMasterActor:
             if worker_id is None:
                 self.logger.debug(f"No worker available for stage {self.stage_id}")
                 break
-            split, payload_ref = self._pending_splits.popleft()
+            split = self._pending_splits.popleft()
             self.worker_active_splits[worker_id] = self.worker_active_splits[worker_id] + 1
             worker_ref = self.workers[worker_id]
-            self.logger.debug(f"Worker {worker_id} selected for split {split.split_id}, pending={len(self._pending_splits)}, inflight={len(self._inflight_results)}")
-            process_result_ref = worker_ref.process_split.remote(
-                split,
-                payload_ref=payload_ref,
+            self.logger.debug(
+                f"Worker {worker_id} selected for split {split.split_id}, "
+                f"pending={len(self._pending_splits)}, inflight={len(self._inflight_results)}"
             )
-            self._inflight_results[process_result_ref] = split.split_id
+            process_result_ref = worker_ref.process_split.remote(split)
+            self._inflight_results[process_result_ref] = split
             self._split_to_worker[split.split_id] = worker_id
         if len(self._pending_splits) < self.max_queue_size * BACKPRESSURE_QUEUE_RATIO_THRESHOLD:
             self.backpressure_active = False
@@ -238,10 +247,11 @@ class StageMasterActor:
         if ready_refs:
             self.logger.debug(f"Stage {self.stage_id} draining {len(ready_refs)} completed results")
         for ref in ready_refs:
-            split_id = self._inflight_results.pop(ref, None)
-            if split_id is None:
+            split = self._inflight_results.pop(ref, None)
+            if split is None:
                 self.logger.error(f"Result {ref} not found in inflight results")
                 continue
+            split_id = split.split_id
             worker_id = self._split_to_worker.pop(split_id, None)
             self.worker_active_splits[worker_id] = self.worker_active_splits[worker_id] - 1
             try:
@@ -250,25 +260,20 @@ class StageMasterActor:
                 self.logger.error(
                     f"Stage {self.stage_id} failed to fetch result for split {split_id} from worker {worker_id}: {exc}",
                 )
-                if not self._requeue_split(split_id):
+                if not self._requeue_split(split):
                     raise
                 continue
             self.logger.debug(f"Stage {self.stage_id} received result for split {split_id} from worker {worker_id}")
             self._handle_worker_result(process_result)
 
-    def _requeue_split(self, split_id: str) -> bool:
-        split = self.splits.get(split_id)
-        if not split:
-            self.logger.error(f"Split {split_id} not found")
-            return False
+    def _requeue_split(self, split: Split) -> bool:
         split.attempt += 1
+        split_id = split.split_id
         if split.attempt > self.max_split_attempts:
             self.logger.error(f"Split {split_id} has exceeded the maximum number of attempts ({self.max_split_attempts}), giving up")
-            self.splits.pop(split_id, None)
-            self.split_payloads.pop(split_id, None)
             return False
-        self._pending_splits.appendleft(split)
-        self.logger.info(f"Requeued split {split_id} for stage {self.stage_id} (pending={len(self.pending_splits)})")
+        self._pending_splits.append(split)
+        self.logger.info(f"Requeued split {split_id} for stage {self.stage_id} (pending={len(self._pending_splits)})")
         return True
 
     def _handle_worker_result(self, process_result: ProcessResult) -> None:
@@ -276,8 +281,19 @@ class StageMasterActor:
         # Clear split state after processing
         self.state_manager.clear_split(input_split_id)
 
-        self.logger.debug(f"Stage {self.stage_id} handling result for input split {input_split_id} and output split {process_result.output_split.split_id}, downstreams are {self.downstream_stage_refs}")
+        self.logger.debug(
+            f"Stage {self.stage_id} handling result for input split {input_split_id} "
+            f"and output split {process_result.output_split.split_id}, "
+            f"output_records={process_result.output_records}, "
+            f"downstreams are {list(self.downstream_stage_refs.keys())}"
+        )
         if process_result.output_split and self.downstream_stage_refs:
+            object_ref = process_result.output_split.data_range.get("object_ref")
+            if object_ref:
+                self.logger.debug(
+                    f"Stage {self.stage_id} forwarding split {process_result.output_split.split_id} "
+                    f"with object_ref={object_ref} to downstream stages"
+                )
             self._fan_out_downstream(process_result.output_split)
         worker_metrics = process_result.worker_metrics
         self.worker_active_splits[worker_metrics.worker_id] = self.worker_active_splits[worker_metrics.worker_id] - 1
@@ -288,7 +304,7 @@ class StageMasterActor:
 
     def _fan_out_downstream(self, split: Split) -> None:
         for downstream_id, actor_ref in self.downstream_stage_refs.items():
-            actor_ref.enqueue_split.remote(split, split.data_range.get("object_ref"))
+            actor_ref.enqueue_split.remote(split)
             self.logger.debug(
                 f"Forwarded split {split.split_id} to downstream {downstream_id}",
             )

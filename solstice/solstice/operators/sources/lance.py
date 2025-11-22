@@ -16,8 +16,8 @@ from solstice.core.operator import SourceOperator
 class LanceTableSource(SourceOperator):
     """Source operator for reading from Lance tables."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
         cfg = config or {}
         self.dataset_uri: Optional[str] = cfg.get("dataset_uri")
         if not self.dataset_uri:

@@ -13,8 +13,8 @@ from solstice.core.operator import SinkOperator
 class PrintSink(SinkOperator):
     """Sink that prints records to stdout."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
         self.logger = logging.getLogger(self.__class__.__name__)
         self.count = 0
 

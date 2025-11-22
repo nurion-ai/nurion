@@ -17,7 +17,7 @@ from solstice.core.operator import SinkOperator
 class FileSink(SinkOperator):
     """Sink that writes records to a local path."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
         super().__init__(config)
         cfg = config or {}
         self.output_path = cfg.get("output_path")
@@ -33,11 +33,11 @@ class FileSink(SinkOperator):
         self._initialized = False
 
     def process_split(
-        self, split: Split, batch: Optional[SplitPayload] = None
+        self, split: Split, payload: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
-        if batch is None:
-            raise ValueError("FileSink requires a batch")
-        self.buffer.extend(batch.to_pylist())
+        if payload is None:
+            raise ValueError("FileSink requires a payload")
+        self.buffer.extend(payload.to_pylist())
         if len(self.buffer) >= self.buffer_size:
             self._flush()
         return None

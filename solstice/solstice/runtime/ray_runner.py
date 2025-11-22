@@ -53,13 +53,13 @@ class RayJobRunner:
         self._ensure_ray()
         self.logger.info("Initializing job %s", self.job.job_id)
 
-        self.meta_service = MetaService.remote(
+        self.meta_service = MetaService.options(name="MetaService").remote(
             job_id=self.job.job_id,
             state_backend=self.job.state_backend,
             config=self.job.config,
         )
 
-        self.global_state_master = GlobalStateMaster.remote(
+        self.global_state_master = GlobalStateMaster.options(name="GlobalStateMaster").remote(
             job_id=self.job.job_id,
             state_backend=self.job.state_backend,
             checkpoint_interval_secs=self.job.checkpoint_interval_secs,
@@ -79,7 +79,7 @@ class RayJobRunner:
             )
 
         for stage_id, stage in self.job.stages.items():
-            actor_name = f"{self.job.job_id}:{stage_id}"
+            actor_name = stage_id
             upstream_stages = self._reverse_dag.get(stage_id, [])
             stage_master = ray.remote(stage.master_class)\
                 .options(name=actor_name, max_concurrency=10)\

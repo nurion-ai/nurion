@@ -225,6 +225,10 @@ class SplitPayload:
     def to_table(self) -> pa.Table:
         return self.data
 
+    def to_pylist(self) -> List[Dict[str, Any]]:
+        """Return the payload as a list of Python dictionaries."""
+        return self.data.to_pylist()
+
     def to_records(self) -> List[Record]:
         rows: List[Record] = []
         key_col_present = self.SOLSTICE_KEY_COLUMN in self.data.column_names

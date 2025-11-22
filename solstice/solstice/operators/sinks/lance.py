@@ -15,8 +15,8 @@ from solstice.core.operator import SinkOperator
 class LanceSink(SinkOperator):
     """Sink that writes records to a Lance table."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
         cfg = config or {}
         self.table_path = cfg.get("table_path")
         self.mode = cfg.get("mode", "append")

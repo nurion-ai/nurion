@@ -21,6 +21,8 @@ def _lavfi_movie_expr(path: Path) -> str:
 
 
 def _run_ffprobe_scene_detection(video_path: Path, threshold: float) -> List[float]:
+    import logging
+    logger = logging.getLogger(__name__)
     movie_expr = _lavfi_movie_expr(video_path)
     filtergraph = f"{movie_expr},select=gt(scene\\,{threshold})"
     cmd = [
@@ -34,7 +36,9 @@ def _run_ffprobe_scene_detection(video_path: Path, threshold: float) -> List[flo
         "lavfi",
         filtergraph,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    logger.debug(f"Running ffprobe command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+    logger.debug(f"ffprobe completed for {video_path}, stdout length={len(result.stdout)}, stderr length={len(result.stderr)}")
     data = json.loads(result.stdout or "{}")
     frames = data.get("frames", [])
     boundaries = []
@@ -50,6 +54,8 @@ def _run_ffprobe_scene_detection(video_path: Path, threshold: float) -> List[flo
 
 
 def _probe_video_metadata(video_path: Path) -> Dict[str, Any]:
+    import logging
+    logger = logging.getLogger(__name__)
     cmd = [
         "ffprobe",
         "-v",
@@ -64,7 +70,9 @@ def _probe_video_metadata(video_path: Path) -> Dict[str, Any]:
         "json",
         str(video_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    logger.debug(f"Running ffprobe metadata command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+    logger.debug(f"ffprobe metadata completed for {video_path}")
     payload = json.loads(result.stdout or "{}")
     streams = payload.get("streams", [])
     width = height = None
@@ -101,8 +109,8 @@ def _compute_global_slice_rank(global_index: int, scene_index: int) -> int:
 class FFmpegSceneDetectOperator(Operator):
     """Detect scenes for each video referenced in a batch."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
         cfg = config or {}
         self.scene_threshold = float(cfg.get("scene_threshold", 0.4))
         self.min_scene_duration = float(cfg.get("min_scene_duration", 0.5))
@@ -114,9 +122,10 @@ class FFmpegSceneDetectOperator(Operator):
             raise ValueError("FFmpegSceneDetectOperator requires a payload")
 
         rows = payload.to_table().to_pylist()
+        self.logger.debug(f"FFmpegSceneDetectOperator processing {len(rows)} rows for split {split.split_id}")
         output_records: List[Dict[str, Any]] = []
 
-        for row in rows:
+        for idx, row in enumerate(rows):
             video_path = row.get("video_path")
             if not video_path:
                 raise ValueError(f"Missing video path for row {row}")
@@ -126,12 +135,15 @@ class FFmpegSceneDetectOperator(Operator):
                 self.logger.error("Missing video binary at %s", video_path)
                 raise FileNotFoundError(f"Missing video binary at {video_path}")
 
+            self.logger.debug(f"Processing video {idx+1}/{len(rows)}: {video_path}")
             metadata = _probe_video_metadata(local_path)
             duration = metadata.get("duration_sec") or row.get("duration_sec")
             if not duration:
                 duration = self.min_scene_duration
 
+            self.logger.debug(f"Running scene detection for {video_path} (duration={duration:.2f}s, threshold={self.scene_threshold})")
             boundaries = _run_ffprobe_scene_detection(local_path, self.scene_threshold)
+            self.logger.debug(f"Found {len(boundaries)} scene boundaries for {video_path}")
             scenes: List[tuple[float, float]] = []
             previous = 0.0
             for boundary in boundaries:
@@ -176,8 +188,8 @@ class FFmpegSceneDetectOperator(Operator):
 class FFmpegSliceOperator(Operator):
     """Materialize binary slices for each detected scene."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
         cfg = config or {}
         slice_dir = cfg.get("slice_dir")
         if not slice_dir:

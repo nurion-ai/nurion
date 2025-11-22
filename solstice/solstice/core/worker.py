@@ -39,7 +39,7 @@ class StageWorker:
     ):
         self.worker_id = worker_id
         self.stage_id = stage.stage_id
-        self.operator: Operator = stage.operator_class(stage.operator_config)
+        self.operator: Operator = stage.operator_class(stage.operator_config, worker_id=worker_id)
 
         self.logger = create_ray_logger(f"StageWorker-{self.stage_id}-{self.worker_id}")
 
@@ -56,7 +56,7 @@ class StageWorker:
     def process_split(
         self,
         split: Split,
-        payload_ref: Optional[str] = None,
+        payload_ref: Optional[SplitPayload] = None,
     ) -> ProcessResult:
         """Process a split with the operator.
 
@@ -73,17 +73,40 @@ class StageWorker:
         start_time = time.time()
 
         payload: Optional[SplitPayload] = None
+        payload_ref = payload_ref or split.data_range.get("object_ref")
         if payload_ref is not None:
+            if not isinstance(payload_ref, ray.ObjectRef):
+                self.logger.error(
+                    f"Worker {self.worker_id} received invalid payload reference type "
+                    f"{type(payload_ref)} for split {split.split_id}",
+                )
+                raise TypeError(
+                    f"payload_ref must be a ray.ObjectRef, got {type(payload_ref)}",
+                )
             try:
-                payload = ray.get(ray.ObjectRef.from_binary(payload_ref))
+                self.logger.debug(
+                    f"Worker {self.worker_id} fetching payload for split {split.split_id}",
+                )
+                payload = ray.get(payload_ref, timeout=300)
+                self.logger.debug(
+                    f"Worker {self.worker_id} fetched payload for split {split.split_id}, "
+                    f"records={len(payload) if payload else 0}",
+                )
             except Exception as exc:
                 self.logger.error(
                     f"Worker {self.worker_id} failed to fetch payload for split {split.split_id}: {exc}",
+                    exc_info=True,
                 )
                 raise
 
         try:
+            self.logger.debug(
+                f"Worker {self.worker_id} calling operator.process_split for split {split.split_id}",
+            )
             output_payload = self.operator.process_split(split, payload)
+            self.logger.debug(
+                f"Worker {self.worker_id} operator.process_split completed for split {split.split_id}, output_records={len(output_payload) if output_payload else 0}",
+            )
         except Exception as exc:
             self.logger.error(
                 f"Operator {type(self.operator).__name__} failed to process split {split.split_id} on worker {self.worker_id}",
@@ -95,7 +118,14 @@ class StageWorker:
 
         output_ref: Optional[ray.ObjectRef] = None
         if output_payload:
+            self.logger.debug(
+                f"Worker {self.worker_id} putting output payload to Ray object store for split {split.split_id}, records={len(output_payload)}",
+            )
             output_ref = ray.put(output_payload)
+            # ray.put() is synchronous, object is available immediately after return
+            self.logger.debug(
+                f"Worker {self.worker_id} put output payload to Ray object store for split {split.split_id}, object_ref={output_ref}",
+            )
 
         # Update metrics
         self.total_input_records += input_records
@@ -110,7 +140,7 @@ class StageWorker:
         output_split = split.derive_output_split(
             target_split_id=f"{split.split_id}:read_{self.worker_id}",
             data_range={
-                "object_ref": output_ref.binary() if output_ref else None,
+                "object_ref": output_ref,
             },
         )
 
