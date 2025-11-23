@@ -1,6 +1,5 @@
 """Global State Master for coordinating checkpoints"""
 
-import logging
 import time
 from typing import Any, Dict, List, Optional
 import ray
@@ -8,6 +7,7 @@ import ray
 from solstice.core.models import CheckpointHandle
 from solstice.state.checkpoint import CheckpointCoordinator
 from solstice.state.backend import StateBackend
+from solstice.utils.logging import create_ray_logger
 
 
 @ray.remote
@@ -24,7 +24,7 @@ class GlobalStateMaster:
         self.job_id = job_id
         self.state_backend = state_backend
 
-        self.logger = logging.getLogger("GlobalStateMaster")
+        self.logger = create_ray_logger(f"GlobalStateMaster-{job_id}")
 
         # Checkpoint coordination
         self.checkpoint_coordinator = CheckpointCoordinator(
@@ -101,7 +101,6 @@ class GlobalStateMaster:
                             offset=handle.get("offset", {}),
                             size_bytes=handle.get("size_bytes", 0),
                             timestamp=handle.get("timestamp", time.time()),
-                            metadata=handle.get("metadata", {}),
                         )
                         self.checkpoint_coordinator.add_checkpoint_handle(
                             checkpoint_id=checkpoint_id,

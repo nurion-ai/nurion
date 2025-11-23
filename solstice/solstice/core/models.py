@@ -1,22 +1,12 @@
 """Core data models for the streaming framework"""
 
-import json
 import time
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import pyarrow as pa
-
-
-class SplitStatus(str, Enum):
-    """Status of a split"""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
 
 
 class CheckpointStatus(str, Enum):
@@ -33,7 +23,7 @@ class Split:
     """Represents a logical split of data for processing.
 
     Each split tracks the scheduling metadata for a *single* data batch. The actual
-    payload lives separately in :class:`Batch` instances; the runtime associates
+    payload lives separately in :class:`SplitPayload` instances; the runtime associates
     splits with batches via identifiers/object references.
     """
 
@@ -42,14 +32,8 @@ class Split:
     data_range: Dict[str, Any]  # offset, file path, key range, etc.
     parent_split_ids: List[str] = field(default_factory=list)
     attempt: int = 0
-    status: SplitStatus = SplitStatus.PENDING
-    assigned_worker: Optional[str] = None
-    retry_count: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    record_count: int = 0
-    is_terminal: bool = False
 
     def lineage(self) -> Dict[str, Any]:
         """Return lineage metadata for downstream operators."""
@@ -58,61 +42,24 @@ class Split:
             "stage_id": self.stage_id,
             "parents": list(self.parent_split_ids),
             "attempt": self.attempt,
-            "metadata": dict(self.metadata),
         }
 
-    def with_status(self, status: SplitStatus) -> "Split":
-        """Return a copy of the split with an updated status timestamp."""
-        updated = Split(
-            split_id=self.split_id,
-            stage_id=self.stage_id,
-            data_range=dict(self.data_range),
-            parent_split_ids=list(self.parent_split_ids),
-            attempt=self.attempt,
-            status=status,
-            assigned_worker=self.assigned_worker,
-            retry_count=self.retry_count,
-            metadata=dict(self.metadata),
-            record_count=self.record_count,
-            is_terminal=self.is_terminal,
-        )
-        updated.created_at = self.created_at
-        updated.updated_at = time.time()
-        return updated
-
-    def with_output(
+    def derive_output_split(
         self,
-        *,
+        target_split_id: str,
         target_stage_id: Optional[str] = None,
-        split_id: Optional[str] = None,
-        record_count: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        is_terminal: Optional[bool] = None,
+        data_range: Optional[Dict[str, Any]] = None,
     ) -> "Split":
         """Produce a new split metadata object for downstream consumption."""
-        combined_metadata = dict(self.metadata)
-        if metadata:
-            combined_metadata.update(metadata)
-
         derived_stage_id = target_stage_id or self.stage_id
-        derived_split_id = split_id or self.split_id
-
-        parent_ids = list(self.parent_split_ids)
-        if self.split_id not in parent_ids:
-            parent_ids.append(self.split_id)
+        derived_split_id = target_split_id or self.split_id
 
         return Split(
             split_id=derived_split_id,
             stage_id=derived_stage_id,
-            data_range=dict(self.data_range),
-            parent_split_ids=parent_ids,
+            data_range=data_range or {},
+            parent_split_ids=[self.split_id],
             attempt=0,
-            status=SplitStatus.PENDING,
-            assigned_worker=None,
-            retry_count=0,
-            metadata=combined_metadata,
-            record_count=record_count if record_count is not None else self.record_count,
-            is_terminal=self.is_terminal if is_terminal is None else is_terminal,
         )
 
 
@@ -122,8 +69,9 @@ class WorkerMetrics:
 
     worker_id: str
     stage_id: str
-    processing_rate: float  # records/sec
-    backlog_size: int
+    input_records: int
+    output_records: int
+    processing_time: float
     cpu_usage: float = 0.0
     memory_usage: float = 0.0
     timestamp: float = field(default_factory=time.time)
@@ -133,8 +81,9 @@ class WorkerMetrics:
         return {
             "worker_id": self.worker_id,
             "stage_id": self.stage_id,
-            "processing_rate": self.processing_rate,
-            "backlog_size": self.backlog_size,
+            "input_records": self.input_records,
+            "output_records": self.output_records,
+            "processing_time": self.processing_time,
             "cpu_usage": self.cpu_usage,
             "memory_usage": self.memory_usage,
             "timestamp": self.timestamp,
@@ -149,7 +98,7 @@ class StageMetrics:
     worker_count: int
     input_records: int
     output_records: int
-    total_processing_rate: float  # records/sec
+    total_processing_time: float  # seconds
     pending_splits: int
     inflight_results: int
     output_buffer_size: int
@@ -186,7 +135,6 @@ class CheckpointHandle:
     offset: Dict[str, Any]
     size_bytes: int
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -216,15 +164,21 @@ class BackpressureSignal:
 class Record:
     """A single record flowing through the pipeline"""
 
-    key: Optional[str] = None
-    value: Any = None
+    key: str = field(default="")
+    value: Dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key,
+            "value": self.value,
+            "timestamp": self.timestamp,
+        }
 
 
 @dataclass
-class Batch:
-    """Arrow-backed batch of records.
+class SplitPayload:
+    """Arrow-backed payload of records tied to a split.
 
     The authoritative payload is stored as a :class:`pyarrow.Table` to enable
     zero-copy operations and efficient integration with the Arrow ecosystem.
@@ -232,46 +186,24 @@ class Batch:
     which materializes Python ``Record`` objects on demand.
     """
 
-    data: Union[pa.Table, pa.RecordBatch]
-    batch_id: str
-    source_split: Optional[str] = None
+    data: pa.Table
+    split_id: str
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
     is_materialized: bool = field(default=False, init=False, repr=False)
-
-    _table: pa.Table = field(init=False, repr=False)
-    _records_cache: Optional[List[Record]] = field(default=None, init=False, repr=False)
 
     SOLSTICE_KEY_COLUMN = "__solstice_key"
     SOLSTICE_TS_COLUMN = "__solstice_timestamp"
-    SOLSTICE_METADATA_COLUMN = "__solstice_metadata_json"
-
-    def __post_init__(self) -> None:
-        if isinstance(self.data, pa.RecordBatch):
-            self._table = pa.Table.from_batches([self.data])
-        elif isinstance(self.data, pa.Table):
-            self._table = self.data
-        else:
-            raise TypeError(
-                "Batch payload must be a pyarrow.Table or pyarrow.RecordBatch, "
-                f"got {type(self.data)!r}"
-            )
-
-        # Normalise metadata dict
-        self.metadata = dict(self.metadata)
-        # Ensure timestamp column exists if provided as metadata
-        self.data = self._table
 
     def __len__(self) -> int:
-        return self._table.num_rows
+        return self.data.num_rows
 
     @property
     def schema(self) -> pa.Schema:
-        return self._table.schema
+        return self.data.schema
 
     @property
     def column_names(self) -> List[str]:
-        return list(self._table.column_names)
+        return list(self.data.column_names)
 
     @property
     def records(self) -> List[Record]:
@@ -281,105 +213,76 @@ class Batch:
         data should prefer :meth:`to_table`, :meth:`column` or other zero-copy APIs.
         """
         warnings.warn(
-            "Batch.records materializes Python objects and defeats zero-copy benefits. "
+            "SplitPayload.records materializes Python objects and defeats zero-copy benefits. "
             "Prefer operating on Arrow tables directly.",
             DeprecationWarning,
             stacklevel=2,
         )
-        if self._records_cache is None:
-            self._records_cache = self.to_records()
-        return list(self._records_cache)
+        return list(self.to_records())
 
     def to_table(self) -> pa.Table:
-        return self._table
-
-    def to_record_batch(self) -> pa.RecordBatch:
-        return pa.RecordBatch.from_struct_array(self._table.to_struct_array())
+        return self.data
 
     def to_pylist(self) -> List[Dict[str, Any]]:
-        return self._table.to_pylist()
+        """Return the payload as a list of Python dictionaries."""
+        return self.data.to_pylist()
 
     def to_records(self) -> List[Record]:
         rows: List[Record] = []
-        key_col_present = self.SOLSTICE_KEY_COLUMN in self._table.column_names
-        ts_col_present = self.SOLSTICE_TS_COLUMN in self._table.column_names
-        metadata_col_present = self.SOLSTICE_METADATA_COLUMN in self._table.column_names
-
-        for row in self._table.to_pylist():
+        key_col_present = self.SOLSTICE_KEY_COLUMN in self.data.column_names
+        ts_col_present = self.SOLSTICE_TS_COLUMN in self.data.column_names
+        for row in self.data.to_pylist():
             key = row.pop(self.SOLSTICE_KEY_COLUMN, None) if key_col_present else None
             timestamp = row.pop(self.SOLSTICE_TS_COLUMN, None) if ts_col_present else self.timestamp
-            metadata_json = (
-                row.pop(self.SOLSTICE_METADATA_COLUMN, None) if metadata_col_present else None
-            )
-            if isinstance(metadata_json, str) and metadata_json:
-                metadata = json.loads(metadata_json)
-            elif isinstance(metadata_json, dict):
-                metadata = metadata_json
-            else:
-                metadata = {}
             rows.append(
                 Record(
-                    key=key,
+                    key=key or "",
                     value=row,
                     timestamp=timestamp if timestamp is not None else time.time(),
-                    metadata=metadata,
                 )
             )
         return rows
 
-    @property
-    def split_id(self) -> Optional[str]:
-        """The logical split this batch belongs to."""
-        return self.source_split
-
-    def with_split(self, split_id: Optional[str]) -> "Batch":
-        """Return a copy of the batch associated with ``split_id``."""
-        cloned = Batch(
-            data=self._table,
-            batch_id=self.batch_id,
-            source_split=split_id,
-            metadata=dict(self.metadata),
+    def with_split(self, split_id: Optional[str]) -> "SplitPayload":
+        """Return a copy of the payload associated with ``split_id``."""
+        cloned = SplitPayload(
+            data=self.data,
+            split_id=split_id or self.split_id,
         )
-        if self._records_cache is not None:
-            cloned._records_cache = list(self._records_cache)
-            cloned.is_materialized = self.is_materialized
         return cloned
 
     def with_new_data(
         self,
-        data: Union[pa.Table, pa.RecordBatch],
-        *,
-        batch_id: Optional[str] = None,
-        source_split: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> "Batch":
+        data: Union[pa.Table, pa.RecordBatch, Sequence[Record]],
+        split_id: Optional[str] = None,
+    ) -> "SplitPayload":
         """Return a new batch with the provided Arrow payload and optional overrides."""
-        return Batch(
-            data=data,
-            batch_id=batch_id or self.batch_id,
-            source_split=self.source_split if source_split is None else source_split,
-            metadata=metadata or dict(self.metadata),
+        if isinstance(data, pa.Table):
+            table = data
+        elif isinstance(data, pa.RecordBatch):
+            table = pa.Table.from_batches([data])
+        elif isinstance(data, Sequence):
+            if not all(isinstance(item, Record) for item in data):
+                raise TypeError("Expected an iterable of Record instances")
+            table = pa.Table.from_pylist(self._rows_from_records(data))
+        else:
+            raise TypeError(
+                f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}"
+            )
+        return SplitPayload(
+            data=table,
+            split_id=split_id or self.split_id,
         )
 
-    def with_columns(self, columns: Sequence[str]) -> "Batch":
+    def with_columns(self, columns: Sequence[str]) -> "SplitPayload":
         """Return a batch containing only the specified columns."""
         missing = set(columns) - set(self.column_names)
         if missing:
             raise ValueError(f"Columns {missing} not found in batch schema")
-        return self.with_new_data(self._table.select(columns))
+        return self.with_new_data(self.data.select(columns))
 
     def column(self, name: str) -> pa.ChunkedArray:
-        return self._table.column(name)
-
-    def with_metadata(self, **metadata: Any) -> "Batch":
-        merged = dict(self.metadata)
-        merged.update(metadata)
-        return Batch(
-            data=self._table,
-            batch_id=self.batch_id,
-            source_split=self.source_split,
-            metadata=merged,
-        )
+        return self.data.column(name)
 
     def is_empty(self) -> bool:
         return len(self) == 0
@@ -387,93 +290,62 @@ class Batch:
     @classmethod
     def from_arrow(
         cls,
-        data: Union[pa.Table, pa.RecordBatch, Iterable[pa.RecordBatch]],
-        *,
-        batch_id: str,
-        source_split: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> "Batch":
+        data: Union[pa.Table, pa.RecordBatch],
+        split_id: str,
+    ) -> "SplitPayload":
         """Construct a batch from Arrow data."""
         if isinstance(data, pa.Table):
             table = data
         elif isinstance(data, pa.RecordBatch):
             table = pa.Table.from_batches([data])
         else:
-            # Assume iterable of record batches
-            table = pa.Table.from_batches(list(data))
-        return cls(
-            data=table,
-            batch_id=batch_id,
-            source_split=source_split,
-            metadata=metadata or {},
-        )
+            raise TypeError(
+                f"data must be a pyarrow.Table or pyarrow.RecordBatch, got {type(data)}"
+            )
+        return cls(data=table, split_id=split_id)
 
     @classmethod
     def from_records(
         cls,
         records: Sequence[Union[Record, Dict[str, Any]]],
-        *,
-        batch_id: str,
-        source_split: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        split_id: str,
         schema: Optional[pa.Schema] = None,
-    ) -> "Batch":
+    ) -> "SplitPayload":
         """Materialize an Arrow batch from Python ``Record`` objects or dictionaries."""
         rows: List[Dict[str, Any]] = []
         for record in records:
             if isinstance(record, Record):
-                row: Dict[str, Any] = {}
-                if isinstance(record.value, dict):
-                    row.update(record.value)
-                else:
-                    row["value"] = record.value
-                row[cls.SOLSTICE_KEY_COLUMN] = record.key
-                row[cls.SOLSTICE_TS_COLUMN] = record.timestamp
-                if record.metadata:
-                    row[cls.SOLSTICE_METADATA_COLUMN] = json.dumps(record.metadata)
-                rows.append(row)
+                rows.append(cls._record_to_row(record))
             else:
                 rows.append(dict(record))
 
-        if rows:
-            table = pa.Table.from_pylist(rows, schema=schema)
-        elif schema is not None:
-            table = pa.Table.from_arrays(
-                [pa.array([], type=field.type) for field in schema], schema
-            )
-        else:
-            table = pa.table({})
-
-        batch = cls(
-            data=table,
-            batch_id=batch_id,
-            source_split=source_split,
-            metadata=metadata or {},
-        )
-        batch._records_cache = (
-            list(records) if rows and all(isinstance(r, Record) for r in records) else None
-        )
-        batch.is_materialized = bool(rows)
-        return batch
+        return cls(data=pa.Table.from_pylist(rows, schema=schema), split_id=split_id)
 
     @classmethod
     def empty(
         cls,
-        *,
-        batch_id: str,
+        split_id: str,
         schema: Optional[pa.Schema] = None,
-        source_split: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> "Batch":
+    ) -> "SplitPayload":
         """Create an empty batch with an optional schema."""
         if schema:
             arrays = [pa.array([], type=field.type) for field in schema]
             table = pa.Table.from_arrays(arrays, schema=schema)
         else:
             table = pa.table({})
-        return cls(
-            data=table,
-            batch_id=batch_id,
-            source_split=source_split,
-            metadata=metadata or {},
-        )
+        return cls(data=table, split_id=split_id)
+
+    @classmethod
+    def _record_to_row(cls, record: Record) -> Dict[str, Any]:
+        row: Dict[str, Any] = {}
+        if isinstance(record.value, dict):
+            row.update(record.value)
+        else:
+            row["value"] = record.value
+        row[cls.SOLSTICE_KEY_COLUMN] = record.key
+        row[cls.SOLSTICE_TS_COLUMN] = record.timestamp
+        return row
+
+    @classmethod
+    def _rows_from_records(cls, records: Sequence[Record]) -> List[Dict[str, Any]]:
+        return [cls._record_to_row(record) for record in records]

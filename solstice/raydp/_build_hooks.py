@@ -87,7 +87,7 @@ class BuildWithJars(_build_py):
             os.chdir(core_dir)
             print("Running: mvn clean package -DskipTests")
 
-            result = subprocess.run(
+            subprocess.run(
                 ["mvn", "clean", "package", "-DskipTests"],
                 check=True,
                 capture_output=False,  # Let Maven output be visible

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from pyiceberg.catalog import load_catalog
 
-from solstice.core.models import Batch, Split, SplitStatus
-from solstice.operators.sources.base import ArrowStreamingSource
+from solstice.core.models import Split, SplitPayload
+from solstice.core.operator import SourceOperator
 
 
-class IcebergSource(ArrowStreamingSource):
+class IcebergSource(SourceOperator):
     """Source operator for reading from Iceberg tables."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -24,46 +24,7 @@ class IcebergSource(ArrowStreamingSource):
         self.table = None
         self.scan = None
 
-    def open(self, context) -> None:
-        super().open(context)
-
-        if not self.catalog_uri:
-            raise ValueError("catalog_uri is required for IcebergSource")
-        if not self.table_name:
-            raise ValueError("table_name is required for IcebergSource")
-
-        self.catalog = load_catalog(name="default", **{"uri": self.catalog_uri})
-        self.table = self.catalog.load_table(self.table_name)
-
-        scan = self.table.scan()
-        if self.filter_expr:
-            scan = scan.filter(self.filter_expr)
-        if self.snapshot_id:
-            scan = scan.use_snapshot(self.snapshot_id)
-        self.scan = scan
-
-    def plan_splits(self) -> List[Split]:
-        if not self.catalog_uri or not self.table_name:
-            raise ValueError("catalog_uri and table_name are required for IcebergSource")
-
-        stage_id = (self.config or {}).get("stage_id", "iceberg_source")
-        data_range = {
-            "catalog_uri": self.catalog_uri,
-            "table_name": self.table_name,
-            "filter": self.filter_expr,
-            "snapshot_id": self.snapshot_id,
-        }
-        return [
-            Split(
-                split_id=f"{stage_id}_split_0",
-                stage_id=stage_id,
-                data_range=data_range,
-                metadata={"table": self.table_name},
-                status=SplitStatus.PENDING,
-            )
-        ]
-
-    def read(self, split: Split) -> Optional[Batch]:
+    def read(self, split: Split) -> Optional[SplitPayload]:
         catalog_uri = split.data_range.get("catalog_uri") or self.catalog_uri
         table_name = split.data_range.get("table_name") or self.table_name
 
@@ -86,19 +47,9 @@ class IcebergSource(ArrowStreamingSource):
         if arrow_table.num_rows == 0:
             return None
 
-        metadata = dict(split.metadata)
-        metadata.update(
-            {
-                "table": table_name,
-                "catalog_uri": catalog_uri,
-            }
-        )
-
-        return Batch.from_arrow(
+        return SplitPayload.from_arrow(
             arrow_table,
-            batch_id=f"{split.stage_id}_batch_{split.split_id}",
-            source_split=split.split_id,
-            metadata=metadata,
+            split_id=split.split_id,
         )
 
     def close(self) -> None:

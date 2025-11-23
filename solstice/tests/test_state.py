@@ -7,7 +7,7 @@ from pathlib import Path
 from solstice.state.backend import LocalStateBackend
 from solstice.state.manager import StateManager
 from solstice.state.checkpoint import CheckpointCoordinator
-from solstice.core.models import CheckpointHandle, Record, Batch
+from solstice.core.models import CheckpointHandle, Record, SplitPayload
 
 
 class TestLocalStateBackend:
@@ -320,8 +320,8 @@ class TestCheckpointCoordinator:
         assert len(self.coordinator.checkpoints) == 3
 
 
-class TestBatchOperations:
-    """Tests for Batch model operations"""
+class TestSplitPayloadOperations:
+    """Tests for SplitPayload model operations"""
 
     def test_batch_length(self):
         """Test batch length"""
@@ -331,28 +331,12 @@ class TestBatchOperations:
             Record(key="3", value={"v": 3}),
         ]
 
-        batch = Batch.from_records(records, batch_id="test")
+        batch = SplitPayload.from_records(records, split_id="test")
 
         assert len(batch) == 3
 
     def test_empty_batch(self):
         """Test empty batch"""
-        batch = Batch.from_records([], batch_id="empty")
+        batch = SplitPayload.from_records([], split_id="empty")
 
         assert len(batch) == 0
-
-    def test_batch_with_metadata(self):
-        """Test batch metadata"""
-        import time
-
-        before = time.time()
-
-        batch = Batch.from_records(
-            [Record(key="1", value={"v": 1})], batch_id="meta_test", source_split="split_1"
-        )
-
-        after = time.time()
-
-        assert batch.batch_id == "meta_test"
-        assert batch.source_split == "split_1"
-        assert before <= batch.timestamp <= after

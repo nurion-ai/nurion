@@ -161,7 +161,6 @@ class CheckpointCoordinator:
                         "state_path": h.state_path,
                         "offset": h.offset,
                         "size_bytes": h.size_bytes,
-                        "metadata": h.metadata,
                         "timestamp": h.timestamp,
                     }
                     for h in handles

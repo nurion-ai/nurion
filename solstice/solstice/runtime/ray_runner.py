@@ -8,21 +8,21 @@ from typing import Any, Dict, List, Optional
 
 import ray
 import ray.actor
-
+from solstice.utils.logging import create_ray_logger
+from solstice.core.stage_master import StageStatus
 from solstice.actors.meta_service import MetaService
-from solstice.actors.state_master import GlobalStateMaster
 from solstice.core.job import Job
-from solstice.actors.stage_master import StageMasterActor
+from solstice.state.state_master import GlobalStateMaster
 
 
 class RayJobRunner:
     """Control-plane responsible for running a :class:`Job` on Ray."""
 
-    def __init__(self, job: Job, *, ray_init_kwargs: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, job: Job, ray_init_kwargs: Optional[dict[str, Any]] = None) -> None:
         self.job = job
         self._ray_init_kwargs = ray_init_kwargs or {}
 
-        self.logger = logging.getLogger(f"RayJobRunner-{job.job_id}")
+        self.logger = create_ray_logger(f"RayJobRunner-{job.job_id}")
 
         self.meta_service: Optional[ray.actor.ActorHandle] = None
         self.global_state_master: Optional[ray.actor.ActorHandle] = None
@@ -53,13 +53,13 @@ class RayJobRunner:
         self._ensure_ray()
         self.logger.info("Initializing job %s", self.job.job_id)
 
-        self.meta_service = MetaService.remote(
+        self.meta_service = MetaService.options(name="MetaService").remote(
             job_id=self.job.job_id,
             state_backend=self.job.state_backend,
             config=self.job.config,
         )
 
-        self.global_state_master = GlobalStateMaster.remote(
+        self.global_state_master = GlobalStateMaster.options(name="GlobalStateMaster").remote(
             job_id=self.job.job_id,
             state_backend=self.job.state_backend,
             checkpoint_interval_secs=self.job.checkpoint_interval_secs,
@@ -79,19 +79,17 @@ class RayJobRunner:
             )
 
         for stage_id, stage in self.job.stages.items():
-            actor_name = f"{self.job.job_id}:{stage_id}"
+            actor_name = stage_id
             upstream_stages = self._reverse_dag.get(stage_id, [])
-            stage_master = StageMasterActor.options(name=actor_name).remote(
-                job_id=self.job.job_id,
-                stage_id=stage.stage_id,
-                operator_class=stage.operator_class,
-                operator_config=stage.operator_config,
-                state_backend=self.job.state_backend,
-                worker_resources=stage.worker_resources,
-                actor_name=actor_name,
-                max_workers=stage.max_parallelism,
-                min_workers=stage.min_parallelism,
-                upstream_stages=upstream_stages,
+            stage_master = (
+                ray.remote(stage.master_class)
+                .options(name=actor_name, max_concurrency=10)
+                .remote(
+                    job_id=self.job.job_id,
+                    state_backend=self.job.state_backend,
+                    upstream_stages=upstream_stages,
+                    stage=stage,
+                )
             )
             self.stage_actor_refs[stage_id] = stage_master
             ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
@@ -137,11 +135,15 @@ class RayJobRunner:
     def _start_stage_loops(self) -> None:
         if not self.stage_actor_refs:
             return
+        started: List[str] = []
         for stage_id, actor_ref in self.stage_actor_refs.items():
             if stage_id in self.stage_run_refs:
                 continue
             run_ref = actor_ref.run.remote(poll_interval=self._stage_run_poll_interval)
             self.stage_run_refs[stage_id] = run_ref
+            started.append(stage_id)
+        if started:
+            self.logger.debug("Started stage run loops for: %s", ", ".join(sorted(started)))
 
     def _check_stage_run_refs(self) -> None:
         if not self.stage_run_refs:
@@ -152,17 +154,21 @@ class RayJobRunner:
                 try:
                     ray.get(run_ref)
                 except Exception as exc:
-                    self.logger.error("Stage %s run loop failed: %s", stage_id, exc, exc_info=True)
+                    self.logger.exception(f"Stage {stage_id} run loop failed: {exc}")
                     raise
-                else:
-                    self.logger.error(
-                        "Stage %s run loop exited unexpectedly; stopping job", stage_id
-                    )
-                    raise RuntimeError(f"Stage {stage_id} run loop exited unexpectedly")
+                # else:
+                #     self.logger.error(
+                #         "Stage %s run loop exited unexpectedly; stopping job", stage_id
+                #     )
+                #     raise RuntimeError(f"Stage {stage_id} run loop exited unexpectedly")
 
     def _stop_stage_loops(self) -> None:
         if not self.stage_actor_refs:
             return
+        if self.stage_run_refs and self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                "Stopping stage run loops for: %s", ", ".join(sorted(self.stage_run_refs.keys()))
+            )
         stop_refs = []
         for actor_ref in self.stage_actor_refs.values():
             stop_refs.append(actor_ref.stop.remote())
@@ -177,18 +183,20 @@ class RayJobRunner:
         self.stage_run_refs.clear()
 
     def _is_pipeline_idle(self) -> bool:
-        for actor_ref in self.stage_actor_refs.values():
-            counters = ray.get(actor_ref.get_split_counters.remote())
-            if (
-                counters["pending"]
-                or counters["active"]
-                or counters["inflight"]
-                or counters["output"]
-            ):
-                return False
-        return True
+        pipeline_idle = True
+        stage_statuses: Dict[str, StageStatus] = {}
+        for stage_id, actor_ref in self.stage_actor_refs.items():
+            stage_statuses[stage_id] = ray.get(actor_ref.get_stage_status.remote())
+            if not stage_statuses[stage_id].upstream_finished:
+                pipeline_idle = False
+        # if not pipeline_idle:
+        #     for stage_id, status in stage_statuses.items():
+        #         self.logger.debug(
+        #             f"Stage {stage_id} status: pending={status.pending_splits} active={status.active_splits} inflight={status.inflight_results} backpressure={status.backpressure_active} upstream_finished={status.upstream_finished}",
+        #         )
+        return pipeline_idle
 
-    def run(self, *, poll_interval: float = 0.05) -> None:
+    def run(self, poll_interval: float = 0.05, timeout: Optional[float] = None) -> None:
         self.initialize()
         if not self._running:
             ray.get(self.meta_service.start_job.remote())
@@ -196,8 +204,13 @@ class RayJobRunner:
 
         self._start_stage_loops()
 
+        deadline = time.time() + timeout if timeout is not None else None
         try:
             while self._running:
+                if deadline is not None and time.time() > deadline:
+                    raise TimeoutError(
+                        f"Timeout while waiting for job {self.job.job_id} to complete."
+                    )
                 self._check_stage_run_refs()
                 if self._is_pipeline_idle():
                     self.logger.info("All stages idle; stopping job %s", self.job.job_id)
@@ -210,6 +223,7 @@ class RayJobRunner:
             raise
 
     def _stop(self) -> None:
+        self.logger.debug("Stopping job %s (running=%s)", self.job.job_id, self._running)
         self._stop_stage_loops()
         if self._running and self.meta_service is not None:
             ray.get(self.meta_service.stop_job.remote())

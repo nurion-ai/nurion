@@ -5,21 +5,25 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from solstice.core.models import Record
-from solstice.operators.sinks.base import Sink
+import json
+from solstice.core.models import Split, SplitPayload
+from solstice.core.operator import SinkOperator
 
 
-class PrintSink(Sink):
+class PrintSink(SinkOperator):
     """Sink that prints records to stdout."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
+    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
         self.logger = logging.getLogger(self.__class__.__name__)
         self.count = 0
 
-    def write(self, record: Record) -> None:
-        self.count += 1
-        print(f"[{self.count}] Key: {record.key}, Value: {record.value}")
-
-    def close(self) -> None:
-        self.logger.info(f"Printed {self.count} records")
+    def process_split(
+        self, split: Split, batch: Optional[SplitPayload] = None
+    ) -> Optional[SplitPayload]:
+        if batch is None:
+            raise ValueError("PrintSink requires a batch")
+        self.logger.info(f"Printing {len(batch)} records")
+        for record in batch.to_records():
+            self.logger.info(json.dumps(record.to_dict()))
+        return None
