@@ -31,6 +31,7 @@ class FileSink(SinkOperator):
         self.buffer: List[Dict[str, Any]] = []
         self.file_handle = None
         self._initialized = False
+        self.output_file_path: Optional[Path] = None
 
     def process_split(
         self, split: Split, payload: Optional[SplitPayload] = None
@@ -48,12 +49,14 @@ class FileSink(SinkOperator):
             self.file_handle.close()
             self.file_handle = None
         if self._initialized:
-            self.logger.info(f"Closed output file: {self.output_path}")
+            target = self.output_file_path or Path(self.output_path)
+            self.logger.info("Closed output file: %s", target)
         self._initialized = False
 
     def _ensure_output_dir(self) -> None:
-        output_dir = Path(self.output_path).parent
-        output_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = Path(self.output_path)
+        target_dir = raw_path.parent if raw_path.suffix else raw_path
+        target_dir.mkdir(parents=True, exist_ok=True)
 
     def _ensure_initialized(self) -> None:
         if self._initialized:
@@ -61,9 +64,22 @@ class FileSink(SinkOperator):
 
         self._ensure_output_dir()
         if self.format == "json":
-            self.file_handle = open(f"{self.output_path}/part-{self.worker_id}.{self.format}", "w")
+            self._initialize_json_writer()
         self._initialized = True
-        self.logger.info(f"Opened output file: {self.output_path}")
+        self.logger.info("Opened output file: %s", self.output_file_path or self.output_path)
+
+    def _initialize_json_writer(self) -> None:
+        target_path = self._build_output_file_path()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file_handle = open(target_path, "w")
+        self.output_file_path = target_path
+
+    def _build_output_file_path(self) -> Path:
+        base_path = Path(self.output_path)
+        if base_path.suffix:
+            return base_path
+        worker_label = self.worker_id or "default"
+        return base_path / f"part-{worker_label}.{self.format}"
 
     def _flush(self) -> None:
         if not self.buffer:
@@ -87,7 +103,18 @@ class FileSink(SinkOperator):
             raise RuntimeError("JSON sink file handle unavailable")
 
         for record in self.buffer:
-            self.file_handle.write(json.dumps(record) + "\n")
+            payload = self._format_json_record(record)
+            self.file_handle.write(json.dumps(payload) + "\n")
+
+    def _format_json_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        row = dict(record)
+        key = row.pop(SplitPayload.SOLSTICE_KEY_COLUMN, None)
+        timestamp = row.pop(SplitPayload.SOLSTICE_TS_COLUMN, None)
+        return {
+            "key": key,
+            "timestamp": timestamp,
+            "value": row,
+        }
 
     def _flush_parquet(self) -> None:
         self._ensure_output_dir()

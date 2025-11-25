@@ -14,6 +14,7 @@ import logging
 from typing import Dict
 
 from . import data_root, ensure_iceberg_catalog, ensure_lance_dataset
+from solstice.tests.utils.video_dataset import ensure_video_metadata_table
 
 LOGGER = logging.getLogger("generate_datasets")
 
@@ -57,10 +58,17 @@ def build_iceberg_dataset() -> None:
     )
 
 
+def build_video_dataset() -> None:
+    """Create or refresh the Lance video metadata dataset."""
+    info = ensure_video_metadata_table(refresh=True)
+    LOGGER.info("Video metadata dataset is ready at %s", info.lance_path)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     data_root().mkdir(parents=True, exist_ok=True)
 
+    build_video_dataset()
     build_lance_dataset()
     build_iceberg_dataset()
 

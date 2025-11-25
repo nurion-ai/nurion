@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 
 dependencies = [
-    "ray[default]>=2.50.0",
+    "ray[default]==2.48.0",
     "pyarrow>=18.1.0",
     "click>=8.1.7",
     "fsspec[s3]>=2024.6.0",
