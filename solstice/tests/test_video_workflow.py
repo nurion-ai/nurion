@@ -63,6 +63,14 @@ def test_video_slice_workflow_with_ray():
                     "*.tar.gz",
                     "*.tar",
                     ".cache/",
+                    # Exclude virtual environments to avoid module conflicts
+                    ".venv/",
+                    "venv/",
+                    "__pycache__/",
+                    "*.pyc",
+                    # Exclude other large/unnecessary directories
+                    ".git/",
+                    "*.egg-info/",
                 ],
             },
         }
