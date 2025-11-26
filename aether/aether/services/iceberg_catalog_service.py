@@ -1,22 +1,35 @@
-"""Service layer that backs the Iceberg REST catalog routes."""
+"""Service layer that backs the Iceberg REST catalog routes.
+
+Uses pyiceberg's SqlCatalog as the internal implementation, which properly handles
+metadata storage in PostgreSQL and file operations for S3-compatible stores.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
 
 from fastapi import HTTPException, status
-from pyiceberg.schema import Schema as IcebergSchema  # type: ignore
-from pyiceberg.table import UNPARTITIONED_PARTITION_SPEC  # type: ignore
-from pyiceberg.table.metadata import new_table_metadata  # type: ignore
-from pyiceberg.table.sorting import UNSORTED_SORT_ORDER  # type: ignore
-from sqlalchemy.ext.asyncio import AsyncSession
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.exceptions import (
+    NamespaceAlreadyExistsError,
+    NamespaceNotEmptyError,
+    NoSuchNamespaceError,
+    NoSuchTableError,
+    TableAlreadyExistsError,
+)
+from pyiceberg.schema import Schema as IcebergSchema
+from pyiceberg.table import (
+    CommitTableRequest,
+    Table,
+)
+from pyiceberg.table import (
+    CommitTableResponse as PyIcebergCommitTableResponse,
+)
+from pyiceberg.typedef import Identifier
 
-from ..core import object_store
-from ..core.object_store import ObjectStoreError
 from ..core.settings import Settings, get_settings
 from ..schemas.iceberg import (
     CatalogConfigResponse,
@@ -36,12 +49,10 @@ from ..schemas.iceberg import (
     UpdateNamespacePropertiesRequest,
     UpdateNamespacePropertiesResponse,
 )
-from ..services import iceberg_table_service
 
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAMESPACE = "default"
-METADATA_FILE_SUFFIX = ".metadata.json"
 
 
 def parse_namespace(namespace_str: str | None) -> list[str]:
@@ -54,37 +65,94 @@ def parse_namespace(namespace_str: str | None) -> list[str]:
     return [segment for segment in decoded.split(".") if segment]
 
 
-def format_namespace(segments: Sequence[str]) -> str:
+def format_namespace(segments: list[str] | tuple[str, ...]) -> str:
     """Format namespace segments into the canonical catalog name."""
     return ".".join(segments) if segments else DEFAULT_NAMESPACE
 
 
-def normalize_namespace_list(namespace: Sequence[str] | None) -> list[str]:
+def normalize_namespace_list(namespace: list[str] | tuple[str, ...] | None) -> list[str]:
     """Normalize namespace lists that may be empty or contain blanks."""
     if not namespace:
         return []
     return [segment for segment in namespace if segment]
 
 
-@dataclass(slots=True)
-class IcebergCatalogService:
-    """Facade around database and object store helpers for Iceberg metadata."""
+_sql_catalog_instance: SqlCatalog | None = None
 
-    settings: Settings = field(default_factory=get_settings)
+
+def _get_sql_catalog() -> SqlCatalog:
+    """Create or return cached SqlCatalog instance."""
+    global _sql_catalog_instance
+    if _sql_catalog_instance is not None:
+        return _sql_catalog_instance
+
+    settings = get_settings()
+    cfg = settings.iceberg
+
+    # Build catalog properties for pyiceberg SqlCatalog
+    # See: https://py.iceberg.apache.org/configuration/#sql-catalog
+    # Convert async database URL to sync psycopg (v3) URL for SqlCatalog
+    db_url = settings.database_url.replace("+asyncpg", "+psycopg").replace(
+        "+psycopg+psycopg", "+psycopg"
+    )
+    catalog_props: dict[str, str] = {
+        "uri": db_url,
+        "warehouse": cfg.warehouse_uri(),
+    }
+
+    # Add S3 configuration if using S3 backend
+    if cfg.is_s3:
+        if endpoint := cfg.endpoint_for_backend():
+            catalog_props["s3.endpoint"] = endpoint
+        catalog_props["s3.access-key-id"] = cfg.s3_access_key_id
+        catalog_props["s3.secret-access-key"] = cfg.s3_secret_access_key
+        catalog_props["s3.region"] = cfg.s3_region
+        # Use path-style addressing for S3-compatible stores like MinIO
+        catalog_props["s3.path-style-access"] = "true"
+    # Local storage configuration is handled automatically by pyiceberg
+    # when warehouse starts with file://
+
+    _LOGGER.info(
+        "Creating SqlCatalog with warehouse=%s, uri=%s", cfg.warehouse_uri(), catalog_props["uri"]
+    )
+
+    _sql_catalog_instance = SqlCatalog("aether_catalog", **catalog_props)
+    return _sql_catalog_instance
+
+
+def clear_catalog_cache() -> None:
+    """Clear the cached SqlCatalog instance (useful for testing)."""
+    global _sql_catalog_instance
+    _sql_catalog_instance = None
+
+
+class IcebergCatalogService:
+    """Facade around pyiceberg's SqlCatalog for Iceberg REST catalog operations."""
+
+    def __init__(self, settings: Settings | None = None):
+        self._settings = settings or get_settings()
+        self._catalog: SqlCatalog | None = None
+
+    @property
+    def catalog(self) -> SqlCatalog:
+        """Get the underlying SqlCatalog instance."""
+        if self._catalog is None:
+            self._catalog = _get_sql_catalog()
+        return self._catalog
 
     def warehouse_location(self) -> str:
         """Return the catalog warehouse base location."""
-        return self.settings.iceberg.warehouse_uri()
+        return self._settings.iceberg.warehouse_uri()
 
     # --------------------------------------------------------------------- #
-    # Public API – mirrors the Java RESTCatalogAdapter methods.
+    # Public API – mirrors the Iceberg REST spec
     # --------------------------------------------------------------------- #
 
     def get_config(self) -> CatalogConfigResponse:
-        warehouse = self.warehouse_location()
-        cfg = self.settings.iceberg
+        """Return catalog configuration for clients."""
+        cfg = self._settings.iceberg
         defaults: dict[str, Any] = {
-            "warehouse": warehouse,
+            "warehouse": self.warehouse_location(),
             "type": "rest",
         }
 
@@ -99,29 +167,29 @@ class IcebergCatalogService:
 
         return CatalogConfigResponse(defaults=defaults, overrides={})
 
-    async def list_namespaces(self, parent: str | None, db: AsyncSession) -> ListNamespacesResponse:
-        namespaces = await iceberg_table_service.get_all_iceberg_namespaces(db)
-        parent_filter = None
+    async def list_namespaces(self, parent: str | None) -> ListNamespacesResponse:
+        """List all namespaces, optionally filtered by parent."""
+        parent_ns: Identifier = ()
         if parent:
             parent_segments = parse_namespace(parent)
-            parent_filter = format_namespace(parent_segments)
+            parent_ns = tuple(parent_segments)
 
-        namespace_rows = []
-        for namespace in namespaces:
-            segments = namespace.name.split(".") if namespace.name else [DEFAULT_NAMESPACE]
-            if parent_filter and not namespace.name.startswith(parent_filter):
-                continue
-            namespace_rows.append(segments)
+        try:
+            namespaces = await asyncio.to_thread(self.catalog.list_namespaces, parent_ns)
+        except NoSuchNamespaceError:
+            # Parent doesn't exist, return empty list
+            namespaces = []
 
+        namespace_rows = [list(ns) for ns in namespaces]
         return ListNamespacesResponse(namespaces=namespace_rows)
 
     async def create_namespace(
         self,
         request: CreateNamespaceRequest,
-        db: AsyncSession,
         *,
         namespace_override: list[str] | None = None,
     ) -> CreateNamespaceResponse:
+        """Create a new namespace."""
         namespace_segments = normalize_namespace_list(
             namespace_override
         ) or normalize_namespace_list(request.namespace)
@@ -130,98 +198,111 @@ class IcebergCatalogService:
                 status.HTTP_400_BAD_REQUEST, "Namespace name must be provided in request"
             )
 
-        namespace_name = format_namespace(namespace_segments)
+        namespace_tuple = tuple(namespace_segments)
         properties = request.properties or {}
 
         try:
-            ns = await iceberg_table_service.create_iceberg_namespace(
-                name=namespace_name,
-                properties=properties,
-                db=db,
-            )
-        except ValueError as exc:
+            await asyncio.to_thread(self.catalog.create_namespace, namespace_tuple, properties)
+        except NamespaceAlreadyExistsError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except Exception as exc:
+            _LOGGER.exception("Failed to create namespace %s", namespace_segments)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-        merged_properties = {
-            **{k: str(v) for k, v in (ns.properties or {}).items()},
-            **{k: str(v) for k, v in properties.items()},
-        }
+        # Load the created namespace to get merged properties
+        try:
+            loaded_props = await asyncio.to_thread(
+                self.catalog.load_namespace_properties, namespace_tuple
+            )
+        except NoSuchNamespaceError:
+            loaded_props = properties
 
-        return CreateNamespaceResponse(namespace=namespace_segments, properties=merged_properties)
+        return CreateNamespaceResponse(
+            namespace=namespace_segments,
+            properties={k: str(v) for k, v in loaded_props.items()},
+        )
 
-    async def get_namespace(self, namespace: list[str], db: AsyncSession) -> NamespaceResponse:
-        namespace_name = format_namespace(namespace)
+    async def get_namespace(self, namespace: list[str]) -> NamespaceResponse:
+        """Get namespace metadata."""
         namespace_segments = namespace or [DEFAULT_NAMESPACE]
+        namespace_tuple = tuple(namespace_segments)
 
-        ns = await iceberg_table_service.get_iceberg_namespace_by_name(namespace_name, db)
-        if not ns:
-            if namespace_name == DEFAULT_NAMESPACE:
-                ns = await iceberg_table_service.ensure_default_iceberg_namespace(db)
-            else:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND,
-                    f"Namespace '{namespace_name}' not found",
-                )
+        try:
+            properties = await asyncio.to_thread(
+                self.catalog.load_namespace_properties, namespace_tuple
+            )
+        except NoSuchNamespaceError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Namespace '{format_namespace(namespace_segments)}' not found",
+            ) from exc
 
-        properties = {k: str(v) for k, v in (ns.properties or {}).items()}
-        return NamespaceResponse(namespace=namespace_segments, properties=properties)
+        return NamespaceResponse(
+            namespace=namespace_segments,
+            properties={k: str(v) for k, v in properties.items()},
+        )
 
-    async def delete_namespace(self, namespace: list[str], db: AsyncSession) -> None:
+    async def delete_namespace(self, namespace: list[str]) -> None:
+        """Delete a namespace."""
         namespace_name = format_namespace(namespace)
         if namespace_name in {"", DEFAULT_NAMESPACE}:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot delete default namespace")
 
-        ns = await iceberg_table_service.get_iceberg_namespace_by_name(namespace_name, db)
-        if not ns:
+        namespace_tuple = tuple(namespace)
+
+        try:
+            await asyncio.to_thread(self.catalog.drop_namespace, namespace_tuple)
+        except NoSuchNamespaceError as exc:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND,
                 f"Namespace '{namespace_name}' not found",
-            )
-
-        try:
-            deleted = await iceberg_table_service.delete_iceberg_namespace(ns.id, db)
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-
-        if not deleted:
+            ) from exc
+        except NamespaceNotEmptyError as exc:
             raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                f"Failed to delete namespace '{namespace_name}'",
-            )
+                status.HTTP_409_CONFLICT,
+                f"Namespace '{namespace_name}' is not empty",
+            ) from exc
 
     async def update_namespace_properties(
         self,
         namespace: list[str],
         request: UpdateNamespacePropertiesRequest,
-        db: AsyncSession,
     ) -> UpdateNamespacePropertiesResponse:
-        namespace_name = format_namespace(namespace)
+        """Update namespace properties."""
+        namespace_tuple = tuple(namespace)
+        removals = set(request.removals or [])
+        updates = request.updates or {}
 
         try:
-            await iceberg_table_service.update_iceberg_namespace_properties(
-                name=namespace_name,
-                removals=request.removals or [],
-                updates=request.updates or {},
-                db=db,
+            await asyncio.to_thread(
+                self.catalog.update_namespace_properties,
+                namespace_tuple,
+                removals,
+                updates,
             )
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-
-        removed_keys = request.removals or []
-        updated_keys = list((request.updates or {}).keys())
+        except NoSuchNamespaceError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Namespace '{format_namespace(namespace)}' not found",
+            ) from exc
 
         return UpdateNamespacePropertiesResponse(
-            removed=removed_keys,
-            updated=updated_keys,
+            removed=list(removals),
+            updated=list(updates.keys()),
             missing=[],
         )
 
-    async def list_tables(self, namespace: list[str], db: AsyncSession) -> ListTablesResponse:
-        namespace_name = format_namespace(namespace)
-        tables = await iceberg_table_service.get_iceberg_tables_by_namespace(namespace_name, db)
+    async def list_tables(self, namespace: list[str]) -> ListTablesResponse:
+        """List all tables in a namespace."""
+        namespace_tuple = tuple(namespace) if namespace else (DEFAULT_NAMESPACE,)
+
+        try:
+            tables = await asyncio.to_thread(self.catalog.list_tables, namespace_tuple)
+        except NoSuchNamespaceError:
+            tables = []
+
         identifiers = [
-            TableIdentifier(namespace=namespace or [DEFAULT_NAMESPACE], name=table.name)
-            for table in tables
+            TableIdentifier(namespace=list(table_id[:-1]), name=table_id[-1]) for table_id in tables
         ]
         return ListTablesResponse(identifiers=identifiers)
 
@@ -229,88 +310,78 @@ class IcebergCatalogService:
         self,
         namespace: list[str],
         request: CreateTableRequest,
-        db: AsyncSession,
     ) -> CreateTableResponse:
-        namespace_name = format_namespace(namespace)
-
-        ns = await iceberg_table_service.get_iceberg_namespace_by_name(namespace_name, db)
-        if not ns:
-            if namespace_name == DEFAULT_NAMESPACE:
-                ns = await iceberg_table_service.ensure_default_iceberg_namespace(db)
-            else:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND,
-                    f"Namespace '{namespace_name}' not found",
-                )
+        """Create a new table."""
+        namespace_tuple = tuple(namespace) if namespace else (DEFAULT_NAMESPACE,)
+        table_identifier = (*namespace_tuple, request.name)
 
         _LOGGER.info(
-            "Creating table '%s.%s' (stage_create=%s) with request location=%s metadata=%s",
-            namespace_name,
-            request.name,
-            request.stage_create,
-            request.location,
-            request.write_metadata_location,
+            "Creating table %s with schema %s",
+            table_identifier,
+            request.table_schema,
         )
 
-        table_location = request.location.rstrip("/") if request.location else None
-        if request.write_metadata_location:
-            metadata_location = request.write_metadata_location
-        elif table_location:
-            metadata_location = f"{table_location}/metadata/metadata.json"
-        else:
-            metadata_location = self.default_metadata_location(namespace_name, request.name)
+        # Parse the schema from the request
+        try:
+            iceberg_schema = IcebergSchema.model_validate(request.table_schema)
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Invalid schema: {exc}",
+            ) from exc
+
+        # Build table properties
+        properties = request.properties or {}
+        if request.location:
+            properties["location"] = request.location
 
         try:
-            await iceberg_table_service.create_iceberg_table(
-                table_name=request.name,
-                namespace_name=namespace_name,
-                metadata_location=metadata_location,
-                db=db,
+            table: Table = await asyncio.to_thread(
+                self.catalog.create_table,
+                table_identifier,
+                iceberg_schema,
+                properties=properties,
             )
-        except ValueError as exc:
-            _LOGGER.exception(
-                "Failed to record table '%s.%s' in catalog: %s",
-                namespace_name,
-                request.name,
-                exc,
-            )
+        except NamespaceAlreadyExistsError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except TableAlreadyExistsError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except NoSuchNamespaceError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Namespace '{format_namespace(namespace)}' not found",
+            ) from exc
+        except Exception as exc:
+            _LOGGER.exception("Failed to create table %s", table_identifier)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-        table_metadata = self._build_table_metadata(metadata_location, request)
-
-        await self._write_metadata(metadata_location, table_metadata)
-        _LOGGER.info(
-            "Created table '%s.%s' with metadata at %s",
-            namespace_name,
-            request.name,
-            metadata_location,
-        )
+        metadata = table.metadata.model_dump(mode="json")
+        metadata_location = table.metadata_location
 
         return CreateTableResponse(
             metadata_location=metadata_location,
-            metadata=table_metadata,
+            metadata=metadata,
             config={},
         )
 
-    async def update_table(
+    async def load_table(
         self,
         namespace: list[str],
         table_name: str,
-        updates: dict[str, Any],
-        db: AsyncSession,
     ) -> LoadTableResponse:
-        namespace_name = format_namespace(namespace)
-        table = await self._get_table(table_name, namespace_name, db)
+        """Load a table's metadata."""
+        namespace_tuple = tuple(namespace) if namespace else (DEFAULT_NAMESPACE,)
+        table_identifier = (*namespace_tuple, table_name)
 
-        metadata = await self._read_metadata(table.metadata_location, allow_missing=True)
-        if metadata is None:
-            metadata = self._build_empty_metadata(table.metadata_location)
+        try:
+            table: Table = await asyncio.to_thread(self.catalog.load_table, table_identifier)
+        except NoSuchTableError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Table '{format_namespace(namespace)}.{table_name}' not found",
+            ) from exc
 
-        self._apply_table_updates(metadata, updates.get("updates", []))
-
-        await self._write_metadata(table.metadata_location, metadata)
-        _LOGGER.info("Updated table '%s.%s'", namespace_name, table_name)
-
+        metadata = table.metadata.model_dump(mode="json")
         return LoadTableResponse(
             metadata_location=table.metadata_location,
             metadata=metadata,
@@ -322,231 +393,113 @@ class IcebergCatalogService:
         namespace: list[str],
         table_name: str,
         request: RegisterTableRequest,
-        db: AsyncSession,
     ) -> RegisterTableResponse:
-        namespace_name = format_namespace(namespace)
-        ns = await iceberg_table_service.get_iceberg_namespace_by_name(namespace_name, db)
-        if not ns:
-            if namespace_name == DEFAULT_NAMESPACE:
-                ns = await iceberg_table_service.ensure_default_iceberg_namespace(db)
-            else:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND,
-                    f"Namespace '{namespace_name}' not found",
-                )
+        """Register an existing table from a metadata file."""
+        namespace_tuple = tuple(namespace) if namespace else (DEFAULT_NAMESPACE,)
+        table_identifier = (*namespace_tuple, table_name)
 
         try:
-            iceberg_table = await iceberg_table_service.create_iceberg_table(
-                table_name=table_name,
-                namespace_name=namespace_name,
-                metadata_location=request.metadata_location,
-                db=db,
+            table: Table = await asyncio.to_thread(
+                self.catalog.register_table,
+                table_identifier,
+                request.metadata_location,
             )
-        except ValueError as exc:
+        except NoSuchNamespaceError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Namespace '{format_namespace(namespace)}' not found",
+            ) from exc
+        except TableAlreadyExistsError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        except Exception as exc:
+            _LOGGER.exception("Failed to register table %s", table_identifier)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-        metadata = await self._read_metadata(iceberg_table.metadata_location)
-
+        metadata = table.metadata.model_dump(mode="json")
         return RegisterTableResponse(
-            metadata_location=iceberg_table.metadata_location,
-            metadata=metadata,
-            config={},
-        )
-
-    async def load_table(
-        self,
-        namespace: list[str],
-        table_name: str,
-        db: AsyncSession,
-    ) -> LoadTableResponse:
-        namespace_name = format_namespace(namespace)
-        table = await self._get_table(table_name, namespace_name, db)
-        metadata = await self._read_metadata(table.metadata_location)
-        return LoadTableResponse(
             metadata_location=table.metadata_location,
             metadata=metadata,
             config={},
         )
 
-    async def commit_table(
+    async def update_table(
         self,
         namespace: list[str],
         table_name: str,
         payload: dict[str, Any],
-        db: AsyncSession,
     ) -> CommitTableResponse:
-        namespace_name = format_namespace(namespace)
-        table = await self._get_table(table_name, namespace_name, db)
+        """Commit updates to a table.
 
-        new_metadata_location = await self._extract_metadata_location_from_updates(
-            payload.get("updates", [])
+        This is the main endpoint used by pyiceberg for all table modifications
+        including schema evolution, property updates, and snapshot commits.
+        """
+        namespace_tuple = tuple(namespace) if namespace else (DEFAULT_NAMESPACE,)
+        table_identifier = (*namespace_tuple, table_name)
+
+        # Load the current table
+        try:
+            table: Table = await asyncio.to_thread(self.catalog.load_table, table_identifier)
+        except NoSuchTableError as exc:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Table '{format_namespace(namespace)}.{table_name}' not found",
+            ) from exc
+
+        # Parse the commit request
+        try:
+            commit_request = CommitTableRequest.model_validate(payload)
+        except Exception as exc:
+            _LOGGER.exception("Failed to parse commit request for %s", table_identifier)
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Invalid commit request: {exc}",
+            ) from exc
+
+        _LOGGER.info(
+            "Committing updates to table %s: %d requirements, %d updates",
+            table_identifier,
+            len(commit_request.requirements),
+            len(commit_request.updates),
         )
 
-        if new_metadata_location and new_metadata_location != table.metadata_location:
-            try:
-                updated_table = await iceberg_table_service.update_iceberg_table_metadata_location(
-                    table_name=table_name,
-                    namespace_name=namespace_name,
-                    metadata_location=new_metadata_location,
-                    db=db,
-                )
-            except ValueError as exc:
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"Failed to update table: {exc}",
-                ) from exc
-            table = updated_table
-
-        metadata = await self._read_metadata(table.metadata_location)
+        # Commit the updates using SqlCatalog
+        try:
+            response: PyIcebergCommitTableResponse = await asyncio.to_thread(
+                self.catalog.commit_table,
+                table,
+                commit_request.requirements,
+                commit_request.updates,
+            )
+        except Exception as exc:
+            _LOGGER.exception("Failed to commit table %s", table_identifier)
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Failed to commit table: {exc}",
+            ) from exc
 
         return CommitTableResponse(
-            metadata_location=table.metadata_location,
-            metadata=metadata,
+            metadata_location=response.metadata_location,
+            metadata=response.metadata.model_dump(mode="json"),
         )
 
     async def drop_table(
         self,
         namespace: list[str],
         table_name: str,
-        db: AsyncSession,
     ) -> DropTableResponse:
-        namespace_name = format_namespace(namespace)
-        deleted = await iceberg_table_service.delete_iceberg_table(table_name, namespace_name, db)
-        if not deleted:
+        """Drop a table."""
+        namespace_tuple = tuple(namespace) if namespace else (DEFAULT_NAMESPACE,)
+        table_identifier = (*namespace_tuple, table_name)
+
+        try:
+            await asyncio.to_thread(self.catalog.drop_table, table_identifier)
+        except NoSuchTableError as exc:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND,
-                f"Table '{namespace_name}.{table_name}' not found",
-            )
+                f"Table '{format_namespace(namespace)}.{table_name}' not found",
+            ) from exc
+
         return DropTableResponse(dropped=True)
-
-    # ------------------------------------------------------------------ #
-    # Helper utilities
-    # ------------------------------------------------------------------ #
-
-    def default_metadata_location(self, namespace_name: str, table_name: str) -> str:
-        warehouse = self.warehouse_location()
-        namespace_path = namespace_name.replace(".", "/")
-        return f"{warehouse}/{namespace_path}/{table_name}/metadata/metadata.json"
-
-    @staticmethod
-    def table_location_from_metadata(metadata_location: str) -> str:
-        if "/metadata/" in metadata_location:
-            return metadata_location.rsplit("/metadata/", 1)[0]
-        return metadata_location.rstrip("/")
-
-    async def _read_metadata(
-        self, metadata_location: str, allow_missing: bool = False
-    ) -> dict[str, Any] | None:
-        try:
-            return await object_store.read_json(metadata_location)
-        except FileNotFoundError:
-            if allow_missing:
-                return None
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                f"Metadata not found at {metadata_location}",
-            ) from None
-        except ObjectStoreError as exc:
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                f"Failed to read metadata from {metadata_location}: {exc}",
-            ) from exc
-
-    async def _write_metadata(self, metadata_location: str, metadata: dict[str, Any]) -> None:
-        try:
-            await object_store.write_json(metadata_location, metadata)
-        except ObjectStoreError as exc:
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                f"Failed to write metadata to {metadata_location}: {exc}",
-            ) from exc
-
-    async def _list_metadata_files(self, prefix: str) -> list[str]:
-        try:
-            return await object_store.list_objects(prefix)
-        except ObjectStoreError as exc:
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                f"Failed to list metadata under {prefix}: {exc}",
-            ) from exc
-
-    def _build_table_metadata(
-        self, metadata_location: str, request: CreateTableRequest
-    ) -> dict[str, Any]:
-        iceberg_schema = IcebergSchema.model_validate(request.table_schema)
-        table_metadata = new_table_metadata(
-            location=self.table_location_from_metadata(metadata_location),
-            schema=iceberg_schema,
-            partition_spec=UNPARTITIONED_PARTITION_SPEC,
-            sort_order=UNSORTED_SORT_ORDER,
-            properties=request.properties or {},
-        )
-        return table_metadata.model_dump(mode="json")
-
-    def _build_empty_metadata(self, metadata_location: str) -> dict[str, Any]:
-        table_metadata = new_table_metadata(
-            location=self.table_location_from_metadata(metadata_location),
-            schema=IcebergSchema(),
-            partition_spec=UNPARTITIONED_PARTITION_SPEC,
-            sort_order=UNSORTED_SORT_ORDER,
-            properties={},
-        )
-        return table_metadata.model_dump(mode="json")
-
-    @staticmethod
-    def _apply_table_updates(metadata: dict[str, Any], updates: Iterable[dict[str, Any]]) -> None:
-        for update in updates:
-            action = update.get("action")
-            if action == "add-snapshot":
-                snapshot = update.get("snapshot", {})
-                snapshot_id = snapshot.get("snapshot-id")
-                if snapshot_id is None:
-                    continue
-                metadata.setdefault("snapshots", []).append(snapshot)
-                metadata["current-snapshot-id"] = snapshot_id
-                _LOGGER.info("Applied add-snapshot %s", snapshot_id)
-            elif action == "set-snapshot-ref":
-                ref_name = update.get("ref-name", "main")
-                snapshot_id = update.get("snapshot-id")
-                if snapshot_id is None:
-                    continue
-                metadata.setdefault("refs", {})[ref_name] = {
-                    "snapshot-id": snapshot_id,
-                    "type": update.get("type", "branch"),
-                }
-                _LOGGER.info("Applied set-snapshot-ref %s -> %s", ref_name, snapshot_id)
-
-    async def _extract_metadata_location_from_updates(
-        self, updates: Iterable[dict[str, Any]]
-    ) -> str | None:
-        for update in updates:
-            if update.get("action") != "add-snapshot":
-                continue
-            snapshot = update.get("snapshot", {})
-            manifest_list = snapshot.get("manifest-list")
-            if not manifest_list:
-                continue
-            metadata_dir = manifest_list.rsplit("/", 1)[0]
-            candidates = await self._list_metadata_files(metadata_dir)
-            metadata_files = [
-                candidate for candidate in candidates if candidate.endswith(METADATA_FILE_SUFFIX)
-            ]
-            if metadata_files:
-                latest = sorted(metadata_files)[-1]
-                _LOGGER.info("Resolved latest metadata file %s", latest)
-                return latest
-        return None
-
-    async def _get_table(self, table_name: str, namespace_name: str, db: AsyncSession):
-        table = await iceberg_table_service.get_iceberg_table_by_name(
-            table_name, namespace_name, db
-        )
-        if not table:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                f"Table '{namespace_name}.{table_name}' not found",
-            )
-        return table
 
 
 __all__ = [
@@ -554,5 +507,6 @@ __all__ = [
     "parse_namespace",
     "format_namespace",
     "normalize_namespace_list",
+    "clear_catalog_cache",
     "DEFAULT_NAMESPACE",
 ]

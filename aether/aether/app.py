@@ -12,14 +12,21 @@ from .api.routes import register_routes
 from .core.settings import Settings, get_settings
 from .db.session import async_engine, async_session_factory
 from .models.base import BaseModel
-from .services import iceberg_table_service, lance_table_service
+from .services import lance_table_service
+from .services.iceberg_catalog_service import IcebergCatalogService
 from .services.rayjob_sync_service import start_sync_service, stop_sync_service
 
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Construct a configured FastAPI application instance."""
+def create_app(settings: Settings | None = None, *, skip_lifespan: bool = False) -> FastAPI:
+    """Construct a configured FastAPI application instance.
+
+    Args:
+        settings: Application settings. If None, uses default settings.
+        skip_lifespan: If True, skip the startup/shutdown lifecycle hooks.
+            Useful for testing when the database is already initialized.
+    """
 
     app = FastAPI(  # noqa: FBT003 - explicit bool for clarity
         title="Aether Data Platform",
@@ -29,15 +36,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.settings = settings or get_settings()
 
-    @asynccontextmanager
-    async def lifespan(_: FastAPI):
-        await on_startup()
-        try:
-            yield
-        finally:
-            await on_shutdown()
+    if not skip_lifespan:
 
-    app.router.lifespan_context = lifespan
+        @asynccontextmanager
+        async def lifespan(_: FastAPI):
+            await on_startup()
+            try:
+                yield
+            finally:
+                await on_shutdown()
+
+        app.router.lifespan_context = lifespan
 
     register_routes(app)
 
@@ -56,7 +65,23 @@ async def on_startup() -> None:
 
     async with async_session_factory() as session:
         await lance_table_service.ensure_default_namespace(session)
-        await iceberg_table_service.ensure_default_iceberg_namespace(session)
+
+    # Create default Iceberg namespace using SqlCatalog
+    try:
+        import asyncio
+
+        from pyiceberg.exceptions import NamespaceAlreadyExistsError
+
+        iceberg_service = IcebergCatalogService()
+        await asyncio.to_thread(
+            iceberg_service.catalog.create_namespace,
+            ("default",),
+        )
+        logger.info("Created default Iceberg namespace")
+    except NamespaceAlreadyExistsError:
+        logger.info("Default Iceberg namespace already exists")
+    except Exception as exc:
+        logger.warning("Failed to create default Iceberg namespace: %s", exc)
 
     # Start RayJob sync service
     logger.info("Starting RayJob sync service...")

@@ -24,12 +24,13 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "psycopg[binary]>=3.2.0",
     "pyiceberg[rest]>=0.10.0",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.14.2",
-    "testcontainers[k3s]>=4.10.0",
+    "testcontainers[k3s,minio,postgres]>=4.10.0",
 ]
 
 [build-system]
