@@ -104,25 +104,66 @@ def _safe_extract_tar(archive: tarfile.TarFile, dest: Path) -> None:
     archive.extractall(dest, filter="data")
 
 
-def _extract_videos_from_archive(archive_path: Path, dest_dir: Path) -> None:
+def _extract_videos_from_archive(
+    archive_path: Path, dest_dir: Path, max_videos: int | None = None
+) -> None:
+    """Extract video files from archive.
+
+    Args:
+        archive_path: Path to the archive file.
+        dest_dir: Directory to extract videos into.
+        max_videos: Maximum number of videos to extract. If None, extracts all.
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="solstice_video_", dir=str(dest_dir.parent)) as tmp:
-        tmp_dir = Path(tmp)
-        LOGGER.info("Extracting %s into %s", archive_path.name, tmp_dir)
-        if tarfile.is_tarfile(archive_path):
-            with tarfile.open(archive_path, "r:*") as tar:
-                _safe_extract_tar(tar, tmp_dir)
-        else:
+
+    # For tar archives, we can selectively extract members to save disk space
+    if tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path, "r:*") as tar:
+            # Find all .mp4 members
+            mp4_members = [m for m in tar.getmembers() if m.name.endswith(".mp4") and m.isfile()]
+            if not mp4_members:
+                raise ValueError(f"No .mp4 files found in {archive_path.name}")
+
+            # Limit the number of videos to extract
+            if max_videos is not None:
+                mp4_members = mp4_members[:max_videos]
+
+            LOGGER.info(
+                "Extracting %d videos from %s (archive contains %d total)",
+                len(mp4_members),
+                archive_path.name,
+                len([m for m in tar.getmembers() if m.name.endswith(".mp4")]),
+            )
+
+            for member in mp4_members:
+                # Extract to a flat structure (just the filename)
+                target = dest_dir / Path(member.name).name
+                if target.exists():
+                    continue
+                # Extract member to a temporary location then move
+                with tempfile.TemporaryDirectory(prefix="solstice_extract_") as tmp:
+                    tar.extract(member, tmp, filter="data")
+                    extracted = Path(tmp) / member.name
+                    shutil.move(str(extracted), str(target))
+
+            LOGGER.info("Materialized %d video binaries under %s", len(mp4_members), dest_dir)
+    else:
+        # Fallback for non-tar archives: extract everything
+        with tempfile.TemporaryDirectory(prefix="solstice_video_", dir=str(dest_dir.parent)) as tmp:
+            tmp_dir = Path(tmp)
+            LOGGER.info("Extracting %s into %s", archive_path.name, tmp_dir)
             shutil.unpack_archive(str(archive_path), str(tmp_dir))
-        mp4_candidates = sorted(p for p in tmp_dir.rglob("*.mp4") if p.is_file())
-        if not mp4_candidates:
-            raise ValueError(f"No .mp4 files found after extracting {archive_path.name}")
-        for candidate in mp4_candidates:
-            target = dest_dir / candidate.name
-            if target.exists():
-                continue
-            shutil.move(str(candidate), str(target))
-        LOGGER.info("Materialized %d video binaries under %s", len(mp4_candidates), dest_dir)
+            mp4_candidates = sorted(p for p in tmp_dir.rglob("*.mp4") if p.is_file())
+            if not mp4_candidates:
+                raise ValueError(f"No .mp4 files found after extracting {archive_path.name}")
+            if max_videos is not None:
+                mp4_candidates = mp4_candidates[:max_videos]
+            for candidate in mp4_candidates:
+                target = dest_dir / candidate.name
+                if target.exists():
+                    continue
+                shutil.move(str(candidate), str(target))
+            LOGGER.info("Materialized %d video binaries under %s", len(mp4_candidates), dest_dir)
 
 
 def _source_override_root() -> Path | None:
@@ -149,7 +190,20 @@ def _populate_sources_from_directory(source_root: Path, dest_root: Path) -> List
     return localized
 
 
-def _ensure_source_videos(source_dir: Path, refresh: bool) -> List[Path]:
+def _ensure_source_videos(
+    source_dir: Path, refresh: bool, max_videos: int | None = None
+) -> List[Path]:
+    """Ensure source videos are available in source_dir.
+
+    Args:
+        source_dir: Directory to store source videos.
+        refresh: Whether to refresh the Lance metadata (videos are preserved).
+        max_videos: Maximum number of videos to extract from archive.
+                   If None, extracts all videos.
+
+    Returns:
+        List of paths to available video files.
+    """
     # Note: We intentionally do NOT delete source_dir on refresh.
     # Source videos are expensive to download and can be reused across refreshes.
     # Only the Lance metadata table needs to be regenerated.
@@ -157,24 +211,27 @@ def _ensure_source_videos(source_dir: Path, refresh: bool) -> List[Path]:
 
     existing = sorted(p for p in source_dir.glob("*.mp4") if p.is_file())
     if existing:
-        return existing
+        # If we have enough videos, return them
+        if max_videos is None or len(existing) >= max_videos:
+            return existing[:max_videos] if max_videos else existing
+        # Otherwise, we need to extract more
 
     override_root = _source_override_root()
     if override_root:
         LOGGER.info("Using pre-existing video dataset at %s", override_root)
         localized = _populate_sources_from_directory(override_root, source_dir)
         if localized:
-            return localized
+            return localized[:max_videos] if max_videos else localized
 
     archive_url = _video_archive_url()
     archive_path = _ensure_archive_download(archive_url, refresh=refresh)
-    _extract_videos_from_archive(archive_path, source_dir)
+    _extract_videos_from_archive(archive_path, source_dir, max_videos=max_videos)
     populated = sorted(p for p in source_dir.glob("*.mp4") if p.is_file())
     if not populated:
         raise ValueError(
             f"Failed to populate any video binaries under {source_dir} from {archive_path}"
         )
-    return populated
+    return populated[:max_videos] if max_videos else populated
 
 
 def _resolve_video_limit() -> int:
@@ -195,7 +252,8 @@ def _resolve_video_limit() -> int:
 
 
 def _discover_external_sources(limit: int, source_dir: Path, refresh: bool) -> List[Dict[str, Any]]:
-    available_videos = _ensure_source_videos(source_dir, refresh=refresh)
+    # Pass limit to _ensure_source_videos to avoid extracting more videos than needed
+    available_videos = _ensure_source_videos(source_dir, refresh=refresh, max_videos=limit)
     if not available_videos:
         raise ValueError("No video binaries available to build the dataset")
     ordered = sorted(available_videos, key=lambda path: path.name)
