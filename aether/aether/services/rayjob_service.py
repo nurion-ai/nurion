@@ -682,9 +682,7 @@ def _create_rayjob_spec(
                                     "image": ray_image,
                                     "imagePullPolicy": "IfNotPresent",
                                     "command": ["/bin/bash", "-c", "--"],
-                                    "args": [
-                                        "ulimit -n 1048576 && $KUBERAY_GEN_RAY_START_CMD"
-                                    ],
+                                    "args": ["ulimit -n 1048576 && $KUBERAY_GEN_RAY_START_CMD"],
                                     "env": base_env,
                                     "resources": {
                                         "requests": {"cpu": "8", "memory": "32Gi"},
@@ -730,9 +728,7 @@ def _create_rayjob_spec(
                                         "image": ray_image,
                                         "imagePullPolicy": "IfNotPresent",
                                         "command": ["/bin/bash", "-c", "--"],
-                                        "args": [
-                                            "ulimit -n 1048576 && $KUBERAY_GEN_RAY_START_CMD"
-                                        ],
+                                        "args": ["ulimit -n 1048576 && $KUBERAY_GEN_RAY_START_CMD"],
                                         "env": base_env,
                                         "resources": {
                                             "requests": {
@@ -741,9 +737,7 @@ def _create_rayjob_spec(
                                                 **(
                                                     {}
                                                     if request.num_gpus == 0
-                                                    else {
-                                                        "nvidia.com/gpu": str(request.num_gpus)
-                                                    }
+                                                    else {"nvidia.com/gpu": str(request.num_gpus)}
                                                 ),
                                             },
                                             "limits": {
@@ -752,9 +746,7 @@ def _create_rayjob_spec(
                                                 **(
                                                     {}
                                                     if request.num_gpus == 0
-                                                    else {
-                                                        "nvidia.com/gpu": str(request.num_gpus)
-                                                    }
+                                                    else {"nvidia.com/gpu": str(request.num_gpus)}
                                                 ),
                                             },
                                         },

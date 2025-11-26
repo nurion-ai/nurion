@@ -260,4 +260,3 @@ class ErrorResponse(ApiModel):
     error: str
     detail: str | None = None
     code: str | None = None
-

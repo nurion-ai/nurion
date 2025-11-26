@@ -32,9 +32,7 @@ def get_k8s_client_for_cluster(cluster: K8sCluster) -> client.ApiClient:
 
     if cluster.kubeconfig:
         # Write kubeconfig to a temporary file
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as tmp_file:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp_file:
             tmp_file.write(cluster.kubeconfig)
             tmp_path = tmp_file.name
 
@@ -120,4 +118,3 @@ def check_cluster_connection(
     except Exception as e:
         logger.exception("Failed to connect to cluster %s", cluster.name)
         return False, None, str(e), None
-

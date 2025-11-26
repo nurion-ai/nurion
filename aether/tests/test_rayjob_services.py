@@ -205,9 +205,7 @@ async def cluster_with_queue(db_session, k8s_kubeconfig):
     )
     await k8s_cluster_service.create_cluster(cluster_req, db_session)
 
-    result = await db_session.execute(
-        select(K8sCluster).where(K8sCluster.name == "test-cluster")
-    )
+    result = await db_session.execute(select(K8sCluster).where(K8sCluster.name == "test-cluster"))
     cluster = result.scalar_one()
 
     # Create LocalQueue in K8s
@@ -386,9 +384,7 @@ class TestRayJobService:
 
         assert result.job_name == "test-env-job"
 
-        db_job = await db_session.execute(
-            select(RayJob).where(RayJob.job_name == "test-env-job")
-        )
+        db_job = await db_session.execute(select(RayJob).where(RayJob.job_name == "test-env-job"))
         job = db_job.scalar_one()
         assert job.env_vars == {"MY_VAR": "value1", "ANOTHER_VAR": "value2"}
 
@@ -471,9 +467,7 @@ class TestRayJobSyncService:
         service = RayJobSyncService(sync_interval_seconds=60)
         await service._sync_cluster(cluster, db_session)
 
-        db_job = await db_session.execute(
-            select(RayJob).where(RayJob.job_name == "test-sync-job")
-        )
+        db_job = await db_session.execute(select(RayJob).where(RayJob.job_name == "test-sync-job"))
         job = db_job.scalar_one()
         assert job.status is not None
 
@@ -513,4 +507,3 @@ class TestLocalQueueService:
 
         with pytest.raises(RuntimeError, match="not found"):
             get_namespace_for_queue("non-existent-queue", cluster_with_queue)
-

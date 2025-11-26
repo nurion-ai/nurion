@@ -85,14 +85,10 @@ class RayJobSyncService:
                 plural=self.RAY_JOBS_PLURAL,
             )
 
-            k8s_jobs = {
-                item["metadata"]["name"]: item for item in response.get("items", [])
-            }
+            k8s_jobs = {item["metadata"]["name"]: item for item in response.get("items", [])}
 
             # Get existing jobs in database for this cluster
-            result = await db.execute(
-                select(RayJob).where(RayJob.cluster_id == cluster.id)
-            )
+            result = await db.execute(select(RayJob).where(RayJob.cluster_id == cluster.id))
             db_jobs = {job.job_name: job for job in result.scalars().all()}
 
             # Update existing jobs and create new ones
@@ -162,10 +158,12 @@ class RayJobSyncService:
 
             # Mark jobs that no longer exist in K8s (completed/deleted)
             for job_name, job in db_jobs.items():
-                if (
-                    job_name not in k8s_jobs
-                    and job.status not in ["SUCCEEDED", "FAILED", "STOPPED", "DELETED"]
-                ):
+                if job_name not in k8s_jobs and job.status not in [
+                    "SUCCEEDED",
+                    "FAILED",
+                    "STOPPED",
+                    "DELETED",
+                ]:
                     job.status = "DELETED"
                     job.finished_at = datetime.now(UTC)
 
@@ -201,4 +199,3 @@ async def stop_sync_service() -> None:
     if _sync_service:
         await _sync_service.stop()
         _sync_service = None
-

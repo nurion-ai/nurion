@@ -48,9 +48,7 @@ async def list_clusters(db: AsyncSession | None = None) -> ListClustersResponse:
     result = await session.execute(select(K8sCluster).order_by(K8sCluster.name))
     clusters = result.scalars().all()
 
-    return ListClustersResponse(
-        clusters=[_cluster_to_config(c) for c in clusters]
-    )
+    return ListClustersResponse(clusters=[_cluster_to_config(c) for c in clusters])
 
 
 async def create_cluster(
