@@ -55,6 +55,16 @@ def test_video_slice_workflow_with_ray():
             "include_dashboard": True,
             "log_to_driver": True,
             "logging_level": logging.DEBUG,
+            "runtime_env": {
+                "excludes": [
+                    # Exclude large test data files from being uploaded to Ray cluster
+                    "tests/testdata/resources/",
+                    "*.mp4",
+                    "*.tar.gz",
+                    "*.tar",
+                    ".cache/",
+                ],
+            },
         }
     )
     try:
