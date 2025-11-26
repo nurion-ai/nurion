@@ -100,7 +100,8 @@ def _safe_extract_tar(archive: tarfile.TarFile, dest: Path) -> None:
         target_path = (dest / member.name).resolve(strict=False)
         if not str(target_path).startswith(str(dest)):
             raise ValueError(f"Archive member {member.name} would extract outside of {dest}")
-    archive.extractall(dest)
+    # Use filter="data" to avoid DeprecationWarning in Python 3.14+
+    archive.extractall(dest, filter="data")
 
 
 def _extract_videos_from_archive(archive_path: Path, dest_dir: Path) -> None:
