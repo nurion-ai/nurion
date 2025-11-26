@@ -17,6 +17,8 @@ dependencies = [
     "boto3>=1.35.0",
     "fsspec>=2024.6.0",
     "s3fs>=2024.6.0",
+    "kubernetes>=31.0.0",
+    "pyyaml>=6.0.0",
 ]
 
 [dependency-groups]
@@ -27,6 +29,7 @@ dev = [
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.14.2",
+    "testcontainers[k3s]>=4.10.0",
 ]
 
 [build-system]
@@ -68,3 +71,5 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
 ]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

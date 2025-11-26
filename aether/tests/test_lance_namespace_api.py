@@ -5,29 +5,30 @@ from __future__ import annotations
 import os
 
 import pytest
-from lance_namespace import LanceNamespace
-from lance_namespace.rest import LanceRestNamespace
-from lance_namespace_urllib3_client.models import (
-    DescribeNamespaceRequest,
-    ListNamespacesRequest,
-)
+from lance_namespace_urllib3_client import ApiClient, Configuration, NamespaceApi
+from lance_namespace_urllib3_client.models import DescribeNamespaceRequest
 
 DEFAULT_BASE_URL = "http://localhost:8000/api/lance-namespace"
 
 
 @pytest.fixture(scope="session")
-def lance_client() -> LanceNamespace:
+def lance_client() -> NamespaceApi:
+    """Create a NamespaceApi client for testing."""
     base_url = os.environ.get("LANCE_BASE_URL", DEFAULT_BASE_URL)
-    return LanceRestNamespace(uri=base_url, delimiter="$")
+    config = Configuration(host=base_url)
+    api_client = ApiClient(configuration=config)
+    return NamespaceApi(api_client)
 
 
-def test_spec_list_namespaces(lance_client: LanceNamespace) -> None:
-    response = lance_client.list_namespaces(ListNamespacesRequest(id=["$"], delimiter="$"))
+def test_spec_list_namespaces(lance_client: NamespaceApi) -> None:
+    response = lance_client.list_namespaces(id="$", delimiter="$")
     assert response.namespaces and "default" in response.namespaces
 
 
-def test_spec_describe_namespace(lance_client: LanceNamespace) -> None:
+def test_spec_describe_namespace(lance_client: NamespaceApi) -> None:
     response = lance_client.describe_namespace(
-        DescribeNamespaceRequest(id=["default"], delimiter="$")
+        id="default",
+        describe_namespace_request=DescribeNamespaceRequest(delimiter="$"),
+        delimiter="$",
     )
     assert (response.properties or {}).get("namespace") == "default"
