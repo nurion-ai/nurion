@@ -53,13 +53,13 @@ class RayJobRunner:
         self._ensure_ray()
         self.logger.info("Initializing job %s", self.job.job_id)
 
-        self.meta_service = MetaService.options(name="MetaService").remote(
+        self.meta_service = MetaService.remote(
             job_id=self.job.job_id,
             state_backend=self.job.state_backend,
             config=self.job.config,
         )
 
-        self.global_state_master = GlobalStateMaster.options(name="GlobalStateMaster").remote(
+        self.global_state_master = GlobalStateMaster.remote(
             job_id=self.job.job_id,
             state_backend=self.job.state_backend,
             checkpoint_interval_secs=self.job.checkpoint_interval_secs,
@@ -183,18 +183,36 @@ class RayJobRunner:
         self.stage_run_refs.clear()
 
     def _is_pipeline_idle(self) -> bool:
-        pipeline_idle = True
+        if not self.stage_actor_refs:
+            return True
+
         stage_statuses: Dict[str, StageStatus] = {}
         for stage_id, actor_ref in self.stage_actor_refs.items():
             stage_statuses[stage_id] = ray.get(actor_ref.get_stage_status.remote())
-            if not stage_statuses[stage_id].upstream_finished:
-                pipeline_idle = False
-        # if not pipeline_idle:
-        #     for stage_id, status in stage_statuses.items():
-        #         self.logger.debug(
-        #             f"Stage {stage_id} status: pending={status.pending_splits} active={status.active_splits} inflight={status.inflight_results} backpressure={status.backpressure_active} upstream_finished={status.upstream_finished}",
-        #         )
-        return pipeline_idle
+
+        return self._are_stage_statuses_idle(stage_statuses)
+
+    @staticmethod
+    def _stage_has_work(status: StageStatus) -> bool:
+        return status.pending_splits > 0 or status.active_splits > 0 or status.inflight_results > 0
+
+    @staticmethod
+    def _upstreams_finished(status: StageStatus) -> bool:
+        if not status.upstream_finished:
+            return True
+        return all(status.upstream_finished.values())
+
+    @classmethod
+    def _are_stage_statuses_idle(cls, stage_statuses: Dict[str, StageStatus]) -> bool:
+        if not stage_statuses:
+            return True
+
+        for status in stage_statuses.values():
+            if not cls._upstreams_finished(status):
+                return False
+            if cls._stage_has_work(status):
+                return False
+        return True
 
     def run(self, poll_interval: float = 0.05, timeout: Optional[float] = None) -> None:
         self.initialize()

@@ -10,3 +10,8 @@ members = [
     "aether",
     "solstice",
 ]
+
+[dependency-groups]
+dev = [
+    "pandas>=2.3.3",
+]

@@ -202,6 +202,19 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    - name: Free up disk space
+      run: |
+        echo "Disk space before cleanup:"
+        df -h /
+        # Remove unnecessary pre-installed software to free up disk space
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        echo "Disk space after cleanup:"
+        df -h /
+
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
@@ -216,6 +229,12 @@ jobs:
     - name: Skip if no Solstice changes
       if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
       run: echo "No Solstice files changed, skipping..."
+    
+    - name: Install system dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
     
     - name: Set up Docker Buildx
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -246,21 +265,34 @@ jobs:
       with:
         version: "latest"
     
-    - name: Set up Python 3.13
+    - name: Set up Python 3.12
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: uv python install 3.13
+      run: uv python install 3.12
       
     - name: Install dependencies
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd solstice
-        uv sync --dev
+        uv sync --dev --python 3.12
     
     - name: Run tests
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      env:
+        # Limit video count in CI to save disk space while still having meaningful test coverage
+        SOLSTICE_TEST_VIDEO_LIMIT: "20"
       run: |
         cd solstice
         uv run pytest tests/ -v --tb=short
+    
+    - name: Cleanup test artifacts
+      if: always()
+      run: |
+        # Clean up downloaded video archives and generated files to free disk space
+        rm -rf solstice/tests/testdata/resources/videos/.cache
+        rm -rf solstice/tests/testdata/resources/videos/sources
+        rm -rf solstice/tests/testdata/resources/slices
+        rm -rf solstice/tests/testdata/resources/lance
+        rm -rf solstice/tests/testdata/resources/tmp
     
     - name: Stop services
       if: always()

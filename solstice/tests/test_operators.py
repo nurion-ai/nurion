@@ -5,9 +5,12 @@ from __future__ import annotations
 import pyarrow as pa
 import pytest
 
+import json
+
 from solstice.core.models import Record, Split, SplitPayload
 from solstice.operators.filter import FilterOperator
 from solstice.operators.map import FlatMapOperator, MapBatchesOperator, MapOperator
+from solstice.operators.sinks.file import FileSink
 
 
 def make_split(split_id: str = "split", stage_id: str = "stage") -> Split:
@@ -142,3 +145,28 @@ class TestFilterOperator:
         result = operator.process_split(split, batch)
         assert result is not None
         assert result.is_empty()
+
+
+class TestFileSink:
+    def test_json_sink_writes_to_explicit_file(self, tmp_path):
+        output_file = tmp_path / "result.json"
+        sink = FileSink(
+            {
+                "output_path": str(output_file),
+                "format": "json",
+                "buffer_size": 1,
+            },
+            worker_id="sink_worker_0",
+        )
+        split = make_split("sink-split")
+        batch = make_payload([{"value": 1, "key": "k"}])
+
+        sink.process_split(split, batch)
+        sink.close()
+
+        assert output_file.exists()
+        with output_file.open() as fh:
+            records = [json.loads(line) for line in fh if line.strip()]
+        assert len(records) == 1
+        assert records[0]["key"] == "0"
+        assert records[0]["value"]["value"] == 1
