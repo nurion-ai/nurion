@@ -97,7 +97,7 @@ jobs:
         uv run ruff format --check solstice/
 
   test-aether:
-    name: Aether Integration Tests
+    name: Aether Tests
     runs-on: ubuntu-latest
     
     steps:
@@ -119,35 +119,6 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
       run: echo "No relevant files changed, skipping..."
     
-    - name: Set up Docker Buildx
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Start aether services
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: |
-        cd aether
-        docker compose build app
-        docker compose up -d
-        
-        # Wait for services to be healthy
-        echo "Waiting for services..."
-        for i in {1..40}; do
-          if curl -f http://localhost:8000/api/health 2>/dev/null; then
-            echo "✅ Aether is ready!"
-            break
-          fi
-          sleep 2
-        done
-        
-        # Create warehouse bucket for Iceberg
-        docker run --rm --network aether_appnet \
-          --entrypoint sh minio/mc:latest -c \
-          "mc alias set myminio http://minio:9000 minioadmin minioadmin && \
-           mc mb myminio/warehouse --ignore-existing"
-        
-        docker compose ps
-    
     - name: Install uv
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: astral-sh/setup-uv@v4
@@ -164,29 +135,11 @@ jobs:
         cd aether
         uv sync --dev
     
-    - name: Run tests locally
+    - name: Run tests
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
-        export LANCE_BASE_URL=http://localhost:8000/api/lance-namespace
-        export ICEBERG_CATALOG_URI=http://localhost:8000/api/iceberg-catalog
-        export DATABASE_URL=postgresql+asyncpg://aether:aether@localhost:5432/aether
-        export AWS_ACCESS_KEY_ID=minioadmin
-        export AWS_SECRET_ACCESS_KEY=minioadmin
-        export AWS_ENDPOINT_URL=http://localhost:9000
-        uv run pytest tests/ -v 
-
-    - name: Print app logs on failure
-      if: failure()
-      run: |
-        cd aether
-        docker compose logs app
-    
-    - name: Stop services
-      if: always()
-      run: |
-        cd aether
-        docker compose down -v
+        uv run pytest tests/ -v
     
     - name: Upload coverage to Codecov
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
