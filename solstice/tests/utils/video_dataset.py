@@ -25,24 +25,8 @@ VIDEO_DIR = RESOURCE_ROOT / "videos"
 VIDEO_DOWNLOAD_CACHE = VIDEO_DIR / ".cache"
 
 DEFAULT_VIDEO_ARCHIVE_URL = (
-    "https://cas-bridge.xethub.hf.co/xet-bridge-us/66cd7bbefc6f503213a054e7/"
-    "9b8e086e8decfebf954bd4a0cb1d6ea95ade9001ee9b2d48e662e15fbad09d43"
-    "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-    "&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD"
-    "&X-Amz-Credential=cas%2F20251125%2Fus-east-1%2Fs3%2Faws4_request"
-    "&X-Amz-Date=20251125T084505Z"
-    "&X-Amz-Expires=3600"
-    "&X-Amz-Signature=aea66f84c8f8e9f3086bae881fa1767dfe564a636c2e78f81053de4003dfad60"
-    "&X-Amz-SignedHeaders=host"
-    "&X-Xet-Cas-Uid=6786589baa6d280b752cc1ea"
-    "&response-content-disposition=attachment%3B+filename*%3DUTF-8%27%271_2_m_youtube_v0_1_videos_1.tar.gz"
-    "%3B+filename%3D%221_2_m_youtube_v0_1_videos_1.tar.gz%22%3B"
-    "&response-content-type=application%2Fgzip"
-    "&x-id=GetObject"
-    "&Expires=1764063905"
-    "&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2NDA2MzkwNX19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2FzLWJyaWRnZS54ZXRodWIuaGYuY28veGV0LWJyaWRnZS11cy82NmNkN2JiZWZjNmY1MDMyMTNhMDU0ZTcvOWI4ZTA4NmU4ZGVjZmViZjk1NGJkNGEwY2IxZDZlYTk1YWRlOTAwMWVlOWIyZDQ4ZTY2MmUxNWZiYWQwOWQ0MyoifV19"
-    "&Signature=Gt29%7EMorDdWNZrkm6xpLP1ddaMYT6-ZaShWd9lBgdfiSpcygh4oPIplvRShPckeCoX7Q2Y%7EXTAr5oUDhRTUkrUdyhDO%7EtF2O9rW5KNwxu8wcaI%7EcBloPesp%7EAO6VKG8l7RuOz%7Ekkzd3TgYp4t6y3a-9X49r51eQaWNLZhuR9Yhe3x715yWGvCtPJeIEUWi6Mpsl3Q3WweuD8xX7TnYrOMOsM7c90-GKvBpZgSj7uqqeNhv37bxwVwhXq3xh6-kD2N7dcisePlH-HETmM13nZ7rrTDo2idYOo5-8hFQm2u1X5luWTWLjeFtV5Ge3SvIDsVtKWdY6fEKXhJ-U6nB3ZTA__"
-    "&Key-Pair-Id=K2L8F4GPSG1IFC"
+    "https://huggingface.co/datasets/lmms-lab/LLaVA-Video-178K/resolve/main/"
+    "1_2_m_youtube_v0_1/1_2_m_youtube_v0_1_videos_1.tar.gz"
 )
 VIDEO_ARCHIVE_URL_ENV = "SOLSTICE_TEST_VIDEO_ARCHIVE_URL"
 VIDEO_ARCHIVE_SHA_ENV = "SOLSTICE_TEST_VIDEO_ARCHIVE_SHA256"
@@ -96,8 +80,6 @@ def _ensure_archive_download(url: str, refresh: bool = False) -> Path:
     VIDEO_DOWNLOAD_CACHE.mkdir(parents=True, exist_ok=True)
     filename = _determine_archive_filename(url)
     archive_path = VIDEO_DOWNLOAD_CACHE / filename
-    if refresh and archive_path.exists():
-        archive_path.unlink()
     if not archive_path.exists():
         parsed = urlparse(url)
         LOGGER.info(
@@ -167,8 +149,9 @@ def _populate_sources_from_directory(source_root: Path, dest_root: Path) -> List
 
 
 def _ensure_source_videos(source_dir: Path, refresh: bool) -> List[Path]:
-    if refresh:
-        shutil.rmtree(source_dir, ignore_errors=True)
+    # Note: We intentionally do NOT delete source_dir on refresh.
+    # Source videos are expensive to download and can be reused across refreshes.
+    # Only the Lance metadata table needs to be regenerated.
     source_dir.mkdir(parents=True, exist_ok=True)
 
     existing = sorted(p for p in source_dir.glob("*.mp4") if p.is_file())
