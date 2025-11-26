@@ -265,15 +265,15 @@ jobs:
       with:
         version: "latest"
     
-    - name: Set up Python 3.13
+    - name: Set up Python 3.12
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: uv python install 3.13
+      run: uv python install 3.12
       
     - name: Install dependencies
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd solstice
-        uv sync --dev
+        uv sync --dev --python 3.12
     
     - name: Run tests
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
