@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 import lance
-from lance.schema import schema_to_json
+from lance import schema_to_json
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
