@@ -2593,6 +2593,7 @@ source = { editable = "solstice" }
 dependencies = [
     { name = "click" },
     { name = "fsspec", extra = ["s3"] },
+    { name = "pandas" },
     { name = "py-spy" },
     { name = "pyarrow" },
     { name = "pyiceberg" },
@@ -2612,6 +2613,7 @@ dev = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.7" },
     { name = "fsspec", extras = ["s3"], specifier = ">=2024.6.0" },
+    { name = "pandas", specifier = ">=2.0.0" },
     { name = "py-spy", specifier = ">=0.4.1" },
     { name = "pyarrow", specifier = ">=18.1.0" },
     { name = "pyiceberg", extras = ["sqlalchemy"], specifier = ">=0.10.0" },

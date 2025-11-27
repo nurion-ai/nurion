@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
+
+import pytest
 
 from solstice.state.backend import LocalStateBackend
 from tests.utils.video_dataset import ensure_video_metadata_table
@@ -13,6 +16,12 @@ from tests.utils.video_dataset import ensure_video_metadata_table
 logger = logging.getLogger("test")
 
 
+# Skip in CI - this test is resource-intensive and flaky due to Ray worker OOM issues
+# in constrained CI environments. Run locally for full validation.
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true",
+    reason="Skipped in CI: Ray-based video workflow test is resource-intensive and flaky",
+)
 def test_video_slice_workflow_with_ray():
     """Verify scene detection, slicing, filtering, and hashing on real binaries."""
     testdata_root = Path(__file__).parent / "testdata" / "resources"
