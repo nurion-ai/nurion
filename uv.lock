@@ -25,10 +25,10 @@ dependencies = [
     { name = "fastapi" },
     { name = "fsspec" },
     { name = "kubernetes" },
-    { name = "lance" },
     { name = "lance-namespace" },
     { name = "pydantic-settings" },
     { name = "pyiceberg" },
+    { name = "pylance" },
     { name = "pyyaml" },
     { name = "s3fs" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -55,10 +55,10 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.120.0" },
     { name = "fsspec", specifier = ">=2024.6.0" },
     { name = "kubernetes", specifier = ">=31.0.0" },
-    { name = "lance", specifier = ">=0.38.2" },
     { name = "lance-namespace", specifier = ">=0.0.19" },
     { name = "pydantic-settings", specifier = ">=2.11.0" },
     { name = "pyiceberg", specifier = ">=0.10.0" },
+    { name = "pylance", specifier = "==0.39.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "s3fs", specifier = ">=2024.6.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.44" },
@@ -1061,15 +1061,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/52/19ebe8004c243fdfa78268a96727c71e08f00ff6fe69a301d0b7fcbce3c2/kubernetes-33.1.0.tar.gz", hash = "sha256:f64d829843a54c251061a8e7a14523b521f2dc5c896cf6d65ccf348648a88993", size = 1036779, upload-time = "2025-06-09T21:57:58.521Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/89/43/d9bebfc3db7dea6ec80df5cb2aad8d274dd18ec2edd6c4f21f32c237cbbb/kubernetes-33.1.0-py2.py3-none-any.whl", hash = "sha256:544de42b24b64287f7e0aa9513c93cb503f7f40eea39b20f66810011a86eabc5", size = 1941335, upload-time = "2025-06-09T21:57:56.327Z" },
-]
-
-[[package]]
-name = "lance"
-version = "1.2.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/6d/2f/19bab0b1d8d5a4917581db6a7d2e132cca11323192f476cd27ed996192bc/lance-1.2.1.tar.gz", hash = "sha256:2849817a5eb7f5e610a4cf766bc3bd096d7f9e230bcc5a60c8dd3986510705e4", size = 16240, upload-time = "2020-11-04T17:18:10.806Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/1e/d47c5ff992a79d3987b4ac0a4d8a905457099f7def942dc6e1bd9c2216e2/lance-1.2.1-py3-none-any.whl", hash = "sha256:f9ac09055c7935c8d351bccd5f0deda9ecfce6b31fb1acdf650ef97140114137", size = 22548, upload-time = "2020-11-04T17:18:09.354Z" },
 ]
 
 [[package]]
