@@ -4,28 +4,42 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from solstice.core.models import Split, SplitPayload
-from solstice.core.operator import SinkOperator
+from solstice.core.operator import SinkOperator, OperatorConfig
+
+
+@dataclass
+class FileSinkConfig(OperatorConfig):
+    """Configuration for FileSink operator."""
+    
+    output_path: str
+    """Output file or directory path."""
+    
+    format: Literal["json", "parquet", "csv"] = "json"
+    """Output format (json, parquet, or csv)."""
+    
+    buffer_size: int = 1000
+    """Number of records to buffer before flushing."""
 
 
 class FileSink(SinkOperator):
     """Sink that writes records to a local path."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
-        super().__init__(config)
-        cfg = config or {}
-        self.output_path = cfg.get("output_path")
-        self.format = cfg.get("format", "json").lower()
-        self.buffer_size = cfg.get("buffer_size", 1000)
-
-        if not self.output_path:
+    def __init__(self, config: FileSinkConfig, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
+        if not config.output_path:
             raise ValueError("output_path is required for FileSink")
+        
+        self.output_path = config.output_path
+        self.format = config.format.lower()
+        self.buffer_size = config.buffer_size
 
         self.logger = logging.getLogger(self.__class__.__name__)
         self.buffer: List[Dict[str, Any]] = []
@@ -159,3 +173,7 @@ class FileSink(SinkOperator):
                 else:
                     row["value"] = record.value
                 writer.writerow(row)
+
+
+# Set operator_class after class definition
+FileSinkConfig.operator_class = FileSink

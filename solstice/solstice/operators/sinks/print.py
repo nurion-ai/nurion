@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 import json
 from solstice.core.models import Split, SplitPayload
-from solstice.core.operator import SinkOperator
+from solstice.core.operator import SinkOperator, OperatorConfig
+
+
+@dataclass
+class PrintSinkConfig(OperatorConfig):
+    """Configuration for PrintSink operator."""
+    pass  # No configuration needed for PrintSink
 
 
 class PrintSink(SinkOperator):
     """Sink that prints records to stdout."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+    def __init__(self, config: PrintSinkConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
         self.logger = logging.getLogger(self.__class__.__name__)
         self.count = 0
@@ -27,3 +34,7 @@ class PrintSink(SinkOperator):
         for record in batch.to_records():
             self.logger.info(json.dumps(record.to_dict()))
         return None
+
+
+# Set operator_class after class definition
+PrintSinkConfig.operator_class = PrintSink

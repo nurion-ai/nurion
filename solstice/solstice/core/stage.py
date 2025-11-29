@@ -1,12 +1,12 @@
 """Stage definition and management"""
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 import logging
 
-from solstice.core.operator import Operator
+from solstice.core.operator import OperatorConfig
 
 if TYPE_CHECKING:
-    from solstice.core.stage_master import StageMasterActor
+    from solstice.core.stage_master import StageMasterConfig
 
 
 class Stage:
@@ -15,9 +15,8 @@ class Stage:
     def __init__(
         self,
         stage_id: str,
-        operator_class: Type[Operator],
-        operator_config: Optional[Dict[str, Any]] = None,
-        master_class: Optional[Type["StageMasterActor"]] = None,
+        operator_config: OperatorConfig,
+        master_config: Optional["StageMasterConfig"] = None,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
     ):
@@ -26,9 +25,8 @@ class Stage:
 
         Args:
             stage_id: Unique identifier for the stage
-            operator_class: Class of the operator to execute
-            operator_config: Configuration for the operator
-            master_class: Class of the stage master to use
+            operator_config: Configuration for the operator (OperatorConfig subclass)
+            master_config: Configuration for the stage master (StageMasterConfig subclass)
             parallelism: Number of workers. Can be:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
@@ -36,18 +34,20 @@ class Stage:
 
         Examples:
             >>> # Fixed 4 workers, no scaling
-            >>> Stage('process', MyOp, parallelism=4)
+            >>> Stage('process', MyOperatorConfig(param=value), parallelism=4)
 
             >>> # Auto-scaling between 2 and 10 workers
-            >>> Stage('process', MyOp, parallelism=(2, 10))
+            >>> Stage('process', MyOperatorConfig(param=value), parallelism=(2, 10))
+            
+            >>> # With custom stage master config
+            >>> Stage('process', MyOperatorConfig(), master_config=MyMasterConfig())
         """
         self.stage_id = stage_id
-        self.operator_class = operator_class
-        self.operator_config = operator_config or {}
+        self.operator_config = operator_config
 
-        from solstice.core.stage_master import StageMasterActor
+        from solstice.core.stage_master import StageMasterConfig, DefaultStageMasterConfig
 
-        self.master_class = master_class or StageMasterActor
+        self.master_config: StageMasterConfig = master_config or DefaultStageMasterConfig()
 
         # Parse parallelism parameter
         if isinstance(parallelism, int):
@@ -84,8 +84,8 @@ class Stage:
         """Convert stage to dictionary representation"""
         return {
             "stage_id": self.stage_id,
-            "operator_class": f"{self.operator_class.__module__}.{self.operator_class.__name__}",
-            "operator_config": self.operator_config,
+            "operator_config": self.operator_config.to_dict(),
+            "master_config": self.master_config.to_dict(),
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,

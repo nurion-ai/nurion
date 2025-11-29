@@ -8,9 +8,13 @@ import pytest
 import json
 
 from solstice.core.models import Record, Split, SplitPayload
-from solstice.operators.filter import FilterOperator
-from solstice.operators.map import FlatMapOperator, MapBatchesOperator, MapOperator
-from solstice.operators.sinks.file import FileSink
+from solstice.operators.filter import FilterOperatorConfig
+from solstice.operators.map import (
+    FlatMapOperatorConfig,
+    MapBatchesOperatorConfig,
+    MapOperatorConfig,
+)
+from solstice.operators.sinks.file import FileSinkConfig
 
 
 def make_split(split_id: str = "split", stage_id: str = "stage") -> Split:
@@ -27,7 +31,8 @@ class TestMapOperator:
         def increment(value: dict) -> dict:
             return {"value": value["value"] + 1}
 
-        operator = MapOperator({"map_fn": increment}, worker_id="worker-1")
+        config = MapOperatorConfig(map_fn=increment)
+        operator = config.setup(worker_id="worker-1")
         split = make_split()
         batch = make_payload([{"value": 1}, {"value": 41}])
 
@@ -41,7 +46,8 @@ class TestMapOperator:
         def explode(_: dict) -> dict:
             raise RuntimeError("boom")
 
-        operator = MapOperator({"map_fn": explode})
+        config = MapOperatorConfig(map_fn=explode)
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"value": 1}])
 
@@ -59,7 +65,8 @@ class TestFlatMapOperator:
                 expanded.append({**row, "copy": 1})
             return pa.Table.from_pylist(expanded)
 
-        operator = FlatMapOperator({"flatmap_fn": duplicate}, worker_id="w0")
+        config = FlatMapOperatorConfig(flatmap_fn=duplicate)
+        operator = config.setup(worker_id="w0")
         split = make_split()
         batch = make_payload([{"video": "a"}, {"video": "b"}])
 
@@ -74,7 +81,8 @@ class TestFlatMapOperator:
         def drop_all(_: pa.Table) -> pa.Table:
             return pa.table({})
 
-        operator = FlatMapOperator({"flatmap_fn": drop_all})
+        config = FlatMapOperatorConfig(flatmap_fn=drop_all)
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"video": "a"}])
 
@@ -90,7 +98,8 @@ class TestMapBatchesOperator:
             rows = [{**row, "flag": True} for row in table.to_pylist()]
             return pa.Table.from_pylist(rows)
 
-        operator = MapBatchesOperator({"map_batches_fn": add_flag})
+        config = MapBatchesOperatorConfig(map_batches_fn=add_flag)
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"value": 1}, {"value": 2}])
 
@@ -103,7 +112,8 @@ class TestMapBatchesOperator:
         def shrink(table: pa.Table) -> pa.Table:
             return table.slice(0, 1)
 
-        operator = MapBatchesOperator({"map_batches_fn": shrink})
+        config = MapBatchesOperatorConfig(map_batches_fn=shrink)
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"value": 1}, {"value": 2}])
 
@@ -114,7 +124,8 @@ class TestMapBatchesOperator:
         def explode(_: pa.Table) -> pa.Table:
             raise RuntimeError("boom")
 
-        operator = MapBatchesOperator({"map_batches_fn": explode, "skip_on_error": True})
+        config = MapBatchesOperatorConfig(map_batches_fn=explode, skip_on_error=True)
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"value": 1}])
 
@@ -128,7 +139,8 @@ class TestFilterOperator:
         def is_even(record_value: dict) -> bool:
             return record_value["value"] % 2 == 0
 
-        operator = FilterOperator({"filter_fn": is_even})
+        config = FilterOperatorConfig(filter_fn=is_even)
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"value": 2}, {"value": 3}, {"value": 4}])
 
@@ -138,7 +150,8 @@ class TestFilterOperator:
         assert [row.value["value"] for row in result.to_records()] == [2, 4]
 
     def test_filter_operator_drops_all_rows_returns_none(self):
-        operator = FilterOperator({"filter_fn": lambda record: record.get("keep", False)})
+        config = FilterOperatorConfig(filter_fn=lambda record: record.get("keep", False))
+        operator = config.setup()
         split = make_split()
         batch = make_payload([{"keep": False}])
 
@@ -150,14 +163,12 @@ class TestFilterOperator:
 class TestFileSink:
     def test_json_sink_writes_to_explicit_file(self, tmp_path):
         output_file = tmp_path / "result.json"
-        sink = FileSink(
-            {
-                "output_path": str(output_file),
-                "format": "json",
-                "buffer_size": 1,
-            },
-            worker_id="sink_worker_0",
+        config = FileSinkConfig(
+            output_path=str(output_file),
+            format="json",
+            buffer_size=1,
         )
+        sink = config.setup(worker_id="sink_worker_0")
         split = make_split("sink-split")
         batch = make_payload([{"value": 1, "key": "k"}])
 

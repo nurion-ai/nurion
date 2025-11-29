@@ -3,27 +3,41 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional
 
 import pyarrow as pa
 from lance.dataset import write_dataset
 
 from solstice.core.models import Split, SplitPayload
-from solstice.core.operator import SinkOperator
+from solstice.core.operator import SinkOperator, OperatorConfig
+
+
+@dataclass
+class LanceSinkConfig(OperatorConfig):
+    """Configuration for LanceSink operator."""
+    
+    table_path: str
+    """Path to the Lance table."""
+    
+    mode: Literal["create", "append", "overwrite"] = "append"
+    """Write mode for the table."""
+    
+    buffer_size: int = 1000
+    """Number of records to buffer before flushing."""
 
 
 class LanceSink(SinkOperator):
     """Sink that writes records to a Lance table."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+    def __init__(self, config: LanceSinkConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        cfg = config or {}
-        self.table_path = cfg.get("table_path")
-        self.mode = cfg.get("mode", "append")
-        self.buffer_size = cfg.get("buffer_size", 1000)
-
-        if not self.table_path:
+        if not config.table_path:
             raise ValueError("table_path is required for LanceSink")
+        
+        self.table_path = config.table_path
+        self.mode = config.mode
+        self.buffer_size = config.buffer_size
 
         self.logger = logging.getLogger(self.__class__.__name__)
         self.buffer: List[Dict[str, Any]] = []
@@ -49,3 +63,7 @@ class LanceSink(SinkOperator):
             self.mode = "append"
         self.logger.info(f"Flushed {len(self.buffer)} records to Lance table")
         self.buffer.clear()
+
+
+# Set operator_class after class definition
+LanceSinkConfig.operator_class = LanceSink

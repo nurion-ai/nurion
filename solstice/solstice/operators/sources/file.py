@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import List, Literal, Optional
 
 import pyarrow as pa
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
 from solstice.core.models import Split, SplitPayload
-from solstice.core.operator import SourceOperator
+from solstice.core.operator import SourceOperator, OperatorConfig
+
+
+@dataclass
+class FileSourceConfig(OperatorConfig):
+    """Configuration for FileSource operator."""
+    
+    file_paths: List[str] = field(default_factory=list)
+    """List of file paths to read from."""
+    
+    format: Literal["json", "parquet", "csv"] = "json"
+    """File format (json, parquet, or csv)."""
 
 
 class FileSource(SourceOperator):
@@ -19,11 +31,10 @@ class FileSource(SourceOperator):
 
     SUPPORTED_FORMATS = {"json", "parquet", "csv"}
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+    def __init__(self, config: FileSourceConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        cfg = config or {}
-        self.file_paths = [str(path) for path in cfg.get("file_paths", [])]
-        self.file_format = cfg.get("format", "json").lower()
+        self.file_paths = [str(path) for path in config.file_paths]
+        self.file_format = config.format.lower()
 
         if self.file_format not in self.SUPPORTED_FORMATS:
             raise ValueError(f"Unsupported format: {self.file_format}")
@@ -76,3 +87,7 @@ class FileSource(SourceOperator):
             return pacsv.read_csv(file_path)
 
         raise ValueError(f"Unsupported format: {self.file_format}")
+
+
+# Set operator_class after class definition
+FileSourceConfig.operator_class = FileSource

@@ -2,27 +2,34 @@
 
 from __future__ import annotations
 
-from typing import List
+from dataclasses import dataclass, field
+from typing import List, Optional
 import pytest
 
 from solstice.core.job import Job
 from solstice.core.models import Record, Split, SplitPayload
-from solstice.core.operator import SourceOperator
+from solstice.core.operator import SourceOperator, OperatorConfig
 from solstice.core.stage import Stage
-from solstice.operators.filter import FilterOperator
-from solstice.operators.map import MapOperator
+from solstice.operators.filter import FilterOperatorConfig
+from solstice.operators.map import MapOperatorConfig
 from solstice.runtime.local_runner import LocalJobRunner
 from solstice.state.backend import LocalStateBackend
+
+
+@dataclass
+class ListSourceConfig(OperatorConfig):
+    """Config for ListSourceOperator."""
+    stage_id: str = "source"
+    batches: List[List[dict]] = field(default_factory=list)
 
 
 class ListSourceOperator(SourceOperator):
     """In-memory source that materializes configured batches."""
 
-    def __init__(self, config=None, worker_id=None):
+    def __init__(self, config: ListSourceConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        cfg = config or {}
-        self._stage_id = cfg.get("stage_id", "source")
-        self._batches: List[List[dict]] = [list(batch) for batch in cfg.get("batches", [])]
+        self._stage_id = config.stage_id
+        self._batches: List[List[dict]] = [list(batch) for batch in config.batches]
 
     def plan_splits(self) -> List[Split]:
         splits: List[Split] = []
@@ -47,6 +54,16 @@ class ListSourceOperator(SourceOperator):
         return SplitPayload.from_records(records, split_id=split.split_id)
 
 
+# Set operator_class after class definition
+ListSourceConfig.operator_class = ListSourceOperator
+
+
+@dataclass
+class ManualSourceConfig(OperatorConfig):
+    """Config for ManualSourceOperator."""
+    pass
+
+
 class ManualSourceOperator(SourceOperator):
     """SourceOperator that expects splits to be provided externally."""
 
@@ -56,6 +73,10 @@ class ManualSourceOperator(SourceOperator):
             for idx, value in enumerate(split.data_range["records"])
         ]
         return SplitPayload.from_records(payload, split_id=split.split_id)
+
+
+# Set operator_class after class definition
+ManualSourceConfig.operator_class = ManualSourceOperator
 
 
 def make_job(tmp_path, stages: List[Stage]) -> Job:
@@ -73,24 +94,25 @@ def make_job(tmp_path, stages: List[Stage]) -> Job:
 def test_local_runner_executes_pipeline(tmp_path):
     source_stage = Stage(
         stage_id="source",
-        operator_class=ListSourceOperator,
-        operator_config={
-            "stage_id": "source",
-            "batches": [
+        operator_config=ListSourceConfig(
+            stage_id="source",
+            batches=[
                 [{"value": 1}, {"value": 2}],
                 [{"value": 3}, {"value": 4}],
             ],
-        },
+        ),
     )
     map_stage = Stage(
         stage_id="double",
-        operator_class=MapOperator,
-        operator_config={"map_fn": lambda val: {"value": val["value"] * 2}},
+        operator_config=MapOperatorConfig(
+            map_fn=lambda val: {"value": val["value"] * 2},
+        ),
     )
     filter_stage = Stage(
         stage_id="filter",
-        operator_class=FilterOperator,
-        operator_config={"filter_fn": lambda val: val["value"] >= 6},
+        operator_config=FilterOperatorConfig(
+            filter_fn=lambda val: val["value"] >= 6,
+        ),
     )
 
     job = make_job(tmp_path, [source_stage, map_stage, filter_stage])
@@ -105,11 +127,15 @@ def test_local_runner_executes_pipeline(tmp_path):
 
 
 def test_local_runner_accepts_source_splits_argument(tmp_path):
-    source_stage = Stage(stage_id="manual_source", operator_class=ManualSourceOperator)
+    source_stage = Stage(
+        stage_id="manual_source",
+        operator_config=ManualSourceConfig(),
+    )
     map_stage = Stage(
         stage_id="increment",
-        operator_class=MapOperator,
-        operator_config={"map_fn": lambda val: {"value": val["value"] + 1}},
+        operator_config=MapOperatorConfig(
+            map_fn=lambda val: {"value": val["value"] + 1},
+        ),
     )
     job = make_job(tmp_path, [source_stage, map_stage])
 
@@ -132,13 +158,15 @@ def test_local_runner_accepts_source_splits_argument(tmp_path):
 def test_local_runner_hooks_and_failure_injection(tmp_path):
     source_stage = Stage(
         stage_id="source",
-        operator_class=ListSourceOperator,
-        operator_config={"batches": [[{"value": 1}], [{"value": 2}]]},
+        operator_config=ListSourceConfig(
+            batches=[[{"value": 1}], [{"value": 2}]],
+        ),
     )
     map_stage = Stage(
         stage_id="map",
-        operator_class=MapOperator,
-        operator_config={"map_fn": lambda val: {"value": val["value"]}},
+        operator_config=MapOperatorConfig(
+            map_fn=lambda val: {"value": val["value"]},
+        ),
     )
     job = make_job(tmp_path, [source_stage, map_stage])
     runner = LocalJobRunner(job)

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import ray
 
 from solstice.core.models import Split, SplitPayload, WorkerMetrics
-from solstice.core.stage import Stage
 from solstice.core.operator import Operator
 from solstice.utils.logging import create_ray_logger
+
+if TYPE_CHECKING:
+    from solstice.core.stage import Stage
 
 
 @dataclass
@@ -37,11 +39,11 @@ class StageWorker:
     def __init__(
         self,
         worker_id: str,
-        stage: Stage,
+        stage: "Stage",
     ):
         self.worker_id = worker_id
         self.stage_id = stage.stage_id
-        self.operator: Operator = stage.operator_class(stage.operator_config, worker_id=worker_id)
+        self.operator: Operator = stage.operator_config.setup(worker_id=worker_id)
 
         self.logger = create_ray_logger(f"StageWorker-{self.stage_id}-{self.worker_id}")
 

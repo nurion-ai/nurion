@@ -14,10 +14,10 @@ from typing import Any, Dict
 
 from solstice.core.job import Job
 from solstice.core.stage import Stage
-from solstice.operators.sources import LanceTableSource
-from solstice.operators.map import MapOperator
-from solstice.operators.filter import FilterOperator
-from solstice.operators.sinks import FileSink, PrintSink
+from solstice.operators.sources import LanceTableSourceConfig
+from solstice.operators.map import MapOperatorConfig
+from solstice.operators.filter import FilterOperatorConfig
+from solstice.operators.sinks import FileSinkConfig, PrintSinkConfig
 from solstice.state.backend import StateBackend
 
 
@@ -80,12 +80,11 @@ def create_job(
     # Stage 1: Source - Read from Lance table (fixed 1 worker)
     source_stage = Stage(
         stage_id="source",
-        operator_class=LanceTableSource,
-        operator_config={
-            "table_path": input_path,
-            "batch_size": config.get("source_batch_size", 1000),
-            "columns": config.get("source_columns"),
-        },
+        operator_config=LanceTableSourceConfig(
+            dataset_uri=input_path,
+            split_size=config.get("source_batch_size", 1000),
+            columns=config.get("source_columns"),
+        ),
         parallelism=1,  # Fixed 1 worker for source
         worker_resources={
             "num_cpus": 1,
@@ -97,11 +96,9 @@ def create_job(
     transform_parallelism = config.get("transform_parallelism", (2, 8))
     map_stage = Stage(
         stage_id="transform",
-        operator_class=MapOperator,
-        operator_config={
-            "map_fn": transform_record,
-            "skip_on_error": True,
-        },
+        operator_config=MapOperatorConfig(
+            map_fn=transform_record,
+        ),
         parallelism=transform_parallelism,
         worker_resources={
             "num_cpus": 1,
@@ -113,11 +110,9 @@ def create_job(
     filter_parallelism = config.get("filter_parallelism", 2)
     filter_stage = Stage(
         stage_id="filter",
-        operator_class=FilterOperator,
-        operator_config={
-            "filter_fn": filter_predicate,
-            "skip_on_error": True,
-        },
+        operator_config=FilterOperatorConfig(
+            filter_fn=filter_predicate,
+        ),
         parallelism=filter_parallelism,
         worker_resources={
             "num_cpus": 1,
@@ -130,12 +125,11 @@ def create_job(
     if output_path:
         sink_stage = Stage(
             stage_id="sink",
-            operator_class=FileSink,
-            operator_config={
-                "output_path": output_path,
-                "format": output_format,
-                "buffer_size": config.get("sink_buffer_size", 1000),
-            },
+            operator_config=FileSinkConfig(
+                output_path=output_path,
+                format=output_format,
+                buffer_size=config.get("sink_buffer_size", 1000),
+            ),
             parallelism=1,
             worker_resources={
                 "num_cpus": 1,
@@ -146,8 +140,7 @@ def create_job(
         # Print to stdout if no output path
         sink_stage = Stage(
             stage_id="sink",
-            operator_class=PrintSink,
-            operator_config={},
+            operator_config=PrintSinkConfig(),
             parallelism=1,
             worker_resources={
                 "num_cpus": 1,

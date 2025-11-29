@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from solstice.core.models import SplitPayload
-from solstice.core.operator import Operator
+from solstice.core.operator import Operator, OperatorConfig
 
 import pyarrow as pa
 
@@ -110,14 +111,24 @@ def _compute_global_slice_rank(global_index: int, scene_index: int) -> int:
     return global_index + scene_index
 
 
+@dataclass
+class FFmpegSceneDetectConfig(OperatorConfig):
+    """Configuration for FFmpegSceneDetectOperator."""
+    
+    scene_threshold: float = 0.4
+    """Threshold for scene change detection (0.0-1.0)."""
+    
+    min_scene_duration: float = 0.5
+    """Minimum scene duration in seconds."""
+
+
 class FFmpegSceneDetectOperator(Operator):
     """Detect scenes for each video referenced in a batch."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+    def __init__(self, config: FFmpegSceneDetectConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        cfg = config or {}
-        self.scene_threshold = float(cfg.get("scene_threshold", 0.4))
-        self.min_scene_duration = float(cfg.get("min_scene_duration", 0.5))
+        self.scene_threshold = config.scene_threshold
+        self.min_scene_duration = config.min_scene_duration
 
     def process_split(
         self, split, payload: Optional[SplitPayload] = None
@@ -195,18 +206,31 @@ class FFmpegSceneDetectOperator(Operator):
         )
 
 
+# Set operator_class after class definition
+FFmpegSceneDetectConfig.operator_class = FFmpegSceneDetectOperator
+
+
+@dataclass
+class FFmpegSliceConfig(OperatorConfig):
+    """Configuration for FFmpegSliceOperator."""
+    
+    slice_dir: str
+    """Directory to store sliced video files."""
+    
+    min_scene_duration: float = 0.5
+    """Minimum scene duration in seconds."""
+
+
 class FFmpegSliceOperator(Operator):
     """Materialize binary slices for each detected scene."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+    def __init__(self, config: FFmpegSliceConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        cfg = config or {}
-        slice_dir = cfg.get("slice_dir")
-        if not slice_dir:
+        if not config.slice_dir:
             raise ValueError("slice_dir is required for FFmpegSliceOperator")
-        self.slice_dir = Path(slice_dir).expanduser().resolve()
+        self.slice_dir = Path(config.slice_dir).expanduser().resolve()
         self.slice_dir.mkdir(parents=True, exist_ok=True)
-        self.min_duration = float(cfg.get("min_scene_duration", 0.5))
+        self.min_duration = config.min_scene_duration
 
     def _build_slice_path(self, record: Dict[str, Any]) -> Path:
         video_uid = record.get("video_uid") or "video"
@@ -278,6 +302,10 @@ class FFmpegSliceOperator(Operator):
             pa.Table.from_pylist(outputs),
             split_id=f"{batch.split_id}:slice-{self.worker_id}",
         )
+
+
+# Set operator_class after class definition
+FFmpegSliceConfig.operator_class = FFmpegSliceOperator
 
 
 def attach_slice_hash(record_value: Dict[str, Any]) -> Dict[str, Any]:
