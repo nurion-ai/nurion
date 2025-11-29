@@ -2,23 +2,40 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Optional
 from pyiceberg.catalog import load_catalog
 
 from solstice.core.models import Split, SplitPayload
-from solstice.core.operator import SourceOperator
+from solstice.core.operator import SourceOperator, OperatorConfig
+
+
+@dataclass
+class IcebergSourceConfig(OperatorConfig):
+    """Configuration for IcebergSource operator."""
+
+    catalog_uri: Optional[str] = None
+    """URI of the Iceberg catalog."""
+
+    table_name: Optional[str] = None
+    """Full name of the Iceberg table (namespace.table)."""
+
+    filter: Optional[str] = None
+    """Filter expression to apply when reading."""
+
+    snapshot_id: Optional[int] = None
+    """Specific snapshot ID to read from."""
 
 
 class IcebergSource(SourceOperator):
     """Source operator for reading from Iceberg tables."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(config)
-        cfg = config or {}
-        self.catalog_uri: Optional[str] = cfg.get("catalog_uri")
-        self.table_name: Optional[str] = cfg.get("table_name")
-        self.filter_expr: Optional[str] = cfg.get("filter")
-        self.snapshot_id: Optional[int] = cfg.get("snapshot_id")
+    def __init__(self, config: IcebergSourceConfig, worker_id: Optional[str] = None):
+        super().__init__(config, worker_id)
+        self.catalog_uri: Optional[str] = config.catalog_uri
+        self.table_name: Optional[str] = config.table_name
+        self.filter_expr: Optional[str] = config.filter
+        self.snapshot_id: Optional[int] = config.snapshot_id
 
         self.catalog = None
         self.table = None
@@ -43,7 +60,7 @@ class IcebergSource(SourceOperator):
         if snapshot_id:
             scan = scan.use_snapshot(snapshot_id)
 
-        arrow_table = scan.to_arrow()
+        arrow_table = scan.to_table()
         if arrow_table.num_rows == 0:
             return None
 
@@ -56,3 +73,7 @@ class IcebergSource(SourceOperator):
         self.scan = None
         self.table = None
         self.catalog = None
+
+
+# Set operator_class after class definition
+IcebergSourceConfig.operator_class = IcebergSource

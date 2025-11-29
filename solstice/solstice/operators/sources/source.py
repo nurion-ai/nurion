@@ -3,12 +3,14 @@
 import time
 
 from abc import abstractmethod
-from typing import Iterator, List
+from typing import TYPE_CHECKING, Iterator, List
 
-from solstice.core.stage import Stage
 from solstice.core.models import Split
 from solstice.core.stage_master import StageMasterActor
 from solstice.state.backend import StateBackend
+
+if TYPE_CHECKING:
+    from solstice.core.stage import Stage
 
 
 class SourceStageMaster(StageMasterActor):
@@ -18,7 +20,7 @@ class SourceStageMaster(StageMasterActor):
         self,
         job_id: str,
         state_backend: StateBackend,
-        stage: Stage,
+        stage: "Stage",
         upstream_stages: List[str] | None = None,
     ):
         super().__init__(job_id, state_backend, stage, upstream_stages)
@@ -63,7 +65,7 @@ class SourceStageMaster(StageMasterActor):
 
         try:
             for split in split_iterator:
-                self.enqueue_split(split, payload_ref=None)
+                self.enqueue_split(split)
                 if self.backpressure_active:
                     self.logger.warning(
                         f"Backpressure active for stage {self.stage_id}, stop enqueuing splits"

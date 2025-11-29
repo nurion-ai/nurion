@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import time
 import uuid
 from collections import deque
 from collections import defaultdict
-from typing import Any, Deque, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Deque, Dict, List, Optional, Type, TypeVar
 
 import ray
 import ray.actor
@@ -21,10 +21,93 @@ from solstice.core.models import (
 from solstice.state.backend import StateBackend
 from solstice.state.manager import StateManager
 from solstice.utils.logging import create_ray_logger
-from solstice.core.stage import Stage
 from solstice.core.worker import ProcessResult
 
+if TYPE_CHECKING:
+    from solstice.core.stage import Stage
+
 BACKPRESSURE_QUEUE_RATIO_THRESHOLD = 0.7
+
+
+T = TypeVar("T", bound="StageMasterActor")
+
+
+@dataclass
+class StageMasterConfig:
+    """Base configuration class for stage masters.
+
+    Subclasses should define their configuration fields as dataclass fields,
+    and set the `master_class` class variable to the corresponding master class.
+
+    Example:
+        @dataclass
+        class MyMasterConfig(StageMasterConfig):
+            master_class = MyStageMasterActor
+
+            custom_param: str = "default"
+
+        # Usage:
+        config = MyMasterConfig(custom_param="value")
+        master = config.setup(job_id, state_backend, stage, upstream_stages)
+    """
+
+    master_class: ClassVar[Type["StageMasterActor"]]
+
+    # Common config fields with defaults
+    max_split_attempts: int = 3
+    max_active_splits_per_worker: int = 100
+    max_queue_size: int = 1000
+
+    def setup(
+        self,
+        job_id: str,
+        state_backend: StateBackend,
+        stage: "Stage",
+        upstream_stages: List[str] | None,
+    ) -> "StageMasterActor":
+        """Create and return a stage master instance with this configuration.
+
+        Args:
+            job_id: The job ID
+            state_backend: State backend for persistence
+            stage: The stage this master will manage
+            upstream_stages: List of upstream stage IDs
+
+        Returns:
+            Configured stage master instance
+        """
+        return self.master_class(
+            job_id=job_id,
+            state_backend=state_backend,
+            stage=stage,
+            upstream_stages=upstream_stages,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary representation."""
+        result = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, StageMasterConfig):
+                result[f.name] = value.to_dict()
+            else:
+                result[f.name] = value
+        return result
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a config value by key, with optional default.
+
+        This method provides dict-like access for backward compatibility.
+        """
+        return getattr(self, key, default)
+
+
+@dataclass
+class DefaultStageMasterConfig(StageMasterConfig):
+    """Default stage master configuration using the standard StageMasterActor."""
+
+    # master_class will be set after StageMasterActor is defined
+    pass
 
 
 @dataclass
@@ -41,7 +124,7 @@ class StageMasterActor:
         self,
         job_id: str,
         state_backend: StateBackend,
-        stage: Stage,
+        stage: "Stage",
         upstream_stages: List[str] | None,
     ):
         self.job_id = job_id
@@ -52,10 +135,13 @@ class StageMasterActor:
 
         self.logger = create_ray_logger(f"StageMaster-{self.stage_id}")
 
+        # Get master config from stage
+        master_config = stage.master_config
+
         # State & split tracking
         self.state_manager = StateManager(stage_id=self.stage_id, state_backend=state_backend)
         self._pending_splits: Deque[Split] = deque()
-        self.max_split_attempts = self.stage.operator_config.get("max_split_attempts", 3)
+        self.max_split_attempts = master_config.max_split_attempts
         self.downstream_stage_refs: Dict[str, ray.actor.ActorHandle] = {}
         self.downstream_split_counters: Dict[str, int] = {}
         self.upstream_finished: dict[str, bool] = {stage_id: False for stage_id in upstream_stages}
@@ -64,9 +150,7 @@ class StageMasterActor:
         self.workers: Dict[str, ray.actor.ActorHandle] = {}
         self.worker_active_splits = defaultdict(int)
         self.worker_metrics: Dict[str, WorkerMetrics] = {}
-        self.max_active_splits_per_worker = self.stage.operator_config.get(
-            "max_active_splits_per_worker", 100
-        )
+        self.max_active_splits_per_worker = master_config.max_active_splits_per_worker
 
         # Assignment tracking
         self._inflight_results: Dict[ray.ObjectRef, Split] = {}
@@ -77,7 +161,7 @@ class StageMasterActor:
         self.start_time = time.time()
         self._running = False
         self.current_checkpoint_id: Optional[str] = None
-        self.max_queue_size = self.stage.operator_config.get("max_queue_size", 1000)
+        self.max_queue_size = master_config.max_queue_size
 
         # Spawn initial workers
         for _ in range(self.stage.min_parallelism):
@@ -160,7 +244,6 @@ class StageMasterActor:
     def enqueue_split(
         self,
         split: Split,
-        payload_ref: Optional[ray.ObjectRef] = None,
     ) -> None:
         """Receive a new split from upstream (or create one for source stages)."""
         # payload_ref is intentionally ignored; object references are carried inside split.data_range.
@@ -457,3 +540,7 @@ class StageMasterActor:
 
     def stop(self) -> None:
         self._running = False
+
+
+# Set the master_class on DefaultStageMasterConfig after class definition
+DefaultStageMasterConfig.master_class = StageMasterActor

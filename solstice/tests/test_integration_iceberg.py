@@ -8,14 +8,14 @@ import pyarrow as pa
 import pytest
 
 from solstice.core.models import Split
-from solstice.operators.sources import IcebergSource
+from solstice.operators.sources import IcebergSource, IcebergSourceConfig
 
 
 def _mock_catalog(table_rows: list[dict]):
     fake_scan = MagicMock()
     fake_scan.filter.return_value = fake_scan
     fake_scan.use_snapshot.return_value = fake_scan
-    fake_scan.to_arrow.return_value = pa.Table.from_pylist(table_rows)
+    fake_scan.to_table.return_value = pa.Table.from_pylist(table_rows)
 
     fake_table = MagicMock()
     fake_table.scan.return_value = fake_scan
@@ -31,7 +31,8 @@ def test_iceberg_source_reads_rows(mock_load_catalog):
     catalog, fake_scan, fake_table = _mock_catalog([{"id": 1, "value": 10}, {"id": 2, "value": 20}])
     mock_load_catalog.return_value = catalog
 
-    source = IcebergSource({"catalog_uri": "http://localhost/catalog", "table_name": "db.tbl"})
+    config = IcebergSourceConfig(catalog_uri="http://localhost/catalog", table_name="db.tbl")
+    source = config.setup()
     split = Split(
         split_id="split-0",
         stage_id="source",

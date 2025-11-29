@@ -2,26 +2,46 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Iterable, Iterator, List, Optional
 
 import lance
 
 from solstice.core.models import Split, SplitPayload
 from solstice.operators.sources.source import SourceStageMaster
 from solstice.state.backend import StateBackend
-from solstice.core.stage import Stage
-from solstice.core.operator import SourceOperator
+from solstice.core.operator import SourceOperator, OperatorConfig
+from solstice.core.stage_master import StageMasterConfig
+
+if TYPE_CHECKING:
+    from solstice.core.stage import Stage
+
+
+@dataclass
+class LanceTableSourceConfig(OperatorConfig):
+    """Configuration for LanceTableSource operator."""
+
+    dataset_uri: str
+    """URI of the Lance dataset."""
+
+    filter: Optional[str] = None
+    """Filter expression to apply when reading."""
+
+    columns: Optional[Iterable[str]] = None
+    """Columns to read from the dataset."""
+
+    split_size: int = 1024
+    """Number of rows per split."""
 
 
 class LanceTableSource(SourceOperator):
     """Source operator for reading from Lance tables."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, worker_id: Optional[str] = None):
+    def __init__(self, config: LanceTableSourceConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        cfg = config or {}
-        self.dataset_uri: Optional[str] = cfg.get("dataset_uri")
-        if not self.dataset_uri:
+        if not config.dataset_uri:
             raise ValueError("dataset_uri is required for LanceTableSource")
+        self.dataset_uri: str = config.dataset_uri
 
     def read(self, split: Split) -> Optional[SplitPayload]:
         dataset = lance.dataset(self.dataset_uri)
@@ -44,6 +64,31 @@ class LanceTableSource(SourceOperator):
         self.dataset_uri = None
 
 
+# Set operator_class after class definition
+LanceTableSourceConfig.operator_class = LanceTableSource
+
+
+@dataclass
+class LanceSourceStageMasterConfig(StageMasterConfig):
+    """Configuration for LanceSourceStageMaster."""
+
+    dataset_uri: Optional[str] = None
+    """URI of the Lance dataset (required)."""
+
+    filter: Optional[str] = None
+    """Filter expression to apply when reading."""
+
+    columns: Optional[Iterable[str]] = None
+    """Columns to read from the dataset."""
+
+    split_size: int = 1024
+    """Number of rows per split."""
+
+    def __post_init__(self):
+        if not self.dataset_uri:
+            raise ValueError("dataset_uri is required for LanceSourceStageMasterConfig")
+
+
 class LanceSourceStageMaster(SourceStageMaster):
     """Planner for Lance tables."""
 
@@ -51,23 +96,26 @@ class LanceSourceStageMaster(SourceStageMaster):
         self,
         job_id: str,
         state_backend: StateBackend,
-        stage: Stage,
+        stage: "Stage",
         upstream_stages: List[str] | None = None,
     ):
         super().__init__(job_id, state_backend, stage, upstream_stages)
-        self.config = stage.operator_config or {}
-        self.dataset_uri: str = self.config.get("dataset_uri")
+
+        # Get the operator config which contains Lance-specific settings
+        operator_cfg = stage.operator_config
+        if not isinstance(operator_cfg, LanceTableSourceConfig):
+            raise TypeError(
+                f"LanceSourceStageMaster requires LanceTableSourceConfig, got {type(operator_cfg)}"
+            )
+
+        self.dataset_uri: str = operator_cfg.dataset_uri
         if not self.dataset_uri:
-            raise ValueError("dataset_uri is required for LancePlanner")
-        self.filter: Optional[str] = self.config.get("filter")
-        self.columns: Optional[Iterable[str]] = self.config.get("columns")
-        # self.namespace: str = config.get("namespace")
-        # self.table_name: str = config.get("table_name")
-        # if not self.dataset_uri and (not self.namespace or not self.table_name):
-        #     raise ValueError("dataset_uri or (namespace and table_name) is required for LancePlanner")
+            raise ValueError("dataset_uri is required for LanceSourceStageMaster")
+        self.filter: Optional[str] = operator_cfg.filter
+        self.columns: Optional[Iterable[str]] = operator_cfg.columns
+        self.split_size: int = operator_cfg.split_size
 
         self.dataset = lance.dataset(self.dataset_uri)
-        self.split_size = self.config.get("split_size", 1024)
 
     def fetch_splits(self) -> Iterator[Split]:
         sorted_fragments = sorted(self.dataset.get_fragments(), key=lambda x: x.fragment_id)
@@ -85,3 +133,7 @@ class LanceSourceStageMaster(SourceStageMaster):
                         "limit": self.split_size,
                     },
                 )
+
+
+# Set master_class after class definition
+LanceSourceStageMasterConfig.master_class = LanceSourceStageMaster

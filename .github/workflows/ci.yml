@@ -189,14 +189,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ffmpeg
     
-    - name: Set up Docker Buildx
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      uses: docker/setup-buildx-action@v3
-
     - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd aether
+        docker compose build --no-cache
         docker compose up -d 
         
         # Wait for services to be healthy

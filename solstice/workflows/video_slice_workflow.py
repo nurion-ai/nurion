@@ -8,14 +8,14 @@ from typing import Any, Dict
 
 from solstice.core.job import Job
 from solstice.core.stage import Stage
-from solstice.operators.filter import FilterOperator
-from solstice.operators.map import MapOperator
-from solstice.operators.sinks import FileSink
-from solstice.operators.sources import LanceTableSource
-from solstice.operators.sources.lance import LanceSourceStageMaster
+from solstice.operators.filter import FilterOperatorConfig
+from solstice.operators.map import MapOperatorConfig
+from solstice.operators.sinks import FileSinkConfig
+from solstice.operators.sources import LanceTableSourceConfig
+from solstice.operators.sources.lance import LanceSourceStageMasterConfig
 from solstice.operators.video import (
-    FFmpegSceneDetectOperator,
-    FFmpegSliceOperator,
+    FFmpegSceneDetectConfig,
+    FFmpegSliceConfig,
     attach_slice_hash,
     keep_every_n,
 )
@@ -61,68 +61,63 @@ def create_job(
 
     source_stage = Stage(
         stage_id="source",
-        operator_class=LanceTableSource,
-        operator_config={
-            "dataset_uri": input_path,
-            "split_size": 10,
-        },
-        master_class=LanceSourceStageMaster,
+        operator_config=LanceTableSourceConfig(
+            dataset_uri=input_path,
+            split_size=10,
+        ),
+        master_config=LanceSourceStageMasterConfig(
+            dataset_uri=input_path,
+            split_size=10,
+        ),
         parallelism=1,
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     scene_stage = Stage(
         stage_id="detect",
-        operator_class=FFmpegSceneDetectOperator,
-        operator_config={
-            "scene_threshold": scene_threshold,
-            "min_scene_duration": min_slice_duration,
-        },
+        operator_config=FFmpegSceneDetectConfig(
+            scene_threshold=scene_threshold,
+            min_scene_duration=min_slice_duration,
+        ),
         parallelism=config.get("scene_parallelism", (2, 6)),
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     slice_stage = Stage(
         stage_id="slice",
-        operator_class=FFmpegSliceOperator,
-        operator_config={
-            "slice_dir": slice_dir,
-            "min_scene_duration": min_slice_duration,
-        },
+        operator_config=FFmpegSliceConfig(
+            slice_dir=slice_dir,
+            min_scene_duration=min_slice_duration,
+        ),
         parallelism=config.get("slice_parallelism", (2, 4)),
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     filter_stage = Stage(
         stage_id="filter",
-        operator_class=FilterOperator,
-        operator_config={
-            "filter_fn": functools.partial(keep_every_n, modulo=filter_modulo),
-            "skip_on_error": False,
-        },
+        operator_config=FilterOperatorConfig(
+            filter_fn=functools.partial(keep_every_n, modulo=filter_modulo),
+        ),
         parallelism=config.get("filter_parallelism", 2),
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     hash_stage = Stage(
         stage_id="hash",
-        operator_class=MapOperator,
-        operator_config={
-            "map_fn": attach_slice_hash,
-            "skip_on_error": False,
-        },
+        operator_config=MapOperatorConfig(
+            map_fn=attach_slice_hash,
+        ),
         parallelism=config.get("hash_parallelism", 2),
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     sink_stage = Stage(
         stage_id="sink",
-        operator_class=FileSink,
-        operator_config={
-            "output_path": output_path,
-            "format": config.get("output_format", "json"),
-            "buffer_size": config.get("sink_buffer_size", 256),
-        },
+        operator_config=FileSinkConfig(
+            output_path=output_path,
+            format=config.get("output_format", "json"),
+            buffer_size=config.get("sink_buffer_size", 256),
+        ),
         parallelism=1,
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )

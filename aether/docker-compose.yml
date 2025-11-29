@@ -49,7 +49,9 @@ services:
       - appnet
 
   app:
-    build: .
+    build:
+      context: ..
+      dockerfile: aether/Dockerfile
     environment:
       DATABASE_URL: postgresql+asyncpg://aether:aether@db:5432/aether
       ICEBERG__STORAGE_BACKEND: s3
