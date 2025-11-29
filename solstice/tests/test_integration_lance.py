@@ -11,7 +11,7 @@ import pyarrow as pa
 from lance.dataset import write_dataset
 
 from solstice.core.models import Split
-from solstice.operators.sources import LanceTableSource
+from solstice.operators.sources import LanceTableSource, LanceTableSourceConfig
 
 
 def build_lance_splits(dataset_uri: str, *, split_size: int) -> list[Split]:
@@ -59,7 +59,8 @@ def lance_dataset_uri():
 @pytest.mark.integration
 class TestLanceSource:
     def test_lance_source_reads_fragments(self, lance_dataset_uri):
-        source = LanceTableSource({"dataset_uri": lance_dataset_uri, "split_size": 2})
+        config = LanceTableSourceConfig(dataset_uri=lance_dataset_uri, split_size=2)
+        source = config.setup()
         splits = build_lance_splits(lance_dataset_uri, split_size=2)
 
         batches = []
@@ -75,9 +76,10 @@ class TestLanceSource:
         source.close()
 
     def test_lance_source_respects_column_selection(self, lance_dataset_uri):
-        source = LanceTableSource(
-            {"dataset_uri": lance_dataset_uri, "split_size": 10, "columns": ["id", "name"]}
+        config = LanceTableSourceConfig(
+            dataset_uri=lance_dataset_uri, split_size=10, columns=["id", "name"]
         )
+        source = config.setup()
         splits = build_lance_splits(lance_dataset_uri, split_size=10)
         for split in splits:
             split.data_range["columns"] = ["id", "name"]
