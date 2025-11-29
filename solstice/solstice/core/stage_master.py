@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from abc import ABC
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 import time
 import uuid
 from collections import deque
@@ -36,24 +35,24 @@ T = TypeVar("T", bound="StageMasterActor")
 @dataclass
 class StageMasterConfig:
     """Base configuration class for stage masters.
-    
+
     Subclasses should define their configuration fields as dataclass fields,
     and set the `master_class` class variable to the corresponding master class.
-    
+
     Example:
         @dataclass
         class MyMasterConfig(StageMasterConfig):
             master_class = MyStageMasterActor
-            
+
             custom_param: str = "default"
-            
+
         # Usage:
         config = MyMasterConfig(custom_param="value")
         master = config.setup(job_id, state_backend, stage, upstream_stages)
     """
-    
+
     master_class: ClassVar[Type["StageMasterActor"]]
-    
+
     # Common config fields with defaults
     max_split_attempts: int = 3
     max_active_splits_per_worker: int = 100
@@ -67,13 +66,13 @@ class StageMasterConfig:
         upstream_stages: List[str] | None,
     ) -> "StageMasterActor":
         """Create and return a stage master instance with this configuration.
-        
+
         Args:
             job_id: The job ID
             state_backend: State backend for persistence
             stage: The stage this master will manage
             upstream_stages: List of upstream stage IDs
-            
+
         Returns:
             Configured stage master instance
         """
@@ -83,7 +82,7 @@ class StageMasterConfig:
             stage=stage,
             upstream_stages=upstream_stages,
         )
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary representation."""
         result = {}
@@ -97,7 +96,7 @@ class StageMasterConfig:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value by key, with optional default.
-        
+
         This method provides dict-like access for backward compatibility.
         """
         return getattr(self, key, default)
@@ -106,7 +105,7 @@ class StageMasterConfig:
 @dataclass
 class DefaultStageMasterConfig(StageMasterConfig):
     """Default stage master configuration using the standard StageMasterActor."""
-    
+
     # master_class will be set after StageMasterActor is defined
     pass
 

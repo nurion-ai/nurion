@@ -38,7 +38,7 @@ class Stage:
 
             >>> # Auto-scaling between 2 and 10 workers
             >>> Stage('process', MyOperatorConfig(param=value), parallelism=(2, 10))
-            
+
             >>> # With custom stage master config
             >>> Stage('process', MyOperatorConfig(), master_config=MyMasterConfig())
         """

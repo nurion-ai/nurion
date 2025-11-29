@@ -10,7 +10,7 @@ from solstice.core.models import Record, Split, SplitPayload
 @dataclass
 class MapOperatorConfig(OperatorConfig):
     """Configuration for MapOperator."""
-    
+
     map_fn: Callable[[Any], Any]
     """Function to apply to each record's value."""
 
@@ -53,10 +53,10 @@ MapOperatorConfig.operator_class = MapOperator
 @dataclass
 class MapBatchesOperatorConfig(OperatorConfig):
     """Configuration for MapBatchesOperator."""
-    
+
     map_batches_fn: Callable[[Any], Any]
     """Function to apply to the entire batch (Arrow table)."""
-    
+
     skip_on_error: bool = False
     """If True, return empty payload on error instead of raising."""
 
@@ -99,7 +99,7 @@ MapBatchesOperatorConfig.operator_class = MapBatchesOperator
 @dataclass
 class FlatMapOperatorConfig(OperatorConfig):
     """Configuration for FlatMapOperator."""
-    
+
     flatmap_fn: Callable[[Any], Any]
     """Function to apply to the batch, returning multiple records."""
 

@@ -20,16 +20,16 @@ if TYPE_CHECKING:
 @dataclass
 class LanceTableSourceConfig(OperatorConfig):
     """Configuration for LanceTableSource operator."""
-    
+
     dataset_uri: str
     """URI of the Lance dataset."""
-    
+
     filter: Optional[str] = None
     """Filter expression to apply when reading."""
-    
+
     columns: Optional[Iterable[str]] = None
     """Columns to read from the dataset."""
-    
+
     split_size: int = 1024
     """Number of rows per split."""
 
@@ -71,19 +71,19 @@ LanceTableSourceConfig.operator_class = LanceTableSource
 @dataclass
 class LanceSourceStageMasterConfig(StageMasterConfig):
     """Configuration for LanceSourceStageMaster."""
-    
+
     dataset_uri: Optional[str] = None
     """URI of the Lance dataset (required)."""
-    
+
     filter: Optional[str] = None
     """Filter expression to apply when reading."""
-    
+
     columns: Optional[Iterable[str]] = None
     """Columns to read from the dataset."""
-    
+
     split_size: int = 1024
     """Number of rows per split."""
-    
+
     def __post_init__(self):
         if not self.dataset_uri:
             raise ValueError("dataset_uri is required for LanceSourceStageMasterConfig")
@@ -100,14 +100,14 @@ class LanceSourceStageMaster(SourceStageMaster):
         upstream_stages: List[str] | None = None,
     ):
         super().__init__(job_id, state_backend, stage, upstream_stages)
-        
+
         # Get the operator config which contains Lance-specific settings
         operator_cfg = stage.operator_config
         if not isinstance(operator_cfg, LanceTableSourceConfig):
             raise TypeError(
                 f"LanceSourceStageMaster requires LanceTableSourceConfig, got {type(operator_cfg)}"
             )
-        
+
         self.dataset_uri: str = operator_cfg.dataset_uri
         if not self.dataset_uri:
             raise ValueError("dataset_uri is required for LanceSourceStageMaster")

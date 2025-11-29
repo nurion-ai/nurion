@@ -18,13 +18,13 @@ from solstice.core.operator import SinkOperator, OperatorConfig
 @dataclass
 class FileSinkConfig(OperatorConfig):
     """Configuration for FileSink operator."""
-    
+
     output_path: str
     """Output file or directory path."""
-    
+
     format: Literal["json", "parquet", "csv"] = "json"
     """Output format (json, parquet, or csv)."""
-    
+
     buffer_size: int = 1000
     """Number of records to buffer before flushing."""
 
@@ -36,7 +36,7 @@ class FileSink(SinkOperator):
         super().__init__(config, worker_id)
         if not config.output_path:
             raise ValueError("output_path is required for FileSink")
-        
+
         self.output_path = config.output_path
         self.format = config.format.lower()
         self.buffer_size = config.buffer_size

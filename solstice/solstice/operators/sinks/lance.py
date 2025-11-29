@@ -16,13 +16,13 @@ from solstice.core.operator import SinkOperator, OperatorConfig
 @dataclass
 class LanceSinkConfig(OperatorConfig):
     """Configuration for LanceSink operator."""
-    
+
     table_path: str
     """Path to the Lance table."""
-    
+
     mode: Literal["create", "append", "overwrite"] = "append"
     """Write mode for the table."""
-    
+
     buffer_size: int = 1000
     """Number of records to buffer before flushing."""
 
@@ -34,7 +34,7 @@ class LanceSink(SinkOperator):
         super().__init__(config, worker_id)
         if not config.table_path:
             raise ValueError("table_path is required for LanceSink")
-        
+
         self.table_path = config.table_path
         self.mode = config.mode
         self.buffer_size = config.buffer_size

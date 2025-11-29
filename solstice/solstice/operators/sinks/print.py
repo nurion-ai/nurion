@@ -14,6 +14,7 @@ from solstice.core.operator import SinkOperator, OperatorConfig
 @dataclass
 class PrintSinkConfig(OperatorConfig):
     """Configuration for PrintSink operator."""
+
     pass  # No configuration needed for PrintSink
 
 

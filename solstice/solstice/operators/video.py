@@ -114,10 +114,10 @@ def _compute_global_slice_rank(global_index: int, scene_index: int) -> int:
 @dataclass
 class FFmpegSceneDetectConfig(OperatorConfig):
     """Configuration for FFmpegSceneDetectOperator."""
-    
+
     scene_threshold: float = 0.4
     """Threshold for scene change detection (0.0-1.0)."""
-    
+
     min_scene_duration: float = 0.5
     """Minimum scene duration in seconds."""
 
@@ -213,10 +213,10 @@ FFmpegSceneDetectConfig.operator_class = FFmpegSceneDetectOperator
 @dataclass
 class FFmpegSliceConfig(OperatorConfig):
     """Configuration for FFmpegSliceOperator."""
-    
+
     slice_dir: str
     """Directory to store sliced video files."""
-    
+
     min_scene_duration: float = 0.5
     """Minimum scene duration in seconds."""
 

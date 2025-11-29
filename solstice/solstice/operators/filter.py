@@ -10,7 +10,7 @@ from solstice.core.models import Split, SplitPayload
 @dataclass
 class FilterOperatorConfig(OperatorConfig):
     """Configuration for FilterOperator."""
-    
+
     filter_fn: Callable[[Any], bool]
     """Predicate function that returns True for records to keep."""
 

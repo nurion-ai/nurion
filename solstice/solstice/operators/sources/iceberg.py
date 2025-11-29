@@ -13,16 +13,16 @@ from solstice.core.operator import SourceOperator, OperatorConfig
 @dataclass
 class IcebergSourceConfig(OperatorConfig):
     """Configuration for IcebergSource operator."""
-    
+
     catalog_uri: Optional[str] = None
     """URI of the Iceberg catalog."""
-    
+
     table_name: Optional[str] = None
     """Full name of the Iceberg table (namespace.table)."""
-    
+
     filter: Optional[str] = None
     """Filter expression to apply when reading."""
-    
+
     snapshot_id: Optional[int] = None
     """Specific snapshot ID to read from."""
 

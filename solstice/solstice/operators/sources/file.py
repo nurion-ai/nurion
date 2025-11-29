@@ -18,10 +18,10 @@ from solstice.core.operator import SourceOperator, OperatorConfig
 @dataclass
 class FileSourceConfig(OperatorConfig):
     """Configuration for FileSource operator."""
-    
+
     file_paths: List[str] = field(default_factory=list)
     """List of file paths to read from."""
-    
+
     format: Literal["json", "parquet", "csv"] = "json"
     """File format (json, parquet, or csv)."""
 
