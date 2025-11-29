@@ -19,12 +19,12 @@ dependencies = [
     "s3fs>=2024.6.0",
     "kubernetes>=31.0.0",
     "pyyaml>=6.0.0",
+    "psycopg[binary]>=3.2.0",
 ]
 
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    "psycopg[binary]>=3.2.0",
     "pyiceberg[rest]>=0.10.0",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",

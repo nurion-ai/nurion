@@ -26,6 +26,7 @@ dependencies = [
     { name = "fsspec" },
     { name = "kubernetes" },
     { name = "lance-namespace" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
     { name = "pyiceberg" },
     { name = "pylance" },
@@ -38,7 +39,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "psycopg", extra = ["binary"] },
     { name = "pyiceberg" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -56,6 +56,7 @@ requires-dist = [
     { name = "fsspec", specifier = ">=2024.6.0" },
     { name = "kubernetes", specifier = ">=31.0.0" },
     { name = "lance-namespace", specifier = ">=0.0.19" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "pydantic-settings", specifier = ">=2.11.0" },
     { name = "pyiceberg", specifier = ">=0.10.0" },
     { name = "pylance", specifier = "==0.39.0" },
@@ -68,7 +69,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "pyiceberg", extras = ["rest"], specifier = ">=0.10.0" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
