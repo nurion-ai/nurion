@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import List
 
@@ -11,12 +13,11 @@ import ray
 from ray.job_config import JobConfig
 
 from solstice.core.job import Job
-from solstice.core.models import Split, SplitPayload
+from solstice.core.models import Split
 from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.operators.sources.spark import (
-    SparkSource,
     SparkSourceConfig,
     SparkSourceStageMaster,
     SparkSourceStageMasterConfig,
@@ -30,6 +31,23 @@ TESTDATA_DIR = Path(__file__).parent / "testdata" / "resources" / "spark"
 TEST_DATA_1000 = TESTDATA_DIR / "test_data_1000.parquet"
 TEST_DATA_100 = TESTDATA_DIR / "test_data_100.parquet"
 
+# Check if running in CI environment
+IN_CI = os.environ.get("CI", "false").lower() == "true"
+
+# Check if Java is available (required for raydp integration tests)
+def _check_java_available() -> bool:
+    try:
+        result = subprocess.run(
+            ["java", "-version"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+JAVA_AVAILABLE = _check_java_available()
+
 
 @pytest.fixture
 def local_state_backend(tmp_path):
@@ -39,10 +57,16 @@ def local_state_backend(tmp_path):
 
 @pytest.fixture
 def ray_local():
-    """Initialize Ray in local mode for simple tests."""
+    """Initialize Ray for simple tests with minimal configuration."""
     if ray.is_initialized():
         ray.shutdown()
-    ray.init(local_mode=True)
+    # Initialize Ray with minimal config to avoid CI issues
+    # Setting runtime_env with working_dir=None prevents automatic code upload
+    ray.init(
+        num_cpus=2,
+        include_dashboard=False,
+        ignore_reinit_error=True,
+    )
     yield
     ray.shutdown()
 
@@ -318,6 +342,10 @@ class TestSparkSourcePipeline:
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    not JAVA_AVAILABLE,
+    reason="Requires Java runtime for Spark/raydp (java command not found)"
+)
 class TestSparkSourceStageMaster:
     """Integration tests for SparkSourceStageMaster using raydp.
     
@@ -326,6 +354,8 @@ class TestSparkSourceStageMaster:
     2. Calls dataframe_fn to load data
     3. Persists data to Ray object store using raydp
     4. Returns splits with ObjectRefs
+    
+    Note: Skipped if Java is not available (required for Spark).
     """
 
     @pytest.fixture(scope="class")
@@ -373,8 +403,8 @@ class TestSparkSourceStageMaster:
             master_config=SparkSourceStageMasterConfig(
                 app_name="test-fetch-splits",
                 num_executors=1,
-                executor_cores=2,
-                executor_memory="1g",
+                executor_cores=1,
+                executor_memory="512m",
                 dataframe_fn=lambda spark: spark.read.parquet(test_path),
             ),
         )
@@ -435,8 +465,8 @@ class TestSparkSourceStageMaster:
             master_config=SparkSourceStageMasterConfig(
                 app_name="test-sql-query",
                 num_executors=1,
-                executor_cores=2,
-                executor_memory="1g",
+                executor_cores=1,
+                executor_memory="512m",
                 dataframe_fn=sql_dataframe_fn,
             ),
         )
@@ -486,8 +516,8 @@ class TestSparkSourceStageMaster:
             master_config=SparkSourceStageMasterConfig(
                 app_name="test-1000-records",
                 num_executors=1,
-                executor_cores=2,
-                executor_memory="1g",
+                executor_cores=1,
+                executor_memory="512m",
                 dataframe_fn=lambda spark: spark.read.parquet(test_path),
             ),
         )
@@ -562,8 +592,8 @@ class TestSparkSourceStageMaster:
             master_config=SparkSourceStageMasterConfig(
                 app_name="test-parallelism",
                 num_executors=1,
-                executor_cores=2,
-                executor_memory="1g",
+                executor_cores=1,
+                executor_memory="512m",
                 dataframe_fn=lambda spark: spark.read.parquet(test_path),
                 parallelism=4,  # Force 4 partitions
             ),
@@ -610,8 +640,8 @@ class TestSparkSourceStageMaster:
             master_config=SparkSourceStageMasterConfig(
                 app_name="test-complex",
                 num_executors=1,
-                executor_cores=2,
-                executor_memory="1g",
+                executor_cores=1,
+                executor_memory="512m",
                 dataframe_fn=complex_load,
             ),
         )

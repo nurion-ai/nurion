@@ -189,6 +189,13 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ffmpeg
     
+    - name: Set up Java 11
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '11'
+    
     - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |

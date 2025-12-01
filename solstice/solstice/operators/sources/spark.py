@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Iterator, List, Optional, TYPE_CHECKING
 
 import pyarrow as pa
 import ray
-from ray.types import ObjectRef
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
