@@ -354,15 +354,16 @@ class TestSparkSourceStageMaster:
     Note: These tests require Java 11+ runtime for Spark.
     """
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture(scope="function")
     def ray_context(self):
-        """Initialize Ray with raydp jars - NO Spark initialization.
+        """Initialize Ray with raydp jars for each test.
         
-        Each test's StageMaster will initialize its own Spark session.
+        Uses function scope to ensure clean state between tests.
         """
+        import raydp
         from raydp.utils import code_search_path
 
-        # Make sure Ray is not running in local mode
+        # Make sure Ray is not running
         if ray.is_initialized():
             ray.shutdown()
 
@@ -371,10 +372,19 @@ class TestSparkSourceStageMaster:
         print(f"[DEBUG] raydp JAR paths: {jars_paths}")
 
         # Initialize Ray with job config for cross-language support
-        # Enable log_to_driver for better diagnostics in CI
+        # Exclude large files and build artifacts from being uploaded
         ray.init(
             job_config=JobConfig(
                 code_search_path=jars_paths,
+                runtime_env={
+                    "excludes": [
+                        "java/raydp-main/target/",
+                        "java/shims/*/target/",
+                        "*.jar",
+                        "__pycache__/",
+                        ".git/",
+                    ],
+                },
             ),
             log_to_driver=True,
             logging_level="info",
@@ -382,7 +392,11 @@ class TestSparkSourceStageMaster:
 
         yield
 
-        # Cleanup
+        # Cleanup: stop Spark first, then Ray
+        try:
+            raydp.stop_spark()
+        except Exception:
+            pass  # Ignore errors if Spark not initialized
         ray.shutdown()
 
     def test_stage_master_fetch_splits_with_parquet(self, ray_context, local_state_backend):
