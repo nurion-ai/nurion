@@ -196,6 +196,22 @@ jobs:
         distribution: 'temurin'
         java-version: '11'
     
+    - name: Build raydp JARs
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice/java
+        mvn clean package -DskipTests -q
+        
+        # Copy JARs to raydp/jars directory
+        mkdir -p ../raydp/jars
+        cp raydp-main/target/raydp-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        cp shims/common/target/raydp-shims-common-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        cp shims/spark340/target/raydp-shims-spark340-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        cp shims/spark350/target/raydp-shims-spark350-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        
+        echo "Built JARs:"
+        ls -la ../raydp/jars/
+    
     - name: Start aether services
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
@@ -240,6 +256,24 @@ jobs:
       run: |
         cd solstice
         uv run pytest tests/ -v --tb=short
+    
+    - name: Print Ray logs on failure
+      if: failure()
+      run: |
+        echo "=== Ray Session Logs ==="
+        if [ -d /tmp/ray ]; then
+          find /tmp/ray -name "*.log" -type f 2>/dev/null | head -20 | while read f; do
+            echo "=== $f ==="
+            tail -200 "$f" 2>/dev/null || true
+          done
+          echo "=== Java Logs ==="
+          find /tmp/ray -name "*.out" -o -name "*.err" -type f 2>/dev/null | head -10 | while read f; do
+            echo "=== $f ==="
+            tail -100 "$f" 2>/dev/null || true
+          done
+        else
+          echo "No Ray logs found in /tmp/ray"
+        fi
     
     - name: Cleanup test artifacts
       if: always()

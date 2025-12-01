@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import List
@@ -30,9 +29,6 @@ from solstice.state.backend import LocalStateBackend
 TESTDATA_DIR = Path(__file__).parent / "testdata" / "resources" / "spark"
 TEST_DATA_1000 = TESTDATA_DIR / "test_data_1000.parquet"
 TEST_DATA_100 = TESTDATA_DIR / "test_data_100.parquet"
-
-# Check if running in CI environment
-IN_CI = os.environ.get("CI", "false").lower() == "true"
 
 # Check if Java is available (required for raydp integration tests)
 def _check_java_available() -> bool:
@@ -355,7 +351,7 @@ class TestSparkSourceStageMaster:
     3. Persists data to Ray object store using raydp
     4. Returns splits with ObjectRefs
     
-    Note: Skipped if Java is not available (required for Spark).
+    Note: These tests require Java 11+ runtime for Spark.
     """
 
     @pytest.fixture(scope="class")
@@ -372,13 +368,16 @@ class TestSparkSourceStageMaster:
 
         # Get raydp jars path
         jars_paths = code_search_path()
+        print(f"[DEBUG] raydp JAR paths: {jars_paths}")
 
         # Initialize Ray with job config for cross-language support
+        # Enable log_to_driver for better diagnostics in CI
         ray.init(
             job_config=JobConfig(
                 code_search_path=jars_paths,
             ),
-            log_to_driver=False,
+            log_to_driver=True,
+            logging_level="info",
         )
 
         yield
