@@ -9,6 +9,12 @@ from solstice.operators.sources.lance import (
     LanceSourceStageMasterConfig,
 )
 from solstice.operators.sources.source import SourceStageMaster
+from solstice.operators.sources.spark import (
+    SparkSource,
+    SparkSourceConfig,
+    SparkSourceStageMaster,
+    SparkSourceStageMasterConfig,
+)
 
 __all__ = [
     "FileSource",
@@ -20,4 +26,8 @@ __all__ = [
     "LanceSourceStageMaster",
     "LanceSourceStageMasterConfig",
     "SourceStageMaster",
+    "SparkSource",
+    "SparkSourceConfig",
+    "SparkSourceStageMaster",
+    "SparkSourceStageMasterConfig",
 ]

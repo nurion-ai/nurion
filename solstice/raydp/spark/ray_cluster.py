@@ -22,18 +22,26 @@ import pyspark
 from typing import Dict
 
 import ray
-from fusionflowkit.datahub_client import (
-    create_spark_subtask,
-    get_ray_job_id,
-    get_task_id,
-)
-import ray.serve
 from pyspark.sql.session import SparkSession
 
 from .ray_cluster_master import RAYDP_SPARK_MASTER_SUFFIX, RayDPSparkMaster
 
 DRIVER_CP_KEY = "spark.driver.extraClassPath"
 DRIVER_JAVA_OPTIONS_KEY = "spark.driver.extraJavaOptions"
+
+
+def _get_ray_job_id() -> str:
+    """Get the Ray job ID from environment or runtime context."""
+    # Try environment variable first
+    job_id = os.environ.get("RAY_JOB_ID")
+    if job_id:
+        return job_id
+    # Try runtime context
+    try:
+        ctx = ray.get_runtime_context()
+        return ctx.get_job_id()
+    except Exception:
+        return "local-job-id"
 
 
 class SparkCluster:
@@ -112,7 +120,7 @@ class SparkCluster:
         else:
             self._configs[DRIVER_CP_KEY] = driver_cp
 
-        extra_driver_options = f"-Dray.job.id={get_ray_job_id()}"
+        extra_driver_options = f"-Dray.job.id={_get_ray_job_id()}"
         if DRIVER_JAVA_OPTIONS_KEY in self._configs:
             self._configs[DRIVER_JAVA_OPTIONS_KEY] += " " + extra_driver_options
         else:
@@ -136,29 +144,12 @@ class SparkCluster:
         for k, v in self._configs.items():
             spark_builder.config(k, v)
         spark_builder.enableHiveSupport()
-        app_id = ray.get(self._spark_master_handle.get_app_id.remote())
-        task_id = get_task_id()
-        if task_id:
-            spark_builder.config("spark.ui.proxyRedirectUri", "/")
-            spark_builder.config("spark.ui.proxyBase", f"/spark/{task_id}/{app_id}")
         self._spark_session = (
             spark_builder.appName(self._app_name).master(self.get_cluster_url()).getOrCreate()
         )
 
-        # self._logger.info(f"Spark UI: {self._spark_session.sparkContext.uiWebUrl}")
         print(f"Spark UI: {self._spark_session.sparkContext.uiWebUrl}")
         self._spark_session.sparkContext.setLogLevel(self._logging_level)
-        if task_id:
-            try:
-                create_spark_subtask(
-                    task_id=task_id,
-                    app_name=self._app_name,
-                    app_id=app_id,
-                    webui_url=self._spark_session.sparkContext.uiWebUrl,
-                )
-            except Exception as e:
-                print(f"Failed to create spark subtask: {e}")
-                # self._logger.warning(f"Failed to create spark subtask: {e}")
         return self._spark_session
 
     def stop(self, cleanup_data):
