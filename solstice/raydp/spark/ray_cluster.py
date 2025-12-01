@@ -22,7 +22,6 @@ import pyspark
 from typing import Dict
 
 import ray
-import ray.serve
 from pyspark.sql.session import SparkSession
 
 from .ray_cluster_master import RAYDP_SPARK_MASTER_SUFFIX, RayDPSparkMaster
