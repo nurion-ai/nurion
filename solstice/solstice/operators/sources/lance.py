@@ -38,6 +38,7 @@ def _get_lance_storage_options(uri: str) -> Optional[dict]:
     """Get storage options for S3 URIs."""
     if uri.startswith("s3://"):
         from solstice.utils.remote import get_lance_storage_options
+
         bucket = uri[5:].split("/")[0]
         return get_lance_storage_options(bucket)
     return None

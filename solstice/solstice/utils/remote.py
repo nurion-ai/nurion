@@ -29,16 +29,20 @@ def _load_s3_config_from_env() -> Optional[Dict[str, Any]]:
     """Load S3 configuration from environment variables."""
     key = os.environ.get("AWS_ACCESS_KEY_ID", "")
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-    
+
     if key and secret:
         config = {
             "key": key,
             "secret": secret,
-            "endpoint_url": os.environ.get("AWS_ENDPOINT_URL", os.environ.get("FSSPEC_S3_ENDPOINT_URL", "")),
+            "endpoint_url": os.environ.get(
+                "AWS_ENDPOINT_URL", os.environ.get("FSSPEC_S3_ENDPOINT_URL", "")
+            ),
             "region_name": os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
             "source": "environment",
         }
-        logger.info(f"Loaded S3 config from environment variables: endpoint={config['endpoint_url']}, region={config['region_name']}")
+        logger.info(
+            f"Loaded S3 config from environment variables: endpoint={config['endpoint_url']}, region={config['region_name']}"
+        )
         return config
     return None
 
@@ -53,9 +57,9 @@ def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any
         Path.home() / ".aws/config",
         Path("/root/.aws/config"),
     ]
-    
+
     key, secret, region, endpoint = "", "", "us-east-1", ""
-    
+
     # Load credentials
     for creds_path in aws_creds_paths:
         if creds_path.exists():
@@ -68,7 +72,7 @@ def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any
                 if key and secret:
                     logger.debug(f"Loaded AWS credentials from {creds_path} [{profile}]")
                     break
-    
+
     # Load config (region, endpoint)
     for config_path in aws_config_paths:
         if config_path.exists():
@@ -82,7 +86,7 @@ def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any
                 endpoint = section.get("endpoint_url", endpoint)
                 logger.debug(f"Loaded AWS config from {config_path} [{section_name}]")
                 break
-    
+
     if key and secret:
         result = {
             "key": key,
@@ -91,7 +95,9 @@ def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any
             "region_name": region,
             "source": f"aws_config:{profile}",
         }
-        logger.info(f"Loaded S3 config from AWS config [{profile}]: endpoint={endpoint}, region={region}")
+        logger.info(
+            f"Loaded S3 config from AWS config [{profile}]: endpoint={endpoint}, region={region}"
+        )
         return result
     return None
 
@@ -102,12 +108,12 @@ def _load_s3_config_from_rclone(remote_name: str = "s3") -> Optional[Dict[str, A
         Path.home() / ".config/rclone/rclone.conf",
         Path("/root/.config/rclone/rclone.conf"),
     ]
-    
+
     for rclone_config in rclone_paths:
         if rclone_config.exists():
             config = configparser.ConfigParser()
             config.read(rclone_config)
-            
+
             if remote_name in config:
                 section = config[remote_name]
                 result = {
@@ -117,7 +123,9 @@ def _load_s3_config_from_rclone(remote_name: str = "s3") -> Optional[Dict[str, A
                     "region_name": section.get("region", "us-east-1"),
                     "source": f"rclone:{remote_name}",
                 }
-                logger.info(f"Loaded S3 config from {rclone_config} [{remote_name}]: endpoint={result['endpoint_url']}, region={result['region_name']}")
+                logger.info(
+                    f"Loaded S3 config from {rclone_config} [{remote_name}]: endpoint={result['endpoint_url']}, region={result['region_name']}"
+                )
                 return result
     return None
 
@@ -127,17 +135,17 @@ def _load_s3_config(
     aws_profile: str = "default",
 ) -> Dict[str, Any]:
     """Load S3 configuration from multiple sources.
-    
+
     Priority order:
     1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.)
     2. AWS config files (~/.aws/credentials, ~/.aws/config)
     3. rclone config (~/.config/rclone/rclone.conf)
-    
+
     Args:
-        rclone_remote: Remote name in rclone config. If None, uses 
+        rclone_remote: Remote name in rclone config. If None, uses
                        SOLSTICE_S3_REMOTE env var or "s3" as default.
         aws_profile: Profile name in AWS config (default: "default")
-    
+
     Returns:
         Dict with keys: key, secret, endpoint_url, region_name, source
     """
@@ -146,25 +154,25 @@ def _load_s3_config(
     global _S3_CONFIG
     if _S3_CONFIG is not None:
         return _S3_CONFIG
-    
+
     # Try environment variables first
     config = _load_s3_config_from_env()
     if config and config.get("key") and config.get("secret"):
         _S3_CONFIG = config
         return _S3_CONFIG
-    
+
     # Try AWS config files
     config = _load_s3_config_from_aws(aws_profile)
     if config and config.get("key") and config.get("secret"):
         _S3_CONFIG = config
         return _S3_CONFIG
-    
+
     # Try rclone config
     config = _load_s3_config_from_rclone(rclone_remote)
     if config and config.get("key") and config.get("secret"):
         _S3_CONFIG = config
         return _S3_CONFIG
-    
+
     # No config found, return empty config
     logger.warning("No S3 configuration found from any source (env, aws, rclone)")
     _S3_CONFIG = {
@@ -182,19 +190,19 @@ def get_s3_storage_options(
     aws_profile: str = "default",
 ) -> Dict[str, Any]:
     """Get S3 storage options for fsspec.
-    
+
     Args:
-        rclone_remote: Remote name in rclone config. If None, uses 
+        rclone_remote: Remote name in rclone config. If None, uses
                        SOLSTICE_S3_REMOTE env var or "s3" as default.
         aws_profile: Profile name in AWS config (default: "default")
-    
+
     Returns:
         Dict of storage options for fsspec.open()
     """
     if rclone_remote is None:
         rclone_remote = os.environ.get("SOLSTICE_S3_REMOTE", "s3")
     config = _load_s3_config(rclone_remote, aws_profile)
-    
+
     options: Dict[str, Any] = {
         "key": config["key"],
         "secret": config["secret"],
@@ -204,13 +212,13 @@ def get_s3_storage_options(
             "s3": {"addressing_style": "virtual"},
         },
     }
-    
+
     if config["endpoint_url"]:
         options["endpoint_url"] = config["endpoint_url"]
-    
+
     if config["region_name"]:
         options["client_kwargs"] = {"region_name": config["region_name"]}
-    
+
     return options
 
 
@@ -220,29 +228,29 @@ def get_lance_storage_options(
     aws_profile: str = "default",
 ) -> Dict[str, str]:
     """Get S3 storage options for Lance.
-    
+
     Lance uses object_store crate which requires specific options format.
     For S3-compatible providers with custom endpoints, we need to use
     virtual-hosted style with bucket in the endpoint URL.
-    
+
     Args:
         bucket: S3 bucket name (needed for virtual-hosted endpoint)
         rclone_remote: Remote name in rclone config
         aws_profile: Profile name in AWS config
-    
+
     Returns:
         Dict of storage options for lance.write_dataset()
     """
     if rclone_remote is None:
         rclone_remote = os.environ.get("SOLSTICE_S3_REMOTE", "s3")
     config = _load_s3_config(rclone_remote, aws_profile)
-    
+
     options: Dict[str, str] = {
         "aws_access_key_id": config["key"],
         "aws_secret_access_key": config["secret"],
         "aws_region": config["region_name"] or "us-east-1",
     }
-    
+
     # For custom endpoints, use virtual-hosted style with bucket in endpoint
     if config["endpoint_url"]:
         endpoint = config["endpoint_url"]
@@ -255,7 +263,7 @@ def get_lance_storage_options(
         else:
             options["aws_endpoint"] = f"https://{bucket}.{endpoint}"
         options["aws_virtual_hosted_style_request"] = "true"
-    
+
     return options
 
 
@@ -287,31 +295,31 @@ def _get_cache_path(remote_url: str) -> Path:
 
 def download_file(remote_url: str, local_path: Optional[Path] = None) -> Path:
     """Download a file from a remote URL to local storage.
-    
+
     Args:
         remote_url: The remote URL (s3://, gs://, etc.)
         local_path: Optional local path to save to. If None, uses cache.
-        
+
     Returns:
         Path to the local file.
     """
     import fsspec
-    
+
     if local_path is None:
         local_path = _get_cache_path(remote_url)
-    
+
     # Check if already cached
     if local_path.exists():
         logger.debug(f"Using cached file: {local_path}")
         return local_path
-    
+
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info(f"Downloading {remote_url} to {local_path}")
-    
+
     # Get storage options for S3
     storage_options = get_s3_storage_options() if remote_url.startswith("s3://") else {}
-    
+
     with fsspec.open(remote_url, "rb", **storage_options) as remote_file:
         with open(local_path, "wb") as local_file:
             while True:
@@ -319,9 +327,10 @@ def download_file(remote_url: str, local_path: Optional[Path] = None) -> Path:
                 if not chunk:
                     break
                 local_file.write(chunk)
-    
+
     logger.debug(f"Downloaded {remote_url} ({local_path.stat().st_size} bytes)")
     return local_path
+
 
 @contextmanager
 def ensure_local_file(
@@ -329,14 +338,14 @@ def ensure_local_file(
     use_cache: bool = True,
 ) -> Generator[Path, None, None]:
     """Context manager that ensures a file is available locally.
-    
+
     For local files, returns the path directly.
     For remote files, downloads to a temp/cache location.
-    
+
     Args:
         path: Local path or remote URL.
         use_cache: If True, cache downloaded files for reuse.
-        
+
     Yields:
         Path to the local file.
     """
@@ -347,7 +356,7 @@ def ensure_local_file(
             raise FileNotFoundError(f"Local file not found: {path}")
         yield local_path
         return
-    
+
     # Remote file - download it
     if use_cache:
         local_path = download_file(path)
@@ -360,7 +369,7 @@ def ensure_local_file(
             delete=False,
         ) as tmp:
             tmp_path = Path(tmp.name)
-        
+
         try:
             download_file(path, tmp_path)
             yield tmp_path
@@ -373,9 +382,9 @@ def ensure_local_file(
 def clear_cache() -> None:
     """Clear the download cache."""
     import shutil
+
     cache_dir = get_cache_dir()
     if cache_dir.exists():
         shutil.rmtree(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Cleared cache directory: {cache_dir}")
-

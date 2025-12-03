@@ -45,13 +45,14 @@ class LanceSink(SinkOperator):
         self.mode = config.mode
         self.buffer_size = config.buffer_size
         self.blob_columns: Set[str] = set(config.blob_columns)
-        
+
         # Auto-configure storage options for S3 paths
         if config.storage_options:
             self.storage_options = config.storage_options
         elif self.table_path.startswith("s3://"):
             # Extract bucket from s3://bucket/path
             from solstice.utils.remote import get_lance_storage_options
+
             bucket = self.table_path[5:].split("/")[0]
             self.storage_options = get_lance_storage_options(bucket)
         else:
@@ -84,10 +85,10 @@ class LanceSink(SinkOperator):
 
         # Create table from pylist first
         table = pa.Table.from_pylist(filtered_buffer)
-        
+
         # Check if we need to add blob metadata to any columns
         has_blob_columns = any(col in self.blob_columns for col in table.column_names)
-        
+
         if has_blob_columns:
             # Rebuild schema with blob metadata for binary columns
             new_fields = []
@@ -100,9 +101,9 @@ class LanceSink(SinkOperator):
                     new_fields.append(new_field)
                 else:
                     new_fields.append(field)
-            
+
             new_schema = pa.schema(new_fields)
-            
+
             # Cast table to new schema with blob columns
             new_columns = []
             for i, field in enumerate(table.schema):
@@ -111,19 +112,23 @@ class LanceSink(SinkOperator):
                     # Cast to large_binary for blob storage
                     col = col.cast(pa.large_binary())
                 new_columns.append(col)
-            
+
             table = pa.table(dict(zip(table.column_names, new_columns)), schema=new_schema)
 
         write_dataset(
-            table, 
-            self.table_path, 
+            table,
+            self.table_path,
             mode=self.mode if self.table is None else "append",
             storage_options=self.storage_options,
         )
         if self.table is None:
             self.mode = "append"
-        
-        blob_info = f" (blob columns: {list(self.blob_columns & set(table.column_names))})" if has_blob_columns else ""
+
+        blob_info = (
+            f" (blob columns: {list(self.blob_columns & set(table.column_names))})"
+            if has_blob_columns
+            else ""
+        )
         self.logger.info(f"Flushed {len(self.buffer)} records to Lance table{blob_info}")
         self.buffer.clear()
 
