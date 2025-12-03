@@ -57,6 +57,7 @@ class StageMasterConfig:
     max_split_attempts: int = 3
     max_active_splits_per_worker: int = 100
     max_queue_size: int = 1000
+    fail_fast: bool = True  # Stop immediately on exception instead of retrying
 
     def setup(
         self,
@@ -117,6 +118,8 @@ class StageStatus:
     inflight_results: int
     backpressure_active: bool
     upstream_finished: dict[str, bool]
+    failed: bool = False
+    failure_message: Optional[str] = None
 
 
 class StageMasterActor:
@@ -162,6 +165,12 @@ class StageMasterActor:
         self._running = False
         self.current_checkpoint_id: Optional[str] = None
         self.max_queue_size = master_config.max_queue_size
+        self.fail_fast = master_config.fail_fast
+        
+        # Failure tracking for fail-fast mode
+        self._failed = False
+        self._failure_exception: Optional[Exception] = None
+        self._failure_split_id: Optional[str] = None
 
         # Spawn initial workers
         for _ in range(self.stage.min_parallelism):
@@ -276,6 +285,9 @@ class StageMasterActor:
         try:
 
             def need_running() -> bool:
+                # Stop if failed in fail-fast mode
+                if self._failed:
+                    return False
                 return self._running and (
                     not all(self.upstream_finished.values())
                     or len(self._pending_splits) > 0
@@ -286,6 +298,14 @@ class StageMasterActor:
                 self._schedule_pending_splits()
                 self._drain_completed_results(timeout=poll_interval * 2)
                 time.sleep(poll_interval)
+            
+            # If we failed, re-raise the exception to propagate to runner
+            if self._failed and self._failure_exception is not None:
+                self.logger.error(
+                    f"Stage {self.stage_id} failed on split {self._failure_split_id}: {self._failure_exception}"
+                )
+                raise self._failure_exception
+                
             for actor_ref in self.downstream_stage_refs.values():
                 actor_ref.set_upstream_finished.remote(self.stage_id)
             self._running = False
@@ -351,6 +371,18 @@ class StageMasterActor:
                 self.logger.error(
                     f"Stage {self.stage_id} failed to fetch result for split {split_id} from worker {worker_id}: {exc}",
                 )
+                
+                # Fail-fast mode: stop immediately on exception
+                if self.fail_fast:
+                    self._failed = True
+                    self._failure_exception = exc
+                    self._failure_split_id = split_id
+                    self.logger.error(
+                        f"Stage {self.stage_id} entering fail-fast mode due to exception on split {split_id}"
+                    )
+                    return  # Stop processing, will exit run loop
+                
+                # Retry mode: attempt to requeue
                 if not self._requeue_split(split):
                     raise
                 continue
@@ -481,6 +513,8 @@ class StageMasterActor:
             inflight_results=len(self._inflight_results),
             backpressure_active=self.backpressure_active,
             upstream_finished=self.upstream_finished,
+            failed=self._failed,
+            failure_message=str(self._failure_exception) if self._failure_exception else None,
         )
 
     def collect_metrics(self) -> StageMetrics:

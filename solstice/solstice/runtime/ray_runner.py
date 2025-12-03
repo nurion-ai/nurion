@@ -190,6 +190,12 @@ class RayJobRunner:
         for stage_id, actor_ref in self.stage_actor_refs.items():
             stage_statuses[stage_id] = ray.get(actor_ref.get_stage_status.remote())
 
+        # Check for failed stages (fail-fast)
+        for stage_id, status in stage_statuses.items():
+            if status.failed:
+                self.logger.error(f"Stage {stage_id} failed: {status.failure_message}")
+                raise RuntimeError(f"Stage {stage_id} failed: {status.failure_message}")
+
         return self._are_stage_statuses_idle(stage_statuses)
 
     @staticmethod

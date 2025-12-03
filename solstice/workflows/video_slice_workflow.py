@@ -10,7 +10,7 @@ from solstice.core.job import Job
 from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
-from solstice.operators.sinks import FileSinkConfig
+from solstice.operators.sinks import FileSinkConfig, LanceSinkConfig
 from solstice.operators.sources import LanceTableSourceConfig
 from solstice.operators.sources.lance import LanceSourceStageMasterConfig
 from solstice.operators.video import (
@@ -47,9 +47,6 @@ def create_job(
     filter_modulo = int(config.get("filter_modulo", DEFAULT_FILTER_MODULO))
     min_slice_duration = float(config.get("min_slice_duration", DEFAULT_MIN_SLICE_DURATION))
     scene_threshold = float(config.get("scene_threshold", DEFAULT_SCENE_THRESHOLD))
-    slice_dir = config.get("slice_dir")
-    if not slice_dir:
-        raise ValueError("'slice_dir' is required for video slice workflow")
 
     job = Job(
         job_id=job_id,
@@ -86,11 +83,10 @@ def create_job(
     slice_stage = Stage(
         stage_id="slice",
         operator_config=FFmpegSliceConfig(
-            slice_dir=slice_dir,
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("slice_parallelism", (2, 4)),
-        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
+        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},  # More memory for binary data
     )
 
     filter_stage = Stage(
@@ -111,13 +107,24 @@ def create_job(
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
+    output_format = config.get("output_format", "json")
+    if output_format == "lance":
+        sink_config = LanceSinkConfig(
+            table_path=output_path,
+            mode="overwrite",
+            buffer_size=config.get("sink_buffer_size", 256),
+            blob_columns=["slice_binary"],
+        )
+    else:
+        sink_config = FileSinkConfig(
+            output_path=output_path,
+            format=output_format,
+            buffer_size=config.get("sink_buffer_size", 256),
+        )
+
     sink_stage = Stage(
         stage_id="sink",
-        operator_config=FileSinkConfig(
-            output_path=output_path,
-            format=config.get("output_format", "json"),
-            buffer_size=config.get("sink_buffer_size", 256),
-        ),
+        operator_config=sink_config,
         parallelism=1,
         worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )

@@ -34,6 +34,15 @@ class LanceTableSourceConfig(OperatorConfig):
     """Number of rows per split."""
 
 
+def _get_lance_storage_options(uri: str) -> Optional[dict]:
+    """Get storage options for S3 URIs."""
+    if uri.startswith("s3://"):
+        from solstice.utils.remote import get_lance_storage_options
+        bucket = uri[5:].split("/")[0]
+        return get_lance_storage_options(bucket)
+    return None
+
+
 class LanceTableSource(SourceOperator):
     """Source operator for reading from Lance tables."""
 
@@ -42,9 +51,10 @@ class LanceTableSource(SourceOperator):
         if not config.dataset_uri:
             raise ValueError("dataset_uri is required for LanceTableSource")
         self.dataset_uri: str = config.dataset_uri
+        self.storage_options = _get_lance_storage_options(self.dataset_uri)
 
     def read(self, split: Split) -> Optional[SplitPayload]:
-        dataset = lance.dataset(self.dataset_uri)
+        dataset = lance.dataset(self.dataset_uri, storage_options=self.storage_options)
         fragment = dataset.get_fragment(split.data_range.pop("fragment_id"))
         fragment_scanner = fragment.scanner(
             **split.data_range,
@@ -114,8 +124,9 @@ class LanceSourceStageMaster(SourceStageMaster):
         self.filter: Optional[str] = operator_cfg.filter
         self.columns: Optional[Iterable[str]] = operator_cfg.columns
         self.split_size: int = operator_cfg.split_size
+        self.storage_options = _get_lance_storage_options(self.dataset_uri)
 
-        self.dataset = lance.dataset(self.dataset_uri)
+        self.dataset = lance.dataset(self.dataset_uri, storage_options=self.storage_options)
 
     def fetch_splits(self) -> Iterator[Split]:
         sorted_fragments = sorted(self.dataset.get_fragments(), key=lambda x: x.fragment_id)

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from solstice.core.models import SplitPayload
 from solstice.core.operator import Operator, OperatorConfig
+from solstice.utils.remote import ensure_local_file, is_remote_path
 
 import pyarrow as pa
 
@@ -147,52 +148,51 @@ class FFmpegSceneDetectOperator(Operator):
             if not video_path:
                 raise ValueError(f"Missing video path for row {row}")
 
-            local_path = Path(video_path)
-            if not local_path.exists():
-                self.logger.error("Missing video binary at %s", video_path)
-                raise FileNotFoundError(f"Missing video binary at {video_path}")
-
             self.logger.debug(f"Processing video {idx + 1}/{len(rows)}: {video_path}")
-            metadata = _probe_video_metadata(local_path)
-            duration = metadata.get("duration_sec") or row.get("duration_sec")
-            if not duration:
-                duration = self.min_scene_duration
+            
+            # Handle both local and remote (S3) paths
+            with ensure_local_file(video_path) as local_path:
+                metadata = _probe_video_metadata(local_path)
+                duration = metadata.get("duration_sec") or row.get("duration_sec")
+                if not duration:
+                    duration = self.min_scene_duration
 
-            self.logger.debug(
-                f"Running scene detection for {video_path} (duration={duration:.2f}s, threshold={self.scene_threshold})"
-            )
-            boundaries = _run_ffprobe_scene_detection(local_path, self.scene_threshold)
-            self.logger.debug(f"Found {len(boundaries)} scene boundaries for {video_path}")
-            scenes: List[tuple[float, float]] = []
-            previous = 0.0
-            for boundary in boundaries:
-                boundary = max(previous, min(boundary, duration))
-                if boundary - previous >= self.min_scene_duration:
-                    scenes.append((previous, boundary))
-                    previous = boundary
-            if duration - previous >= self.min_scene_duration:
-                scenes.append((previous, duration))
-            if not scenes:
-                scenes = [(0.0, duration)]
-
-            for idx, (start, end) in enumerate(scenes):
-                record = dict(row)
-                record.update(
-                    {
-                        "scene_index": idx,
-                        "scene_start_sec": round(start, 3),
-                        "scene_end_sec": round(end, 3),
-                        "scene_duration_sec": round(end - start, 3),
-                        "scene_count": len(scenes),
-                        "video_width": metadata.get("width") or row.get("width"),
-                        "video_height": metadata.get("height") or row.get("height"),
-                        "video_fps": metadata.get("fps") or row.get("fps"),
-                        "global_slice_rank": _compute_global_slice_rank(
-                            int(row.get("global_index", 0)), idx
-                        ),
-                    }
+                self.logger.debug(
+                    f"Running scene detection for {video_path} (duration={duration:.2f}s, threshold={self.scene_threshold})"
                 )
-                output_records.append(record)
+                boundaries = _run_ffprobe_scene_detection(local_path, self.scene_threshold)
+                self.logger.debug(f"Found {len(boundaries)} scene boundaries for {video_path}")
+                
+                scenes: List[tuple[float, float]] = []
+                previous = 0.0
+                for boundary in boundaries:
+                    boundary = max(previous, min(boundary, duration))
+                    if boundary - previous >= self.min_scene_duration:
+                        scenes.append((previous, boundary))
+                        previous = boundary
+                if duration - previous >= self.min_scene_duration:
+                    scenes.append((previous, duration))
+                if not scenes:
+                    scenes = [(0.0, duration)]
+
+                for scene_idx, (start, end) in enumerate(scenes):
+                    record = dict(row)
+                    record.update(
+                        {
+                            "scene_index": scene_idx,
+                            "scene_start_sec": round(start, 3),
+                            "scene_end_sec": round(end, 3),
+                            "scene_duration_sec": round(end - start, 3),
+                            "scene_count": len(scenes),
+                            "video_width": metadata.get("width") or row.get("width"),
+                            "video_height": metadata.get("height") or row.get("height"),
+                            "video_fps": metadata.get("fps") or row.get("fps"),
+                            "global_slice_rank": _compute_global_slice_rank(
+                                int(row.get("global_index", 0)), scene_idx
+                            ),
+                        }
+                    )
+                    output_records.append(record)
 
         self.logger.info(
             f"Produced {len(output_records)} output records for split {payload.split_id}"
@@ -214,53 +214,62 @@ FFmpegSceneDetectConfig.operator_class = FFmpegSceneDetectOperator
 class FFmpegSliceConfig(OperatorConfig):
     """Configuration for FFmpegSliceOperator."""
 
-    slice_dir: str
-    """Directory to store sliced video files."""
-
     min_scene_duration: float = 0.5
     """Minimum scene duration in seconds."""
 
 
 class FFmpegSliceOperator(Operator):
-    """Materialize binary slices for each detected scene."""
+    """Materialize binary slices for each detected scene.
+    
+    Slices are stored as binary data (bytes) for Lance blob storage.
+    """
 
     def __init__(self, config: FFmpegSliceConfig, worker_id: Optional[str] = None):
         super().__init__(config, worker_id)
-        if not config.slice_dir:
-            raise ValueError("slice_dir is required for FFmpegSliceOperator")
-        self.slice_dir = Path(config.slice_dir).expanduser().resolve()
-        self.slice_dir.mkdir(parents=True, exist_ok=True)
         self.min_duration = config.min_scene_duration
 
-    def _build_slice_path(self, record: Dict[str, Any]) -> Path:
+    def _build_slice_filename(self, record: Dict[str, Any]) -> str:
         video_uid = record.get("video_uid") or "video"
         scene_index = int(record.get("scene_index", 0))
-        filename = f"{video_uid}_scene_{scene_index:04d}.mp4"
-        return self.slice_dir / filename
+        return f"{video_uid}_scene_{scene_index:04d}.mp4"
 
-    def _cut_scene(self, source_path: Path, start: float, end: float, dest_path: Path) -> None:
+    def _cut_scene_to_bytes(self, source_path: Path, start: float, end: float) -> bytes:
+        """Cut a scene and return the binary data."""
+        import tempfile
+        
         duration = max(0.0, end - start)
         if duration < self.min_duration:
             end = start + self.min_duration
-            duration = self.min_duration
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            f"{start:.3f}",
-            "-to",
-            f"{end:.3f}",
-            "-i",
-            str(source_path),
-            "-c",
-            "copy",
-            str(dest_path),
-        ]
-        subprocess.run(cmd, check=True)
+        
+        # Use temp file for ffmpeg output
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        
+        try:
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                f"{start:.3f}",
+                "-to",
+                f"{end:.3f}",
+                "-i",
+                str(source_path),
+                "-c",
+                "copy",
+                str(tmp_path),
+            ]
+            subprocess.run(cmd, check=True)
+            
+            # Read the binary data
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def process_split(self, split, batch: Optional[SplitPayload] = None) -> Optional[SplitPayload]:
         if batch is None:
@@ -274,25 +283,21 @@ class FFmpegSliceOperator(Operator):
             if not video_path:
                 raise ValueError(f"Missing video path for row {row}")
 
-            local_source = Path(video_path)
-            if not local_source.exists():
-                self.logger.error("Missing video binary for %s", video_path)
-                raise FileNotFoundError(f"Missing video binary at {video_path}")
-
             start = float(row.get("scene_start_sec", 0.0))
             end = float(row.get("scene_end_sec", start + self.min_duration))
-            dest_path = self._build_slice_path(row)
+            slice_filename = self._build_slice_filename(row)
 
-            self._cut_scene(local_source, start, end, dest_path)
+            # Handle both local and remote (S3) paths
+            with ensure_local_file(video_path) as local_source:
+                slice_binary = self._cut_scene_to_bytes(local_source, start, end)
 
             record = dict(row)
-            record.update(
-                {
-                    "slice_path": str(dest_path),
-                    "slice_duration_sec": round(end - start, 3),
-                    "slice_size_bytes": dest_path.stat().st_size if dest_path.exists() else 0,
-                }
-            )
+            record.update({
+                "slice_filename": slice_filename,
+                "slice_duration_sec": round(end - start, 3),
+                "slice_size_bytes": len(slice_binary),
+                "slice_binary": slice_binary,
+            })
             outputs.append(record)
 
         if not outputs:
@@ -309,21 +314,34 @@ FFmpegSliceConfig.operator_class = FFmpegSliceOperator
 
 
 def attach_slice_hash(record_value: Dict[str, Any]) -> Dict[str, Any]:
-    """Map function compatible with MapOperator to hash emitted slice binaries."""
+    """Map function compatible with MapOperator to hash emitted slice binaries.
+    
+    Supports both embedded binary data (slice_binary) and file-based slices (slice_path).
+    """
+    enriched = dict(record_value)
+    hasher = hashlib.sha256()
+    
+    # First try embedded binary (Lance blob mode)
+    slice_binary = record_value.get("slice_binary")
+    if slice_binary is not None:
+        hasher.update(slice_binary)
+        enriched["slice_sha256"] = hasher.hexdigest()
+        enriched["slice_size_bytes"] = len(slice_binary)
+        return enriched
+    
+    # Fall back to file-based mode
     slice_path = record_value.get("slice_path")
     if not slice_path:
-        raise FileNotFoundError("slice_path missing for hashing")
+        raise FileNotFoundError("Neither slice_binary nor slice_path available for hashing")
 
     path = Path(slice_path)
     if not path.exists():
         raise FileNotFoundError(f"Slice binary missing for hashing: {slice_path}")
 
-    hasher = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             hasher.update(chunk)
 
-    enriched = dict(record_value)
     enriched["slice_sha256"] = hasher.hexdigest()
     enriched["slice_size_bytes"] = path.stat().st_size
     return enriched
