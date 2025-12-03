@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from solstice.core.models import SplitPayload
 from solstice.core.operator import Operator, OperatorConfig
-from solstice.utils.remote import ensure_local_file, is_remote_path
+from solstice.utils.remote import ensure_local_file
 
 import pyarrow as pa
 
@@ -149,7 +149,7 @@ class FFmpegSceneDetectOperator(Operator):
                 raise ValueError(f"Missing video path for row {row}")
 
             self.logger.debug(f"Processing video {idx + 1}/{len(rows)}: {video_path}")
-            
+
             # Handle both local and remote (S3) paths
             with ensure_local_file(video_path) as local_path:
                 metadata = _probe_video_metadata(local_path)
@@ -162,7 +162,7 @@ class FFmpegSceneDetectOperator(Operator):
                 )
                 boundaries = _run_ffprobe_scene_detection(local_path, self.scene_threshold)
                 self.logger.debug(f"Found {len(boundaries)} scene boundaries for {video_path}")
-                
+
                 scenes: List[tuple[float, float]] = []
                 previous = 0.0
                 for boundary in boundaries:
@@ -220,7 +220,7 @@ class FFmpegSliceConfig(OperatorConfig):
 
 class FFmpegSliceOperator(Operator):
     """Materialize binary slices for each detected scene.
-    
+
     Slices are stored as binary data (bytes) for Lance blob storage.
     """
 
@@ -236,15 +236,15 @@ class FFmpegSliceOperator(Operator):
     def _cut_scene_to_bytes(self, source_path: Path, start: float, end: float) -> bytes:
         """Cut a scene and return the binary data."""
         import tempfile
-        
+
         duration = max(0.0, end - start)
         if duration < self.min_duration:
             end = start + self.min_duration
-        
+
         # Use temp file for ffmpeg output
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = Path(tmp.name)
-        
+
         try:
             cmd = [
                 "ffmpeg",
@@ -263,7 +263,7 @@ class FFmpegSliceOperator(Operator):
                 str(tmp_path),
             ]
             subprocess.run(cmd, check=True)
-            
+
             # Read the binary data
             with open(tmp_path, "rb") as f:
                 return f.read()
@@ -292,12 +292,14 @@ class FFmpegSliceOperator(Operator):
                 slice_binary = self._cut_scene_to_bytes(local_source, start, end)
 
             record = dict(row)
-            record.update({
-                "slice_filename": slice_filename,
-                "slice_duration_sec": round(end - start, 3),
-                "slice_size_bytes": len(slice_binary),
-                "slice_binary": slice_binary,
-            })
+            record.update(
+                {
+                    "slice_filename": slice_filename,
+                    "slice_duration_sec": round(end - start, 3),
+                    "slice_size_bytes": len(slice_binary),
+                    "slice_binary": slice_binary,
+                }
+            )
             outputs.append(record)
 
         if not outputs:
@@ -315,12 +317,12 @@ FFmpegSliceConfig.operator_class = FFmpegSliceOperator
 
 def attach_slice_hash(record_value: Dict[str, Any]) -> Dict[str, Any]:
     """Map function compatible with MapOperator to hash emitted slice binaries.
-    
+
     Supports both embedded binary data (slice_binary) and file-based slices (slice_path).
     """
     enriched = dict(record_value)
     hasher = hashlib.sha256()
-    
+
     # First try embedded binary (Lance blob mode)
     slice_binary = record_value.get("slice_binary")
     if slice_binary is not None:
@@ -328,7 +330,7 @@ def attach_slice_hash(record_value: Dict[str, Any]) -> Dict[str, Any]:
         enriched["slice_sha256"] = hasher.hexdigest()
         enriched["slice_size_bytes"] = len(slice_binary)
         return enriched
-    
+
     # Fall back to file-based mode
     slice_path = record_value.get("slice_path")
     if not slice_path:

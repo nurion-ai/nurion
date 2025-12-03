@@ -166,7 +166,7 @@ class StageMasterActor:
         self.current_checkpoint_id: Optional[str] = None
         self.max_queue_size = master_config.max_queue_size
         self.fail_fast = master_config.fail_fast
-        
+
         # Failure tracking for fail-fast mode
         self._failed = False
         self._failure_exception: Optional[Exception] = None
@@ -298,14 +298,14 @@ class StageMasterActor:
                 self._schedule_pending_splits()
                 self._drain_completed_results(timeout=poll_interval * 2)
                 time.sleep(poll_interval)
-            
+
             # If we failed, re-raise the exception to propagate to runner
             if self._failed and self._failure_exception is not None:
                 self.logger.error(
                     f"Stage {self.stage_id} failed on split {self._failure_split_id}: {self._failure_exception}"
                 )
                 raise self._failure_exception
-                
+
             for actor_ref in self.downstream_stage_refs.values():
                 actor_ref.set_upstream_finished.remote(self.stage_id)
             self._running = False
@@ -371,7 +371,7 @@ class StageMasterActor:
                 self.logger.error(
                     f"Stage {self.stage_id} failed to fetch result for split {split_id} from worker {worker_id}: {exc}",
                 )
-                
+
                 # Fail-fast mode: stop immediately on exception
                 if self.fail_fast:
                     self._failed = True
@@ -381,7 +381,7 @@ class StageMasterActor:
                         f"Stage {self.stage_id} entering fail-fast mode due to exception on split {split_id}"
                     )
                     return  # Stop processing, will exit run loop
-                
+
                 # Retry mode: attempt to requeue
                 if not self._requeue_split(split):
                     raise
