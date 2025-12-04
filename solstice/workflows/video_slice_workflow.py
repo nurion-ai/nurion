@@ -67,7 +67,6 @@ def create_job(
             split_size=10,
         ),
         parallelism=1,
-        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     scene_stage = Stage(
@@ -77,7 +76,6 @@ def create_job(
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("scene_parallelism", (2, 6)),
-        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     slice_stage = Stage(
@@ -86,7 +84,6 @@ def create_job(
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("slice_parallelism", (2, 4)),
-        worker_resources={"num_cpus": 1, "memory": 2 * 1024**3},  # More memory for binary data
     )
 
     filter_stage = Stage(
@@ -95,7 +92,6 @@ def create_job(
             filter_fn=functools.partial(keep_every_n, modulo=filter_modulo),
         ),
         parallelism=config.get("filter_parallelism", 2),
-        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     hash_stage = Stage(
@@ -104,7 +100,6 @@ def create_job(
             map_fn=attach_slice_hash,
         ),
         parallelism=config.get("hash_parallelism", 2),
-        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     output_format = config.get("output_format", "json")
@@ -126,7 +121,6 @@ def create_job(
         stage_id="sink",
         operator_config=sink_config,
         parallelism=1,
-        worker_resources={"num_cpus": 1, "memory": 1 * 1024**3},
     )
 
     job.add_stage(source_stage)

@@ -132,6 +132,10 @@ class LanceSink(SinkOperator):
         self.logger.info(f"Flushed {len(self.buffer)} records to Lance table{blob_info}")
         self.buffer.clear()
 
+    def close(self) -> None:
+        """Flush remaining buffered records when closing."""
+        self._flush()
+
     def shutdown(self) -> None:
         """Flush remaining buffered records on shutdown."""
         self._flush()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass
@@ -127,8 +128,18 @@ class FileSink(SinkOperator):
         return {
             "key": key,
             "timestamp": timestamp,
-            "value": row,
+            "value": self._encode_bytes_fields(row),
         }
+
+    def _encode_bytes_fields(self, obj: Any) -> Any:
+        """Recursively encode bytes fields to base64 strings for JSON serialization."""
+        if isinstance(obj, bytes):
+            return base64.b64encode(obj).decode("ascii")
+        elif isinstance(obj, dict):
+            return {k: self._encode_bytes_fields(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._encode_bytes_fields(item) for item in obj]
+        return obj
 
     def _flush_parquet(self) -> None:
         self._ensure_output_dir()

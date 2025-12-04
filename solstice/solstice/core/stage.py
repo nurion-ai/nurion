@@ -68,9 +68,9 @@ class Stage:
 
         # Default worker resources
         self.worker_resources = worker_resources or {
-            "num_cpus": 1,
+            "num_cpus": 0.5,
             "num_gpus": 0,
-            "memory": 2 * 1024**3,  # 2GB
+            "memory": 500 * 1024**2,  # 500MB
         }
 
         self.logger = logging.getLogger(f"Stage-{stage_id}")

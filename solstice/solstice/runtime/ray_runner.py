@@ -83,7 +83,7 @@ class RayJobRunner:
             upstream_stages = self._reverse_dag.get(stage_id, [])
             stage_master = (
                 ray.remote(stage.master_config.master_class)
-                .options(name=actor_name, max_concurrency=10)
+                .options(name=actor_name, max_concurrency=10, num_cpus=0.2)
                 .remote(
                     job_id=self.job.job_id,
                     state_backend=self.job.state_backend,

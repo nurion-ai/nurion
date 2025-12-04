@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import shutil
 from pathlib import Path
 
-import pytest
+import lance
 
 from solstice.state.backend import LocalStateBackend
 from tests.utils.video_dataset import ensure_video_metadata_table
@@ -16,12 +14,6 @@ from tests.utils.video_dataset import ensure_video_metadata_table
 logger = logging.getLogger("test")
 
 
-# Skip in CI - this test is resource-intensive and flaky due to Ray worker OOM issues
-# in constrained CI environments. Run locally for full validation.
-@pytest.mark.skipif(
-    os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true",
-    reason="Skipped in CI: Ray-based video workflow test is resource-intensive and flaky",
-)
 def test_video_slice_workflow_with_ray():
     """Verify scene detection, slicing, filtering, and hashing on real binaries."""
     testdata_root = Path(__file__).parent / "testdata" / "resources"
@@ -33,13 +25,8 @@ def test_video_slice_workflow_with_ray():
 
     dataset_info = ensure_video_metadata_table()
     lance_path = str(dataset_info.lance_path)
-    slice_root = dataset_info.slice_root
 
-    if slice_root.exists():
-        shutil.rmtree(slice_root)
-    slice_root.mkdir(parents=True, exist_ok=True)
-
-    output_path = tmp_path / "hashed_slices.json"
+    output_path = tmp_path / "hashed_slices.lance"
     backend = LocalStateBackend(str(tmp_path / "state"))
 
     filter_modulo = 10
@@ -50,10 +37,11 @@ def test_video_slice_workflow_with_ray():
         config={
             "input": lance_path,
             "output": str(output_path),
+            "output_format": "lance",
             "filter_modulo": filter_modulo,
-            "slice_dir": str(slice_root),
             "scene_threshold": 0.4,
             "source_batch_size": 16,
+            "sink_buffer_size": 64,
         },
         state_backend=backend,
     )
@@ -61,6 +49,7 @@ def test_video_slice_workflow_with_ray():
 
     runner = job.create_ray_runner(
         ray_init_kwargs={
+            "num_cpus": 20,
             "include_dashboard": True,
             "log_to_driver": True,
             "logging_level": logging.DEBUG,
@@ -90,15 +79,17 @@ def test_video_slice_workflow_with_ray():
         runner.shutdown()
 
     assert output_path.exists()
-    with output_path.open() as fh:
-        payloads = [json.loads(line) for line in fh if line.strip()]
+    ds = lance.dataset(str(output_path))
+    rows = ds.to_table().to_pylist()
 
-    assert payloads, "Expected filtered slice payloads"
-    for entry in payloads:
-        value = entry["value"]
-        digest = value.get("slice_sha256")
-        assert isinstance(digest, str) and len(digest) == 64
-        assert int(value["global_slice_rank"]) % filter_modulo == 0
-        slice_path = value.get("slice_path")
-        assert slice_path
-        assert Path(slice_path).exists()
+    assert rows, "Expected filtered slice payloads"
+    for row in rows:
+        # Check hash
+        digest = row.get("slice_sha256")
+        assert isinstance(digest, str) and len(digest) == 64, f"Invalid hash: {digest}"
+        # Check filter modulo
+        assert int(row["global_slice_rank"]) % filter_modulo == 0
+        # Check binary slice data
+        slice_binary = row.get("slice_binary")
+        assert slice_binary is not None, "Missing slice_binary"
+        assert len(slice_binary) > 0, "Empty slice_binary"
