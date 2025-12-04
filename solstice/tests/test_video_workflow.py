@@ -7,13 +7,15 @@ import shutil
 from pathlib import Path
 
 import lance
+import pytest
 
-from solstice.state.backend import LocalStateBackend
+from solstice.state.store import LocalCheckpointStore
 from tests.utils.video_dataset import ensure_video_metadata_table
 
 logger = logging.getLogger("test")
 
 
+@pytest.mark.timeout(1200)
 def test_video_slice_workflow_with_ray():
     """Verify scene detection, slicing, filtering, and hashing on real binaries."""
     testdata_root = Path(__file__).parent / "testdata" / "resources"
@@ -27,7 +29,7 @@ def test_video_slice_workflow_with_ray():
     lance_path = str(dataset_info.lance_path)
 
     output_path = tmp_path / "hashed_slices.lance"
-    backend = LocalStateBackend(str(tmp_path / "state"))
+    checkpoint_store = LocalCheckpointStore(str(tmp_path / "checkpoints"))
 
     filter_modulo = 10
     from workflows.video_slice_workflow import create_job
@@ -43,9 +45,8 @@ def test_video_slice_workflow_with_ray():
             "source_batch_size": 16,
             "sink_buffer_size": 64,
         },
-        state_backend=backend,
+        checkpoint_store=checkpoint_store,
     )
-    logger
 
     runner = job.create_ray_runner(
         ray_init_kwargs={
@@ -77,6 +78,7 @@ def test_video_slice_workflow_with_ray():
         runner.run(poll_interval=1, timeout=1000)
     finally:
         runner.shutdown()
+        checkpoint_store.close()
 
     assert output_path.exists()
     ds = lance.dataset(str(output_path))

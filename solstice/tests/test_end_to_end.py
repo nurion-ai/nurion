@@ -19,6 +19,7 @@ from solstice.state.backend import LocalStateBackend
 @dataclass
 class ListSourceConfig(OperatorConfig):
     """Config for ListSourceOperator."""
+
     stage_id: str = "source"
     batches: List[List[dict]] = field(default_factory=list)
 
@@ -61,6 +62,7 @@ ListSourceConfig.operator_class = ListSourceOperator
 @dataclass
 class ManualSourceConfig(OperatorConfig):
     """Config for ManualSourceOperator."""
+
     pass
 
 

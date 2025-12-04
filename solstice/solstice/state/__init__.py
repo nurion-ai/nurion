@@ -1,16 +1,32 @@
 """State management and checkpoint system"""
 
-from solstice.state.backend import StateBackend, LocalStateBackend, S3StateBackend
-from solstice.state.checkpoint import Checkpoint, CheckpointCoordinator
-from solstice.state.manager import StateManager
-from solstice.state.state_master import GlobalStateMaster
+from solstice.state.store import (
+    CheckpointStore,
+    LocalCheckpointStore,
+    S3CheckpointStore,
+    SlateDBCheckpointStore,
+    CheckpointManifest,
+    StageCheckpointData,
+    SplitCheckpointData,
+    create_checkpoint_store,
+)
+from solstice.state.checkpoint_manager import (
+    CheckpointManager,
+    StageCheckpointTracker,
+)
 
 __all__ = [
-    "StateManager",
-    "StateBackend",
-    "S3StateBackend",
-    "LocalStateBackend",
-    "CheckpointCoordinator",
-    "Checkpoint",
-    "GlobalStateMaster",
+    # Store abstractions
+    "CheckpointStore",
+    "LocalCheckpointStore",
+    "S3CheckpointStore",
+    "SlateDBCheckpointStore",
+    "create_checkpoint_store",
+    # Data structures
+    "CheckpointManifest",
+    "StageCheckpointData",
+    "SplitCheckpointData",
+    # Manager
+    "CheckpointManager",
+    "StageCheckpointTracker",
 ]

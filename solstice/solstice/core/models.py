@@ -19,6 +19,44 @@ class CheckpointStatus(str, Enum):
 
 
 @dataclass
+class JobCheckpointConfig:
+    """Global checkpoint configuration for a job.
+
+    Controls checkpoint triggering strategy and timeouts.
+
+    Example:
+        >>> Job(
+        ...     job_id="etl_pipeline",
+        ...     checkpoint_config=JobCheckpointConfig(
+        ...         enabled=True,
+        ...         interval_secs=300,
+        ...     ),
+        ... )
+    """
+
+    enabled: bool = True
+    """Whether checkpointing is enabled for this job."""
+
+    interval_secs: int = 300
+    """Time interval between checkpoint triggers (seconds)."""
+
+    timeout_secs: int = 600
+    """Timeout for a single checkpoint operation (seconds)."""
+
+    min_pause_between_secs: int = 60
+    """Minimum pause between two consecutive checkpoints (seconds)."""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "enabled": self.enabled,
+            "interval_secs": self.interval_secs,
+            "timeout_secs": self.timeout_secs,
+            "min_pause_between_secs": self.min_pause_between_secs,
+        }
+
+
+@dataclass
 class Split:
     """Represents a logical split of data for processing.
 
@@ -182,8 +220,6 @@ class SplitPayload:
 
     The authoritative payload is stored as a :class:`pyarrow.Table` to enable
     zero-copy operations and efficient integration with the Arrow ecosystem.
-    Legacy record access is still available through the ``records`` property,
-    which materializes Python ``Record`` objects on demand.
     """
 
     data: pa.Table

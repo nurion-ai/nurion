@@ -11,7 +11,7 @@ import pyarrow as pa
 from lance.dataset import write_dataset
 
 from solstice.core.models import Split
-from solstice.operators.sources import LanceTableSource, LanceTableSourceConfig
+from solstice.operators.sources import LanceTableSourceConfig
 
 
 def build_lance_splits(dataset_uri: str, *, split_size: int) -> list[Split]:

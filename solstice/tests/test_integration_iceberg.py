@@ -8,7 +8,7 @@ import pyarrow as pa
 import pytest
 
 from solstice.core.models import Split
-from solstice.operators.sources import IcebergSource, IcebergSourceConfig
+from solstice.operators.sources import IcebergSourceConfig
 
 
 def _mock_catalog(table_rows: list[dict]):

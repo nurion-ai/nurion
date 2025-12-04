@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 import ray
 
-from solstice.state.backend import StateBackend
+from solstice.state.store import CheckpointStore
 from solstice.utils.logging import create_ray_logger
 
 
@@ -15,11 +15,11 @@ class MetaService:
     def __init__(
         self,
         job_id: str,
-        state_backend: StateBackend,
+        checkpoint_store: Optional[CheckpointStore],
         config: Dict[str, Any],
     ):
         self.job_id = job_id
-        self.state_backend = state_backend
+        self.checkpoint_store = checkpoint_store
         self.config = config
 
         self.logger = create_ray_logger(f"MetaService-{job_id}")
@@ -30,9 +30,6 @@ class MetaService:
         self.dag_edges: Dict[str, List[str]] = {}  # stage_id -> downstream stage_ids
         self.reverse_dag: Dict[str, List[str]] = {}  # stage_id -> upstream stage_ids
 
-        # Global state master
-        self.global_state_master: Optional[ray.ObjectRef] = None
-
         # Execution state
         self.is_running = False
         self.start_time: Optional[float] = None
@@ -41,11 +38,6 @@ class MetaService:
         self.scheduling_policy = config.get("scheduling_policy", "fair")
 
         self.logger.info(f"Meta Service initialized for job {job_id}")
-
-    def set_global_state_master(self, state_master_ref: ray.ObjectRef) -> None:
-        """Set the global state master reference"""
-        self.global_state_master = state_master_ref
-        self.logger.info("Global state master registered")
 
     def add_stage(
         self,
@@ -74,10 +66,6 @@ class MetaService:
             return
 
         self.stage_masters[stage_id] = stage_master_ref
-
-        # Also register with global state master
-        if self.global_state_master:
-            self.global_state_master.register_stage.remote(stage_id, stage_master_ref)
 
         self.logger.info(f"Registered stage master for {stage_id}")
 

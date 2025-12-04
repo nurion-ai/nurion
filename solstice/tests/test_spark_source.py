@@ -30,6 +30,7 @@ TESTDATA_DIR = Path(__file__).parent / "testdata" / "resources" / "spark"
 TEST_DATA_1000 = TESTDATA_DIR / "test_data_1000.parquet"
 TEST_DATA_100 = TESTDATA_DIR / "test_data_100.parquet"
 
+
 # Check if Java is available (required for raydp integration tests)
 def _check_java_available() -> bool:
     try:
@@ -41,6 +42,7 @@ def _check_java_available() -> bool:
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
 
 JAVA_AVAILABLE = _check_java_available()
 
@@ -82,11 +84,13 @@ class TestSparkSourceOperator:
     def test_spark_source_read_arrow_table(self, ray_local):
         """Test reading Arrow table from object store."""
         # Create test data and put in object store
-        test_data = pa.Table.from_pylist([
-            {"id": 1, "name": "Alice", "age": 30},
-            {"id": 2, "name": "Bob", "age": 25},
-            {"id": 3, "name": "Charlie", "age": 35},
-        ])
+        test_data = pa.Table.from_pylist(
+            [
+                {"id": 1, "name": "Alice", "age": 30},
+                {"id": 2, "name": "Bob", "age": 25},
+                {"id": 3, "name": "Charlie", "age": 35},
+            ]
+        )
 
         object_ref = ray.put(test_data)
 
@@ -119,10 +123,12 @@ class TestSparkSourceOperator:
     def test_spark_source_read_record_batch(self, ray_local):
         """Test reading Arrow RecordBatch from object store."""
         # Create test data as RecordBatch
-        test_batch = pa.RecordBatch.from_pydict({
-            "value": [1, 2, 3, 4, 5],
-            "label": ["a", "b", "c", "d", "e"],
-        })
+        test_batch = pa.RecordBatch.from_pydict(
+            {
+                "value": [1, 2, 3, 4, 5],
+                "label": ["a", "b", "c", "d", "e"],
+            }
+        )
 
         object_ref = ray.put(test_batch)
 
@@ -187,10 +193,12 @@ class TestSparkSourcePipeline:
     def test_spark_source_to_filter_pipeline(self, ray_local, local_state_backend):
         """Test reading from ObjectRefs and filtering through pipeline."""
         # Create test data
-        test_data = pa.Table.from_pylist([
-            {"id": i, "department": "engineering" if i % 3 == 0 else "sales", "score": i * 10}
-            for i in range(100)
-        ])
+        test_data = pa.Table.from_pylist(
+            [
+                {"id": i, "department": "engineering" if i % 3 == 0 else "sales", "score": i * 10}
+                for i in range(100)
+            ]
+        )
         object_ref = ray.put(test_data)
 
         # Define stages
@@ -237,10 +245,7 @@ class TestSparkSourcePipeline:
 
     def test_spark_source_to_map_pipeline(self, ray_local, local_state_backend):
         """Test reading from ObjectRefs and transforming."""
-        test_data = pa.Table.from_pylist([
-            {"id": i, "value": i * 2}
-            for i in range(50)
-        ])
+        test_data = pa.Table.from_pylist([{"id": i, "value": i * 2} for i in range(50)])
         object_ref = ray.put(test_data)
 
         source_stage = Stage(
@@ -291,10 +296,9 @@ class TestSparkSourcePipeline:
         # Create multiple blocks
         blocks = []
         for block_idx in range(5):
-            block_data = pa.Table.from_pylist([
-                {"block": block_idx, "id": i, "value": block_idx * 100 + i}
-                for i in range(20)
-            ])
+            block_data = pa.Table.from_pylist(
+                [{"block": block_idx, "id": i, "value": block_idx * 100 + i} for i in range(20)]
+            )
             blocks.append(ray.put(block_data))
 
         source_stage = Stage(
@@ -339,25 +343,24 @@ class TestSparkSourcePipeline:
 
 @pytest.mark.integration
 @pytest.mark.skipif(
-    not JAVA_AVAILABLE,
-    reason="Requires Java runtime for Spark/raydp (java command not found)"
+    not JAVA_AVAILABLE, reason="Requires Java runtime for Spark/raydp (java command not found)"
 )
 class TestSparkSourceStageMaster:
     """Integration tests for SparkSourceStageMaster using raydp.
-    
+
     These tests verify that SparkSourceStageMaster correctly:
     1. Initializes Spark via raydp.init_spark() using config parameters
     2. Calls dataframe_fn to load data
     3. Persists data to Ray object store using raydp
     4. Returns splits with ObjectRefs
-    
+
     Note: These tests require Java 11+ runtime for Spark.
     """
 
     @pytest.fixture(scope="function")
     def ray_context(self):
         """Initialize Ray with raydp jars for each test.
-        
+
         Uses function scope to ensure clean state between tests.
         """
         import raydp
@@ -401,7 +404,7 @@ class TestSparkSourceStageMaster:
 
     def test_stage_master_fetch_splits_with_parquet(self, ray_context, local_state_backend):
         """Test SparkSourceStageMaster.fetch_splits() with parquet file.
-        
+
         Verifies the full StageMaster flow:
         - StageMaster initializes Spark via raydp.init_spark() using config
         - dataframe_fn is called to read parquet
@@ -458,7 +461,7 @@ class TestSparkSourceStageMaster:
 
     def test_stage_master_with_sql_query(self, ray_context, local_state_backend):
         """Test SparkSourceStageMaster with SQL query in dataframe_fn.
-        
+
         The dataframe_fn can use any Spark operations including SQL.
         This test creates a temp view and queries it within the dataframe_fn.
         """
@@ -468,9 +471,7 @@ class TestSparkSourceStageMaster:
             """Load data, create temp view, then query with SQL."""
             df = spark.read.parquet(test_path)
             df.createOrReplaceTempView("employees")
-            return spark.sql(
-                "SELECT id, name, department, salary FROM employees WHERE age > 40"
-            )
+            return spark.sql("SELECT id, name, department, salary FROM employees WHERE age > 40")
 
         source_stage = Stage(
             stage_id="spark_source",
@@ -515,7 +516,7 @@ class TestSparkSourceStageMaster:
 
     def test_stage_master_1000_records_full_pipeline(self, ray_context, local_state_backend):
         """Test SparkSourceStageMaster with 1000 records through full pipeline.
-        
+
         End-to-end test:
         1. StageMaster initializes Spark via config and fetches splits
         2. Pipeline processes splits through filter and map stages
@@ -593,7 +594,7 @@ class TestSparkSourceStageMaster:
 
     def test_stage_master_with_parallelism(self, ray_context, local_state_backend):
         """Test SparkSourceStageMaster with custom parallelism setting.
-        
+
         The parallelism config controls how many partitions/splits are created.
         """
         test_path = str(TEST_DATA_100)
@@ -631,7 +632,7 @@ class TestSparkSourceStageMaster:
 
     def test_stage_master_complex_dataframe_fn(self, ray_context, local_state_backend):
         """Test SparkSourceStageMaster with complex dataframe_fn logic.
-        
+
         The dataframe_fn can contain arbitrary Spark transformations.
         """
         test_path = str(TEST_DATA_100)
