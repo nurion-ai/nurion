@@ -22,7 +22,7 @@ from solstice.operators.sources.spark import (
     SparkSourceStageMasterConfig,
 )
 from solstice.runtime.local_runner import LocalJobRunner
-from solstice.state.backend import LocalStateBackend
+from solstice.state.store import LocalCheckpointStore
 
 
 # Test data path
@@ -30,25 +30,11 @@ TESTDATA_DIR = Path(__file__).parent / "testdata" / "resources" / "spark"
 TEST_DATA_1000 = TESTDATA_DIR / "test_data_1000.parquet"
 TEST_DATA_100 = TESTDATA_DIR / "test_data_100.parquet"
 
-# Check if Java is available (required for raydp integration tests)
-def _check_java_available() -> bool:
-    try:
-        result = subprocess.run(
-            ["java", "-version"],
-            capture_output=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-JAVA_AVAILABLE = _check_java_available()
-
 
 @pytest.fixture
-def local_state_backend(tmp_path):
-    """Create a local state backend for testing."""
-    return LocalStateBackend(str(tmp_path / "state"))
+def local_checkpoint_store(tmp_path):
+    """Create a local checkpoint store for testing."""
+    return LocalCheckpointStore(str(tmp_path / "checkpoints"))
 
 
 @pytest.fixture
@@ -67,9 +53,9 @@ def ray_local():
     ray.shutdown()
 
 
-def make_job(state_backend, stages: List[Stage]) -> Job:
+def make_job(checkpoint_store, stages: List[Stage]) -> Job:
     """Create a job with the given stages."""
-    job = Job(job_id="spark-source-test", state_backend=state_backend)
+    job = Job(job_id="spark-source-test", checkpoint_store=checkpoint_store)
     for i, stage in enumerate(stages):
         upstream = [stages[i - 1].stage_id] if i > 0 else None
         job.add_stage(stage, upstream_stages=upstream)
@@ -82,11 +68,13 @@ class TestSparkSourceOperator:
     def test_spark_source_read_arrow_table(self, ray_local):
         """Test reading Arrow table from object store."""
         # Create test data and put in object store
-        test_data = pa.Table.from_pylist([
-            {"id": 1, "name": "Alice", "age": 30},
-            {"id": 2, "name": "Bob", "age": 25},
-            {"id": 3, "name": "Charlie", "age": 35},
-        ])
+        test_data = pa.Table.from_pylist(
+            [
+                {"id": 1, "name": "Alice", "age": 30},
+                {"id": 2, "name": "Bob", "age": 25},
+                {"id": 3, "name": "Charlie", "age": 35},
+            ]
+        )
 
         object_ref = ray.put(test_data)
 
@@ -119,10 +107,12 @@ class TestSparkSourceOperator:
     def test_spark_source_read_record_batch(self, ray_local):
         """Test reading Arrow RecordBatch from object store."""
         # Create test data as RecordBatch
-        test_batch = pa.RecordBatch.from_pydict({
-            "value": [1, 2, 3, 4, 5],
-            "label": ["a", "b", "c", "d", "e"],
-        })
+        test_batch = pa.RecordBatch.from_pydict(
+            {
+                "value": [1, 2, 3, 4, 5],
+                "label": ["a", "b", "c", "d", "e"],
+            }
+        )
 
         object_ref = ray.put(test_batch)
 
@@ -184,13 +174,15 @@ class TestSparkSourceOperator:
 class TestSparkSourcePipeline:
     """Test SparkSource in a pipeline with pre-created ObjectRefs."""
 
-    def test_spark_source_to_filter_pipeline(self, ray_local, local_state_backend):
+    def test_spark_source_to_filter_pipeline(self, ray_local, local_checkpoint_store):
         """Test reading from ObjectRefs and filtering through pipeline."""
         # Create test data
-        test_data = pa.Table.from_pylist([
-            {"id": i, "department": "engineering" if i % 3 == 0 else "sales", "score": i * 10}
-            for i in range(100)
-        ])
+        test_data = pa.Table.from_pylist(
+            [
+                {"id": i, "department": "engineering" if i % 3 == 0 else "sales", "score": i * 10}
+                for i in range(100)
+            ]
+        )
         object_ref = ray.put(test_data)
 
         # Define stages
@@ -206,7 +198,7 @@ class TestSparkSourcePipeline:
             ),
         )
 
-        job = make_job(local_state_backend, [source_stage, filter_stage])
+        job = make_job(local_checkpoint_store, [source_stage, filter_stage])
 
         splits = [
             Split(
@@ -235,12 +227,9 @@ class TestSparkSourcePipeline:
         expected_count = len([i for i in range(100) if i % 3 == 0])
         assert total_engineering == expected_count
 
-    def test_spark_source_to_map_pipeline(self, ray_local, local_state_backend):
+    def test_spark_source_to_map_pipeline(self, ray_local, local_checkpoint_store):
         """Test reading from ObjectRefs and transforming."""
-        test_data = pa.Table.from_pylist([
-            {"id": i, "value": i * 2}
-            for i in range(50)
-        ])
+        test_data = pa.Table.from_pylist([{"id": i, "value": i * 2} for i in range(50)])
         object_ref = ray.put(test_data)
 
         source_stage = Stage(
@@ -258,7 +247,7 @@ class TestSparkSourcePipeline:
             ),
         )
 
-        job = make_job(local_state_backend, [source_stage, map_stage])
+        job = make_job(local_checkpoint_store, [source_stage, map_stage])
 
         splits = [
             Split(
@@ -286,15 +275,14 @@ class TestSparkSourcePipeline:
 
         assert total_records == 50
 
-    def test_multiple_blocks_pipeline(self, ray_local, local_state_backend):
+    def test_multiple_blocks_pipeline(self, ray_local, local_checkpoint_store):
         """Test processing multiple blocks through pipeline."""
         # Create multiple blocks
         blocks = []
         for block_idx in range(5):
-            block_data = pa.Table.from_pylist([
-                {"block": block_idx, "id": i, "value": block_idx * 100 + i}
-                for i in range(20)
-            ])
+            block_data = pa.Table.from_pylist(
+                [{"block": block_idx, "id": i, "value": block_idx * 100 + i} for i in range(20)]
+            )
             blocks.append(ray.put(block_data))
 
         source_stage = Stage(
@@ -309,7 +297,7 @@ class TestSparkSourcePipeline:
             ),
         )
 
-        job = make_job(local_state_backend, [source_stage, map_stage])
+        job = make_job(local_checkpoint_store, [source_stage, map_stage])
 
         splits = [
             Split(
@@ -338,26 +326,22 @@ class TestSparkSourcePipeline:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(
-    not JAVA_AVAILABLE,
-    reason="Requires Java runtime for Spark/raydp (java command not found)"
-)
 class TestSparkSourceStageMaster:
     """Integration tests for SparkSourceStageMaster using raydp.
-    
+
     These tests verify that SparkSourceStageMaster correctly:
     1. Initializes Spark via raydp.init_spark() using config parameters
     2. Calls dataframe_fn to load data
     3. Persists data to Ray object store using raydp
     4. Returns splits with ObjectRefs
-    
+
     Note: These tests require Java 11+ runtime for Spark.
     """
 
     @pytest.fixture(scope="function")
     def ray_context(self):
         """Initialize Ray with raydp jars for each test.
-        
+
         Uses function scope to ensure clean state between tests.
         """
         import raydp
@@ -399,9 +383,9 @@ class TestSparkSourceStageMaster:
             pass  # Ignore errors if Spark not initialized
         ray.shutdown()
 
-    def test_stage_master_fetch_splits_with_parquet(self, ray_context, local_state_backend):
+    def test_stage_master_fetch_splits_with_parquet(self, ray_context, local_checkpoint_store):
         """Test SparkSourceStageMaster.fetch_splits() with parquet file.
-        
+
         Verifies the full StageMaster flow:
         - StageMaster initializes Spark via raydp.init_spark() using config
         - dataframe_fn is called to read parquet
@@ -425,7 +409,7 @@ class TestSparkSourceStageMaster:
         # Create StageMaster directly
         master = SparkSourceStageMaster(
             job_id="test-job",
-            state_backend=local_state_backend,
+            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
             upstream_stages=[],
         )
@@ -456,9 +440,9 @@ class TestSparkSourceStageMaster:
         # Cleanup
         master.stop()
 
-    def test_stage_master_with_sql_query(self, ray_context, local_state_backend):
+    def test_stage_master_with_sql_query(self, ray_context, local_checkpoint_store):
         """Test SparkSourceStageMaster with SQL query in dataframe_fn.
-        
+
         The dataframe_fn can use any Spark operations including SQL.
         This test creates a temp view and queries it within the dataframe_fn.
         """
@@ -468,9 +452,7 @@ class TestSparkSourceStageMaster:
             """Load data, create temp view, then query with SQL."""
             df = spark.read.parquet(test_path)
             df.createOrReplaceTempView("employees")
-            return spark.sql(
-                "SELECT id, name, department, salary FROM employees WHERE age > 40"
-            )
+            return spark.sql("SELECT id, name, department, salary FROM employees WHERE age > 40")
 
         source_stage = Stage(
             stage_id="spark_source",
@@ -487,7 +469,7 @@ class TestSparkSourceStageMaster:
         # Create StageMaster - it will initialize Spark internally
         master = SparkSourceStageMaster(
             job_id="test-job",
-            state_backend=local_state_backend,
+            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
             upstream_stages=[],
         )
@@ -513,9 +495,9 @@ class TestSparkSourceStageMaster:
         # Cleanup Spark via master.stop() which calls raydp.stop_spark()
         master.stop()
 
-    def test_stage_master_1000_records_full_pipeline(self, ray_context, local_state_backend):
+    def test_stage_master_1000_records_full_pipeline(self, ray_context, local_checkpoint_store):
         """Test SparkSourceStageMaster with 1000 records through full pipeline.
-        
+
         End-to-end test:
         1. StageMaster initializes Spark via config and fetches splits
         2. Pipeline processes splits through filter and map stages
@@ -538,7 +520,7 @@ class TestSparkSourceStageMaster:
         # Create StageMaster and fetch splits
         master = SparkSourceStageMaster(
             job_id="test-job",
-            state_backend=local_state_backend,
+            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
             upstream_stages=[],
         )
@@ -571,7 +553,7 @@ class TestSparkSourceStageMaster:
             ),
         )
 
-        job = make_job(local_state_backend, [source_stage, filter_stage, map_stage])
+        job = make_job(local_checkpoint_store, [source_stage, filter_stage, map_stage])
 
         runner = LocalJobRunner(job)
         results = runner.run(source_splits={"spark_source": splits})
@@ -591,9 +573,9 @@ class TestSparkSourceStageMaster:
 
         master.stop()
 
-    def test_stage_master_with_parallelism(self, ray_context, local_state_backend):
+    def test_stage_master_with_parallelism(self, ray_context, local_checkpoint_store):
         """Test SparkSourceStageMaster with custom parallelism setting.
-        
+
         The parallelism config controls how many partitions/splits are created.
         """
         test_path = str(TEST_DATA_100)
@@ -614,7 +596,7 @@ class TestSparkSourceStageMaster:
 
         master = SparkSourceStageMaster(
             job_id="test-job",
-            state_backend=local_state_backend,
+            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
             upstream_stages=[],
         )
@@ -629,9 +611,9 @@ class TestSparkSourceStageMaster:
 
         master.stop()
 
-    def test_stage_master_complex_dataframe_fn(self, ray_context, local_state_backend):
+    def test_stage_master_complex_dataframe_fn(self, ray_context, local_checkpoint_store):
         """Test SparkSourceStageMaster with complex dataframe_fn logic.
-        
+
         The dataframe_fn can contain arbitrary Spark transformations.
         """
         test_path = str(TEST_DATA_100)
@@ -661,7 +643,7 @@ class TestSparkSourceStageMaster:
 
         master = SparkSourceStageMaster(
             job_id="test-job",
-            state_backend=local_state_backend,
+            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
             upstream_stages=[],
         )

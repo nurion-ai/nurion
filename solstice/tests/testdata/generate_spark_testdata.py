@@ -12,9 +12,24 @@ import pyarrow.parquet as pq
 DEPARTMENTS = ["engineering", "sales", "marketing", "hr", "finance", "operations", "research"]
 LOCATIONS = ["new_york", "san_francisco", "london", "tokyo", "berlin", "sydney", "toronto"]
 SKILLS = [
-    "python", "java", "scala", "spark", "sql", "kubernetes", "docker",
-    "machine_learning", "data_engineering", "frontend", "backend", "devops",
-    "analytics", "visualization", "cloud", "aws", "gcp", "azure"
+    "python",
+    "java",
+    "scala",
+    "spark",
+    "sql",
+    "kubernetes",
+    "docker",
+    "machine_learning",
+    "data_engineering",
+    "frontend",
+    "backend",
+    "devops",
+    "analytics",
+    "visualization",
+    "cloud",
+    "aws",
+    "gcp",
+    "azure",
 ]
 STATUSES = ["active", "inactive", "pending", "archived"]
 
@@ -57,39 +72,39 @@ def save_parquet(records: list, output_file: Path) -> None:
     # Convert skills list to string for parquet (list types are tricky)
     for record in records:
         record["skills"] = ",".join(record["skills"])
-    
+
     table = pa.Table.from_pylist(records)
     pq.write_table(table, output_file)
 
 
 def ensure_spark_testdata() -> Path:
     """Ensure Spark test data exists, generating if needed.
-    
+
     Returns the path to the spark testdata directory.
     """
     output_dir = Path(__file__).parent / "resources" / "spark"
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     parquet_100 = output_dir / "test_data_100.parquet"
     parquet_1000 = output_dir / "test_data_1000.parquet"
-    
+
     # Only regenerate if files don't exist
     if not parquet_100.exists() or not parquet_1000.exists():
         random.seed(42)  # For reproducibility
-        
+
         # Generate 1000 records
         records_1000 = generate_records(1000)
         save_jsonl(records_1000, output_dir / "test_data_1000.jsonl")
         save_parquet(records_1000.copy(), output_dir / "test_data_1000.parquet")
-        
+
         # Generate 100 records (subset)
         random.seed(42)
         records_100 = generate_records(100)
         save_jsonl(records_100, output_dir / "test_data_100.jsonl")
         save_parquet(records_100.copy(), output_dir / "test_data_100.parquet")
-        
+
         print(f"Generated Spark test data in {output_dir}")
-    
+
     return output_dir
 
 
@@ -118,4 +133,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -17,27 +17,27 @@ logger = logging.getLogger(__name__)
 
 def setup_s3_credentials(rclone_remote: str = "s3"):
     """Setup S3 credentials from rclone config into environment variables.
-    
+
     Note: solstice.utils.remote._load_s3_config will also try to load from
     rclone config directly, but setting env vars ensures other libraries
     (like lance) can also access the credentials.
     """
     import configparser
-    
+
     # Set the S3 remote name for solstice
     os.environ.setdefault("SOLSTICE_S3_REMOTE", rclone_remote)
-    
+
     rclone_config = Path.home() / ".config/rclone/rclone.conf"
     if not rclone_config.exists():
         rclone_config = Path("/root/.config/rclone/rclone.conf")
-    
+
     if not rclone_config.exists():
         logger.warning("rclone config not found, S3 access may fail")
         return
-    
+
     config = configparser.ConfigParser()
     config.read(rclone_config)
-    
+
     if rclone_remote in config:
         section = config[rclone_remote]
         os.environ.setdefault("AWS_ACCESS_KEY_ID", section.get("access_key_id", ""))
@@ -49,19 +49,19 @@ def setup_s3_credentials(rclone_remote: str = "s3"):
 
 def list_videos_from_s3(s3_path: str, max_videos: int = 5) -> List[tuple]:
     """List videos from S3 and return metadata.
-    
+
     Args:
         s3_path: S3 path (s3://bucket/prefix)
         max_videos: Maximum number of videos to return
-    
+
     Returns:
         List of (size, relative_path) tuples
     """
     logger.info(f"Listing videos from {s3_path}...")
-    
+
     # Convert s3://bucket/prefix to rclone format s3:bucket/prefix
     rclone_path = s3_path.replace("s3://", "s3:")
-    
+
     result = subprocess.run(
         ["rclone", "ls", rclone_path],
         capture_output=True,
@@ -101,36 +101,38 @@ def create_s3_lance_table(
     output_path: str,
 ) -> None:
     """Create a Lance table with S3 video paths.
-    
+
     Args:
         videos: List of (size, relative_path) tuples
         s3_base_path: Base S3 path (e.g., s3://bucket/prefix)
         output_path: Output path (s3:// or local)
     """
     from solstice.utils.remote import get_lance_storage_options
-    
+
     records: List[Dict[str, Any]] = []
 
     for idx, (size, rel_path) in enumerate(videos):
         s3_path = s3_join_path(s3_base_path, rel_path)
         video_name = Path(rel_path).stem
-        
-        records.append({
-            "global_index": idx,
-            "video_uid": video_name,
-            "source_url": s3_path,
-            "video_path": s3_path,  # S3 path directly!
-            "width": 0,
-            "height": 0,
-            "fps": 0.0,
-            "duration_sec": 0.0,
-            "subset": "test",
-            "target_slice_count": 3,
-        })
+
+        records.append(
+            {
+                "global_index": idx,
+                "video_uid": video_name,
+                "source_url": s3_path,
+                "video_path": s3_path,  # S3 path directly!
+                "width": 0,
+                "height": 0,
+                "fps": 0.0,
+                "duration_sec": 0.0,
+                "subset": "test",
+                "target_slice_count": 3,
+            }
+        )
 
     logger.info(f"Creating Lance table with {len(records)} videos (S3 paths) at {output_path}")
     table = pa.Table.from_pylist(records)
-    
+
     # Write to S3 or local
     if output_path.startswith("s3://"):
         bucket = output_path[5:].split("/")[0]
@@ -139,7 +141,7 @@ def create_s3_lance_table(
     else:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         write_dataset(table, output_path, mode="overwrite")
-    
+
     # Show sample paths
     for r in records[:2]:
         logger.info(f"  video_path: {r['video_path']}")
@@ -150,7 +152,7 @@ def run_workflow(
     output_path: str,
 ) -> None:
     """Run the video slice workflow with Lance blob storage.
-    
+
     Args:
         input_path: Input path (local or S3)
         output_path: Output path (local or S3)
@@ -166,7 +168,7 @@ def run_workflow(
     def timeout_context(seconds: int, message: str = "Operation timed out"):
         def timeout_handler(signum, frame):
             raise TimeoutError(message)
-        
+
         old_handler = signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(seconds)
         try:
@@ -225,27 +227,31 @@ def run_workflow(
 
         # Check results
         import lance
+
         try:
             # For S3 paths, need to provide storage options
             if output_path.startswith("s3://"):
                 from solstice.utils.remote import get_lance_storage_options
+
                 bucket = output_path[5:].split("/")[0]
                 storage_options = get_lance_storage_options(bucket)
                 ds = lance.dataset(output_path, storage_options=storage_options)
             else:
                 ds = lance.dataset(output_path)
-            
+
             logger.info(f"Output table has {ds.count_rows()} rows")
             logger.info(f"Schema: {ds.schema}")
-            
+
             sample = ds.to_table().to_pylist()[:3]
             for i, row in enumerate(sample):
-                slice_binary = row.get('slice_binary')
+                slice_binary = row.get("slice_binary")
                 binary_size = len(slice_binary) if slice_binary else 0
-                logger.info(f"Sample {i}: video_uid={row.get('video_uid')}, "
-                           f"scene_index={row.get('scene_index')}, "
-                           f"slice_size={row.get('slice_size_bytes')} bytes, "
-                           f"blob_size={binary_size} bytes")
+                logger.info(
+                    f"Sample {i}: video_uid={row.get('video_uid')}, "
+                    f"scene_index={row.get('scene_index')}, "
+                    f"slice_size={row.get('slice_size_bytes')} bytes, "
+                    f"blob_size={binary_size} bytes"
+                )
         except Exception as e:
             logger.error(f"Failed to read output table: {e}")
 
@@ -314,4 +320,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

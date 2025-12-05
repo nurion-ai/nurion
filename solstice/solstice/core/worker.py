@@ -10,6 +10,7 @@ import ray
 
 from solstice.core.models import Split, SplitPayload, WorkerMetrics
 from solstice.core.operator import Operator
+from solstice.core.split_id import generate_derived_split_id
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -141,8 +142,14 @@ class StageWorker:
         self.logger.debug(
             f"Worker {self.worker_id} processed split {split.split_id} in {duration:.3f}s (in={input_records}, out={output_records})",
         )
+
+        # Generate deterministic output split ID based on lineage, not worker
+        output_split_id = generate_derived_split_id(
+            stage_id=self.stage_id,
+            parent_split_ids=[split.split_id],
+        )
         output_split = split.derive_output_split(
-            target_split_id=f"{split.split_id}:read_{self.worker_id}",
+            target_split_id=output_split_id,
             data_range={
                 "object_ref": output_ref,
             },

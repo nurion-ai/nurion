@@ -12,7 +12,7 @@ from solstice.utils.logging import create_ray_logger
 from solstice.core.stage_master import StageStatus
 from solstice.actors.meta_service import MetaService
 from solstice.core.job import Job
-from solstice.state.state_master import GlobalStateMaster
+from solstice.state.checkpoint_manager import CheckpointManager
 
 
 class RayJobRunner:
@@ -25,7 +25,7 @@ class RayJobRunner:
         self.logger = create_ray_logger(f"RayJobRunner-{job.job_id}")
 
         self.meta_service: Optional[ray.actor.ActorHandle] = None
-        self.global_state_master: Optional[ray.actor.ActorHandle] = None
+        self.checkpoint_manager: Optional[CheckpointManager] = None
         self.stage_actor_refs: dict[str, ray.actor.ActorHandle] = {}
         self.stage_run_refs: dict[str, ray.ObjectRef] = {}
 
@@ -53,20 +53,18 @@ class RayJobRunner:
         self._ensure_ray()
         self.logger.info("Initializing job %s", self.job.job_id)
 
+        # Initialize checkpoint manager
+        self.checkpoint_manager = CheckpointManager(
+            job_id=self.job.job_id,
+            store=self.job.checkpoint_store,
+            config=self.job.checkpoint_config,
+        )
+
         self.meta_service = MetaService.remote(
             job_id=self.job.job_id,
-            state_backend=self.job.state_backend,
+            checkpoint_store=self.job.checkpoint_store,
             config=self.job.config,
         )
-
-        self.global_state_master = GlobalStateMaster.remote(
-            job_id=self.job.job_id,
-            state_backend=self.job.state_backend,
-            checkpoint_interval_secs=self.job.checkpoint_interval_secs,
-            checkpoint_interval_records=self.job.checkpoint_interval_records,
-        )
-
-        ray.get(self.meta_service.set_global_state_master.remote(self.global_state_master))
 
         self._reverse_dag = self.job.build_reverse_dag()
         for stage_id, stage in self.job.stages.items():
@@ -83,16 +81,20 @@ class RayJobRunner:
             upstream_stages = self._reverse_dag.get(stage_id, [])
             stage_master = (
                 ray.remote(stage.master_config.master_class)
-                .options(name=actor_name, max_concurrency=10)
+                .options(name=actor_name, max_concurrency=10, num_cpus=0.2)
                 .remote(
                     job_id=self.job.job_id,
-                    state_backend=self.job.state_backend,
+                    checkpoint_store=self.job.checkpoint_store,
                     upstream_stages=upstream_stages,
                     stage=stage,
                 )
             )
             self.stage_actor_refs[stage_id] = stage_master
             ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
+
+            # Register stage with checkpoint manager (unless skipped)
+            if not stage.skip_checkpoint:
+                self.checkpoint_manager.register_stage(stage_id)
 
         for stage_id, actor_ref in self.stage_actor_refs.items():
             downstream_ids = self.job.dag_edges.get(stage_id, [])
@@ -229,6 +231,9 @@ class RayJobRunner:
         self._start_stage_loops()
 
         deadline = time.time() + timeout if timeout is not None else None
+        last_checkpoint_check = time.time()
+        checkpoint_check_interval = 1.0  # Check every 1 second
+
         try:
             while self._running:
                 if deadline is not None and time.time() > deadline:
@@ -236,6 +241,15 @@ class RayJobRunner:
                         f"Timeout while waiting for job {self.job.job_id} to complete."
                     )
                 self._check_stage_run_refs()
+
+                # Periodic checkpoint trigger check
+                if (
+                    self.job.checkpoint_config.enabled
+                    and time.time() - last_checkpoint_check >= checkpoint_check_interval
+                ):
+                    last_checkpoint_check = time.time()
+                    self._maybe_trigger_checkpoint()
+
                 if self._is_pipeline_idle():
                     self.logger.info("All stages idle; stopping job %s", self.job.job_id)
                     self._stop()
@@ -245,6 +259,43 @@ class RayJobRunner:
         except Exception:
             self._stop()
             raise
+
+    def _maybe_trigger_checkpoint(self) -> None:
+        """Check if a checkpoint should be triggered and trigger it if so."""
+        if self.checkpoint_manager is None:
+            return
+
+        try:
+            if not self.checkpoint_manager.should_trigger_checkpoint():
+                return
+
+            self.logger.info("Auto-triggering checkpoint for job %s", self.job.job_id)
+            checkpoint_id = self.checkpoint_manager.trigger_checkpoint()
+
+            if checkpoint_id:
+                # Collect checkpoint data only from registered stages
+                registered_stages = self.checkpoint_manager.get_registered_stages()
+                for stage_id in registered_stages:
+                    actor_ref = self.stage_actor_refs.get(stage_id)
+                    if actor_ref is None:
+                        continue
+                    try:
+                        ray.get(actor_ref.trigger_checkpoint.remote(checkpoint_id), timeout=30)
+                        data = ray.get(actor_ref.get_checkpoint_data.remote(), timeout=30)
+                        if data:
+                            from solstice.state.store import StageCheckpointData
+
+                            self.checkpoint_manager.collect_stage_checkpoint(
+                                stage_id, StageCheckpointData.from_dict(data)
+                            )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to checkpoint stage {stage_id}: {e}")
+
+                # Finalize checkpoint
+                self.checkpoint_manager.finalize_checkpoint()
+
+        except Exception as e:
+            self.logger.warning("Error during checkpoint trigger: %s", e)
 
     def _stop(self) -> None:
         self.logger.debug("Stopping job %s (running=%s)", self.job.job_id, self._running)
@@ -258,48 +309,76 @@ class RayJobRunner:
         self.stage_actor_refs.clear()
         self.stage_run_refs.clear()
         self.meta_service = None
-        self.global_state_master = None
+        self.checkpoint_manager = None
         self._initialized = False
 
     # ------------------------------------------------------------------
     # Checkpointing
     # ------------------------------------------------------------------
     def trigger_checkpoint(self) -> Optional[str]:
+        """Manually trigger a checkpoint."""
         if not self._running:
             self.logger.warning("Job %s is not running", self.job.job_id)
             return None
 
+        if self.checkpoint_manager is None:
+            return None
+
         self.logger.info("Triggering checkpoint for job %s", self.job.job_id)
-        checkpoint_id = ray.get(self.meta_service.trigger_global_checkpoint.remote())
-        return checkpoint_id
+        self._maybe_trigger_checkpoint()
+        return self.checkpoint_manager.get_latest_checkpoint_id()
 
     def restore_from_checkpoint(self, checkpoint_id: Optional[str] = None) -> bool:
+        """Restore job state from a checkpoint."""
         if not self._initialized:
             self.initialize()
 
+        if self.checkpoint_manager is None:
+            self.logger.error("Checkpoint manager not initialized")
+            return False
+
         if checkpoint_id is None:
-            checkpoint_id = ray.get(self.global_state_master.get_latest_checkpoint.remote())
+            checkpoint_id = self.checkpoint_manager.get_latest_checkpoint_id()
             if not checkpoint_id:
                 self.logger.error("No checkpoint available to restore job %s", self.job.job_id)
                 return False
 
         self.logger.info("Restoring job %s from checkpoint %s", self.job.job_id, checkpoint_id)
-        success = ray.get(self.global_state_master.restore_from_checkpoint.remote(checkpoint_id))
-        if success:
-            self.logger.info("Successfully restored job %s from %s", self.job.job_id, checkpoint_id)
-        else:
-            self.logger.error("Failed to restore job %s from %s", self.job.job_id, checkpoint_id)
-        return success
+
+        # Load checkpoint manifest
+        manifest = self.checkpoint_manager.load_checkpoint(checkpoint_id)
+        if not manifest:
+            self.logger.error("Failed to load checkpoint %s", checkpoint_id)
+            return False
+
+        # Restore each stage
+        for stage_id, stage_data in manifest.stages.items():
+            if stage_id in self.stage_actor_refs:
+                try:
+                    ray.get(
+                        self.stage_actor_refs[stage_id].restore_from_checkpoint.remote(
+                            stage_data.to_dict()
+                        ),
+                        timeout=60,
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to restore stage {stage_id}: {e}")
+                    return False
+
+        self.logger.info("Successfully restored job %s from %s", self.job.job_id, checkpoint_id)
+        return True
 
     def list_checkpoints(self) -> List[str]:
-        if not self._initialized:
+        """List available checkpoints."""
+        if self.checkpoint_manager is None:
             return []
-        return ray.get(self.global_state_master.list_checkpoints.remote())
+        return self.checkpoint_manager.list_checkpoints()
 
     def cleanup_checkpoints(self, keep_last_n: int = 5) -> None:
-        if not self._initialized:
+        """Clean up old checkpoints."""
+        if self.checkpoint_manager is None:
             return
-        ray.get(self.global_state_master.cleanup_old_checkpoints.remote(keep_last_n))
+        self.checkpoint_manager.cleanup_old_checkpoints(keep_last_n)
 
     # ------------------------------------------------------------------
     # Observability

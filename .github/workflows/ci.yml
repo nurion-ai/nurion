@@ -151,7 +151,79 @@ jobs:
         fail_ci_if_error: false
 
   test-solstice:
-    name: Solstice Tests
+    name: Solstice Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v45
+      with:
+        files: |
+          solstice/**
+    
+    - name: Skip if no Solstice changes
+      if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
+      run: echo "No Solstice files changed, skipping..."
+    
+    - name: Install system dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+    
+    - name: Set up Python 3.12
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: uv python install 3.12
+      
+    - name: Install dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv sync --dev --python 3.12
+    
+    - name: Run unit tests
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      env:
+        SOLSTICE_TEST_VIDEO_LIMIT: "20"
+      run: |
+        cd solstice
+        uv run pytest tests/ -v --tb=short -m "not integration"
+    
+    - name: Print Ray logs on failure
+      if: failure()
+      run: |
+        echo "=== Ray Session Logs ==="
+        if [ -d /tmp/ray ]; then
+          find /tmp/ray -name "*.log" -type f 2>/dev/null | head -20 | while read f; do
+            echo "=== $f ==="
+            tail -200 "$f" 2>/dev/null || true
+          done
+        else
+          echo "No Ray logs found in /tmp/ray"
+        fi
+    
+    - name: Cleanup test artifacts
+      if: always()
+      run: |
+        rm -rf solstice/tests/testdata/resources/videos/.cache
+        rm -rf solstice/tests/testdata/resources/videos/sources
+        rm -rf solstice/tests/testdata/resources/slices
+        rm -rf solstice/tests/testdata/resources/lance
+        rm -rf solstice/tests/testdata/resources/tmp
+
+  test-solstice-integration:
+    name: Solstice Integration Tests
     runs-on: ubuntu-latest
     
     steps:
@@ -159,7 +231,6 @@ jobs:
       run: |
         echo "Disk space before cleanup:"
         df -h /
-        # Remove unnecessary pre-installed software to free up disk space
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /opt/ghc
@@ -202,7 +273,6 @@ jobs:
         cd solstice/java
         mvn clean package -DskipTests -q
         
-        # Copy JARs to raydp/jars directory
         mkdir -p ../raydp/jars
         cp raydp-main/target/raydp-1.7.0-SNAPSHOT.jar ../raydp/jars/
         cp shims/common/target/raydp-shims-common-1.7.0-SNAPSHOT.jar ../raydp/jars/
@@ -219,7 +289,6 @@ jobs:
         docker compose build --no-cache
         docker compose up -d 
         
-        # Wait for services to be healthy
         echo "Waiting for aether to be ready..."
         for i in {1..30}; do
           if curl -f http://localhost:8000/api/health 2>/dev/null; then
@@ -248,14 +317,13 @@ jobs:
         cd solstice
         uv sync --dev --python 3.12
     
-    - name: Run tests
+    - name: Run integration tests
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       env:
-        # Limit video count in CI to save disk space while still having meaningful test coverage
         SOLSTICE_TEST_VIDEO_LIMIT: "20"
       run: |
         cd solstice
-        uv run pytest tests/ -v --tb=short
+        uv run pytest tests/ -v --tb=short -m "integration"
     
     - name: Print Ray logs on failure
       if: failure()
@@ -278,7 +346,6 @@ jobs:
     - name: Cleanup test artifacts
       if: always()
       run: |
-        # Clean up downloaded video archives and generated files to free disk space
         rm -rf solstice/tests/testdata/resources/videos/.cache
         rm -rf solstice/tests/testdata/resources/videos/sources
         rm -rf solstice/tests/testdata/resources/slices

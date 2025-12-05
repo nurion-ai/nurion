@@ -18,8 +18,8 @@ from solstice.core.models import (
     WorkerMetrics,
     StageMetrics,
 )
-from solstice.state.backend import StateBackend
-from solstice.state.manager import StateManager
+from solstice.state.store import CheckpointStore
+from solstice.state.checkpoint_manager import StageCheckpointTracker
 from solstice.utils.logging import create_ray_logger
 from solstice.core.worker import ProcessResult
 
@@ -62,7 +62,7 @@ class StageMasterConfig:
     def setup(
         self,
         job_id: str,
-        state_backend: StateBackend,
+        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
         upstream_stages: List[str] | None,
     ) -> "StageMasterActor":
@@ -70,7 +70,7 @@ class StageMasterConfig:
 
         Args:
             job_id: The job ID
-            state_backend: State backend for persistence
+            checkpoint_store: Store for checkpoint persistence (optional)
             stage: The stage this master will manage
             upstream_stages: List of upstream stage IDs
 
@@ -79,7 +79,7 @@ class StageMasterConfig:
         """
         return self.master_class(
             job_id=job_id,
-            state_backend=state_backend,
+            checkpoint_store=checkpoint_store,
             stage=stage,
             upstream_stages=upstream_stages,
         )
@@ -94,13 +94,6 @@ class StageMasterConfig:
             else:
                 result[f.name] = value
         return result
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a config value by key, with optional default.
-
-        This method provides dict-like access for backward compatibility.
-        """
-        return getattr(self, key, default)
 
 
 @dataclass
@@ -126,14 +119,14 @@ class StageMasterActor:
     def __init__(
         self,
         job_id: str,
-        state_backend: StateBackend,
+        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
         upstream_stages: List[str] | None,
     ):
         self.job_id = job_id
         self.stage_id = stage.stage_id
         self.stage = stage
-        self.state_backend = state_backend
+        self.checkpoint_store = checkpoint_store
         self.upstream_stages = upstream_stages
 
         self.logger = create_ray_logger(f"StageMaster-{self.stage_id}")
@@ -141,8 +134,9 @@ class StageMasterActor:
         # Get master config from stage
         master_config = stage.master_config
 
-        # State & split tracking
-        self.state_manager = StateManager(stage_id=self.stage_id, state_backend=state_backend)
+        # Checkpoint tracking - tracks completed/inflight splits
+        self.checkpoint_tracker = StageCheckpointTracker(stage_id=self.stage_id)
+
         self._pending_splits: Deque[Split] = deque()
         self.max_split_attempts = master_config.max_split_attempts
         self.downstream_stage_refs: Dict[str, ray.actor.ActorHandle] = {}
@@ -255,15 +249,17 @@ class StageMasterActor:
         split: Split,
     ) -> None:
         """Receive a new split from upstream (or create one for source stages)."""
-        # payload_ref is intentionally ignored; object references are carried inside split.data_range.
+        # Skip if this split was already completed (from checkpoint restore)
+        if self.checkpoint_tracker.is_split_completed(split.split_id):
+            self.logger.debug(f"Skipping already-completed split {split.split_id}")
+            return
+
         self._pending_splits.append(split)
         obj_ref = split.data_range.get("object_ref")
         self.logger.debug(
             f"Enqueued split {split.split_id} (object_ref={obj_ref}) "
             f"(pending={len(self._pending_splits)})"
         )
-
-        self.state_manager.activate_split(split.split_id)
 
         if len(self._pending_splits) >= self.max_queue_size and not self.backpressure_active:
             self.backpressure_active = True
@@ -322,6 +318,10 @@ class StageMasterActor:
                 self.logger.debug(f"No worker available for stage {self.stage_id}")
                 break
             split = self._pending_splits.popleft()
+
+            # Mark split as started for checkpoint tracking
+            self.checkpoint_tracker.mark_split_started(split.split_id)
+
             self.worker_active_splits[worker_id] = self.worker_active_splits[worker_id] + 1
             worker_ref = self.workers[worker_id]
             self.logger.debug(
@@ -394,6 +394,10 @@ class StageMasterActor:
     def _requeue_split(self, split: Split) -> bool:
         split.attempt += 1
         split_id = split.split_id
+
+        # Mark split as failed for checkpoint tracking (will be retried)
+        self.checkpoint_tracker.mark_split_failed(split_id)
+
         if split.attempt > self.max_split_attempts:
             self.logger.error(
                 f"Split {split_id} has exceeded the maximum number of attempts ({self.max_split_attempts}), giving up"
@@ -407,8 +411,9 @@ class StageMasterActor:
 
     def _handle_worker_result(self, process_result: ProcessResult) -> None:
         input_split_id = process_result.input_split_id
-        # Clear split state after processing
-        self.state_manager.clear_split(input_split_id)
+
+        # Mark split as completed for checkpoint tracking
+        self.checkpoint_tracker.mark_split_completed(input_split_id)
 
         self.logger.debug(
             f"Stage {self.stage_id} handling result for input split {input_split_id} "
@@ -441,66 +446,51 @@ class StageMasterActor:
             )
 
     # ------------------------------------------------------------------
-    # Checkpointing (state managed by StageMaster)
+    # Checkpointing
     # ------------------------------------------------------------------
     def trigger_checkpoint(self, checkpoint_id: str) -> None:
+        """Prepare stage for checkpoint."""
         self.current_checkpoint_id = checkpoint_id
         self.logger.info("Stage %s preparing checkpoint %s", self.stage_id, checkpoint_id)
 
-    def collect_checkpoints(self) -> List[Dict[str, Any]]:
+    def get_checkpoint_data(self) -> Dict[str, Any]:
+        """Get checkpoint data for this stage.
+
+        Returns checkpoint data containing completed splits and stage offset.
+        """
         if not self.current_checkpoint_id:
-            return []
-        handles = self.state_manager.checkpoint(self.current_checkpoint_id)
-        payloads = [
-            {
-                "checkpoint_id": handle.checkpoint_id,
-                "stage_id": handle.stage_id,
-                "split_id": handle.split_id,
-                "split_attempt": handle.split_attempt,
-                "state_path": handle.state_path,
-                "offset": handle.offset,
-                "size_bytes": handle.size_bytes,
-                "timestamp": handle.timestamp,
-            }
-            for handle in handles
-        ]
+            return {}
+
+        data = self.checkpoint_tracker.prepare_checkpoint(self.current_checkpoint_id)
+        result = data.to_dict()
+
         self.logger.info(
-            "Stage %s emitted %d split handles for checkpoint %s",
+            "Stage %s checkpoint data: %d completed, %d inflight splits",
             self.stage_id,
-            len(payloads),
-            self.current_checkpoint_id,
+            len(data.completed_splits),
+            len(data.inflight_splits),
         )
-        return payloads
+        return result
 
-    def restore_from_checkpoint(
-        self, checkpoint_id: str, handles: Optional[List[Dict[str, Any]]] = None
-    ) -> None:
-        if not handles:
-            self.logger.warning(
-                "Stage %s restore requested for %s without handles", self.stage_id, checkpoint_id
-            )
+    def restore_from_checkpoint(self, checkpoint_data: Optional[Dict[str, Any]] = None) -> None:
+        """Restore stage state from checkpoint data.
+
+        Args:
+            checkpoint_data: Stage checkpoint data dict
+        """
+        if not checkpoint_data:
+            self.logger.warning("Stage %s restore requested without data", self.stage_id)
             return
-        from solstice.core.models import CheckpointHandle
 
-        converted = [
-            CheckpointHandle(
-                checkpoint_id=handle.get("checkpoint_id", checkpoint_id),
-                stage_id=handle["stage_id"],
-                split_id=handle["split_id"],
-                split_attempt=handle.get("split_attempt", 0),
-                state_path=handle["state_path"],
-                offset=handle.get("offset", {}),
-                size_bytes=handle.get("size_bytes", 0),
-                timestamp=handle.get("timestamp", time.time()),
-            )
-            for handle in handles
-        ]
-        self.state_manager.restore_many(converted)
+        from solstice.state.store import StageCheckpointData
+
+        data = StageCheckpointData.from_dict(checkpoint_data)
+        self.checkpoint_tracker.restore_from_checkpoint(data)
+
         self.logger.info(
-            "Stage %s restored %d split states from checkpoint %s",
+            "Stage %s restored: %d completed splits",
             self.stage_id,
-            len(converted),
-            checkpoint_id,
+            len(data.completed_splits),
         )
 
     # ------------------------------------------------------------------

@@ -3,11 +3,11 @@
 import time
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Iterator, List
+from typing import TYPE_CHECKING, Iterator, List, Optional
 
 from solstice.core.models import Split
 from solstice.core.stage_master import StageMasterActor
-from solstice.state.backend import StateBackend
+from solstice.state.store import CheckpointStore
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
@@ -19,11 +19,11 @@ class SourceStageMaster(StageMasterActor):
     def __init__(
         self,
         job_id: str,
-        state_backend: StateBackend,
+        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
         upstream_stages: List[str] | None = None,
     ):
-        super().__init__(job_id, state_backend, stage, upstream_stages)
+        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
 
         self.logger.info(f"Source operator master for stage {self.stage_id}")
 

@@ -27,7 +27,13 @@ class FileSourceConfig(OperatorConfig):
 
 
 class FileSource(SourceOperator):
-    """Source operator for reading from local files (JSON, Parquet, CSV)."""
+    """Source operator for reading from local files (JSON, Parquet, CSV).
+
+    Supports checkpoint/resume via offset tracking. The offset contains:
+    - file_path: Current file being read
+    - row_offset: Number of rows already read from the current file
+    - completed_files: List of files that have been fully processed
+    """
 
     SUPPORTED_FORMATS = {"json", "parquet", "csv"}
 
@@ -39,31 +45,71 @@ class FileSource(SourceOperator):
         if self.file_format not in self.SUPPORTED_FORMATS:
             raise ValueError(f"Unsupported format: {self.file_format}")
 
-        self.current_file_idx = 0
-        self.current_row_idx = 0
+        # Initialize offset tracking
+        self._current_offset = {
+            "completed_files": [],
+            "current_file": None,
+            "row_offset": 0,
+        }
 
     def read(self, split: Split) -> Optional[SplitPayload]:
         file_path = split.data_range.get("file_path")
         if not file_path:
             raise ValueError("Split missing file_path for FileSource")
 
+        # Check if this file was already completed (from checkpoint restore)
+        if file_path in self._current_offset.get("completed_files", []):
+            self.logger.debug(f"Skipping already completed file: {file_path}")
+            return None
+
         table = self._load_table(file_path)
         if not table or table.num_rows == 0:
+            # Mark file as completed
+            self._mark_file_completed(file_path)
             return None
+
+        # Apply row offset if resuming from checkpoint
+        row_offset = 0
+        if (
+            self._current_offset.get("current_file") == file_path
+            and self._current_offset.get("row_offset", 0) > 0
+        ):
+            row_offset = self._current_offset["row_offset"]
+            if row_offset >= table.num_rows:
+                # Already processed all rows in this file
+                self._mark_file_completed(file_path)
+                return None
+            table = table.slice(row_offset)
+            self.logger.info(f"Resuming {file_path} from row {row_offset}")
+
+        # Update offset for checkpoint
+        self.update_offset(
+            {
+                "current_file": file_path,
+                "row_offset": row_offset + table.num_rows,
+            }
+        )
+
+        # Mark file as completed after reading all rows
+        self._mark_file_completed(file_path)
 
         return SplitPayload.from_arrow(
             table,
             split_id=split.split_id,
         )
 
-    def _advance_file(self, file_idx: int) -> None:
-        if file_idx >= self.current_file_idx:
-            self.current_file_idx = file_idx + 1
-            self.current_row_idx = 0
-            self._resume_offset = 0
-            if self._context:
-                self._context.set_state("file_idx", self.current_file_idx)
-                self._context.set_state("row_idx", 0)
+    def _mark_file_completed(self, file_path: str) -> None:
+        """Mark a file as fully processed."""
+        completed = self._current_offset.get("completed_files", [])
+        if file_path not in completed:
+            completed.append(file_path)
+            self.update_offset(
+                {
+                    "completed_files": completed,
+                    "current_file": None,
+                    "row_offset": 0,
+                }
+            )
 
     def _load_table(self, file_path: str) -> pa.Table:
         path = Path(file_path)

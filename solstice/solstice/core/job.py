@@ -3,8 +3,11 @@
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+import os
+
 from solstice.core.stage import Stage
-from solstice.state.backend import LocalStateBackend, StateBackend
+from solstice.core.models import JobCheckpointConfig
+from solstice.state.store import CheckpointStore, create_checkpoint_store
 
 if TYPE_CHECKING:
     from solstice.runtime.ray_runner import RayJobRunner
@@ -16,9 +19,9 @@ class Job:
     def __init__(
         self,
         job_id: str,
-        state_backend: Optional[StateBackend] = None,
-        checkpoint_interval_secs: int = 300,
-        checkpoint_interval_records: Optional[int] = None,
+        checkpoint_store: Optional[CheckpointStore] = None,
+        checkpoint_store_uri: Optional[str] = None,
+        checkpoint_config: Optional[JobCheckpointConfig] = None,
         config: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -26,15 +29,56 @@ class Job:
 
         Args:
             job_id: Unique identifier for the job
-            state_backend: Backend for storing state (defaults to local)
-            checkpoint_interval_secs: Checkpoint interval in seconds
-            checkpoint_interval_records: Checkpoint interval in records processed
+            checkpoint_store: Store instance for checkpoint persistence.
+            checkpoint_store_uri: URI to create checkpoint store. Ignored if
+                checkpoint_store is provided. Supports:
+                - "/path/to/dir" or "local:/path" - Local filesystem
+                - "s3://bucket/prefix" - S3 (via fsspec)
+                - "slatedb://memory:///" - SlateDB in-memory (testing)
+                - "slatedb://file:///path" - SlateDB local file
+                - "slatedb://s3://bucket/prefix" - SlateDB with S3 (recommended)
+                Can also be set via SOLSTICE_CHECKPOINT_STORE_URI env var.
+            checkpoint_config: Global checkpoint configuration. Controls checkpoint
+                triggering strategy, coordination mode, and timeouts.
             config: Additional job configuration
+
+        Examples:
+            >>> # Default: SlateDB with local storage
+            >>> job = Job(job_id="etl_pipeline")
+
+            >>> # SlateDB with S3 (recommended for production)
+            >>> job = Job(
+            ...     job_id="etl_pipeline",
+            ...     checkpoint_store_uri="slatedb://s3://my-bucket/checkpoints",
+            ... )
+
+            >>> # Or via environment variable
+            >>> # export SOLSTICE_CHECKPOINT_STORE_URI="slatedb://s3://bucket/ckpt"
+            >>> job = Job(job_id="etl_pipeline")
+
+            >>> # Custom checkpoint settings
+            >>> job = Job(
+            ...     job_id="etl_pipeline",
+            ...     checkpoint_config=JobCheckpointConfig(
+            ...         enabled=True,
+            ...         interval_secs=300,
+            ...     ),
+            ... )
         """
         self.job_id = job_id
-        self.state_backend = state_backend or LocalStateBackend(f"/tmp/solstice/{job_id}")
-        self.checkpoint_interval_secs = checkpoint_interval_secs
-        self.checkpoint_interval_records = checkpoint_interval_records
+
+        # Resolve checkpoint store: explicit store > URI param > env var > default
+        if checkpoint_store is not None:
+            self.checkpoint_store = checkpoint_store
+        else:
+            uri = (
+                checkpoint_store_uri
+                or os.environ.get("SOLSTICE_CHECKPOINT_STORE_URI")
+                or f"slatedb://file:///tmp/solstice/{job_id}/slatedb"
+            )
+            self.checkpoint_store = create_checkpoint_store(uri)
+
+        self.checkpoint_config = checkpoint_config or JobCheckpointConfig()
         self.config = config or {}
 
         self.logger = logging.getLogger(f"Job-{job_id}")

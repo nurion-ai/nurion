@@ -19,7 +19,12 @@ import signal
 import click
 import ray
 
-from solstice.state.backend import StateBackend, LocalStateBackend, S3StateBackend
+from solstice.state.store import (
+    CheckpointStore,
+    LocalCheckpointStore,
+    S3CheckpointStore,
+    SlateDBCheckpointStore,
+)
 from solstice.core.job import Job
 
 
@@ -32,17 +37,26 @@ def setup_logging(level: str = "INFO"):
     )
 
 
-def create_state_backend(backend_type: str, **kwargs) -> StateBackend:
-    """Create state backend from parameters"""
+def create_checkpoint_store_from_params(backend_type: str, **kwargs) -> CheckpointStore:
+    """Create checkpoint store from parameters"""
     if backend_type == "local":
         local_path = kwargs.get("local_path", "/tmp/solstice")
-        return LocalStateBackend(local_path)
+        return LocalCheckpointStore(local_path)
 
     elif backend_type == "s3":
         s3_path = kwargs.get("s3_path")
         if not s3_path:
-            raise ValueError("s3_path is required for S3 state backend")
-        return S3StateBackend(s3_path)
+            raise ValueError("s3_path is required for S3 checkpoint store")
+        parts = s3_path.replace("s3://", "").split("/", 1)
+        bucket = parts[0]
+        prefix = parts[1] if len(parts) > 1 else ""
+        return S3CheckpointStore(bucket, prefix)
+
+    elif backend_type == "slatedb":
+        # SlateDB with configurable object store
+        path = kwargs.get("local_path", "/tmp/solstice")
+        object_store = kwargs.get("object_store", "local")
+        return SlateDBCheckpointStore(path, object_store)
 
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
@@ -86,18 +100,17 @@ def parse_kwargs(ctx, param, value):
 @click.option("--job-id", required=False, type=str, help="Job ID (auto-generated if not provided)")
 @click.option("--log-level", default="INFO", type=str, help="Logging level")
 @click.option("--checkpoint-interval", default=300, type=int, help="Checkpoint interval in seconds")
-@click.option("--checkpoint-records", default=None, type=int, help="Checkpoint interval in records")
 @click.option(
-    "--state-backend",
+    "--checkpoint-store",
     default="local",
-    type=click.Choice(["local", "s3"]),
-    help="State backend type",
+    type=click.Choice(["local", "s3", "slatedb"]),
+    help="Checkpoint store type",
 )
 @click.option(
-    "--state-path",
+    "--checkpoint-path",
     default="/tmp/solstice",
     type=str,
-    help="State backend path (local) or bucket (s3)",
+    help="Checkpoint store path (local) or bucket (s3)",
 )
 @click.pass_context
 def main(
@@ -106,9 +119,8 @@ def main(
     job_id: Optional[str],
     log_level: str,
     checkpoint_interval: int,
-    checkpoint_records: Optional[int],
-    state_backend: str,
-    state_path: str,
+    checkpoint_store: str,
+    checkpoint_path: str,
 ):
     """
     Main entry point for running Solstice Streaming jobs
@@ -171,13 +183,11 @@ def main(
     logger.info(f"Job ID: {job_id}")
 
     try:
-        # Create state backend
-        if state_backend == "local":
-            backend = create_state_backend("local", local_path=state_path)
-        else:  # s3
-            backend = create_state_backend("s3", s3_path=state_path)
-
-        logger.info(f"Created state backend: {type(backend).__name__}")
+        # Create checkpoint store
+        store = create_checkpoint_store_from_params(
+            checkpoint_store, local_path=checkpoint_path, s3_path=checkpoint_path
+        )
+        logger.info(f"Created checkpoint store: {type(store).__name__}")
 
         # Load workflow
         logger.info(f"Loading workflow: {workflow}")
@@ -190,14 +200,13 @@ def main(
         # Merge workflow config with extra kwargs
         workflow_config = {
             "checkpoint_interval_secs": checkpoint_interval,
-            "checkpoint_interval_records": checkpoint_records,
             **extra_kwargs,
         }
 
         job: Job = workflow_module.create_job(
             job_id=job_id,
             config=workflow_config,
-            state_backend=backend,
+            checkpoint_store=store,
         )
 
         runner = job.create_ray_runner()

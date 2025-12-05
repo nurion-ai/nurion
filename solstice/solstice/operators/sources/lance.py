@@ -9,7 +9,7 @@ import lance
 
 from solstice.core.models import Split, SplitPayload
 from solstice.operators.sources.source import SourceStageMaster
-from solstice.state.backend import StateBackend
+from solstice.state.store import CheckpointStore
 from solstice.core.operator import SourceOperator, OperatorConfig
 from solstice.core.stage_master import StageMasterConfig
 
@@ -106,11 +106,11 @@ class LanceSourceStageMaster(SourceStageMaster):
     def __init__(
         self,
         job_id: str,
-        state_backend: StateBackend,
+        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
         upstream_stages: List[str] | None = None,
     ):
-        super().__init__(job_id, state_backend, stage, upstream_stages)
+        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
 
         # Get the operator config which contains Lance-specific settings
         operator_cfg = stage.operator_config

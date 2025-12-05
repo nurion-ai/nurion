@@ -56,13 +56,6 @@ class OperatorConfig(ABC):
                 result[f.name] = value
         return result
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a config value by key, with optional default.
-
-        This method provides dict-like access for backward compatibility.
-        """
-        return getattr(self, key, default)
-
 
 class Operator(ABC):
     """Base class for all operators"""
@@ -88,6 +81,21 @@ class Operator(ABC):
 
 
 class SourceOperator(Operator):
+    """Base class for source operators that read data from external systems.
+
+    Source operators maintain offset tracking for checkpoint/resume capability.
+    Subclasses should update the offset after reading data using `update_offset()`.
+    """
+
+    def __init__(
+        self,
+        config: OperatorConfig,
+        worker_id: Optional[str] = None,
+    ):
+        super().__init__(config, worker_id)
+        # Offset tracking for checkpoint/resume
+        self._current_offset: Dict[str, Any] = {}
+
     @abstractmethod
     def read(self, split: Split) -> Optional[SplitPayload]:
         """Read data for a specific split.
@@ -98,6 +106,10 @@ class SourceOperator(Operator):
 
         Returns:
             SplitPayload containing the data, or None if no data available
+
+        Note:
+            Implementations should call `update_offset()` after successful reads
+            to enable checkpoint/resume functionality.
         """
         pass
 
@@ -114,6 +126,123 @@ class SourceOperator(Operator):
 
         return self.read(split)
 
+    def update_offset(self, offset: Dict[str, Any]) -> None:
+        """Update the current read offset.
+
+        Called by subclasses after successfully reading data.
+        The offset is persisted during checkpoints for resume capability.
+
+        Args:
+            offset: Dictionary containing offset information (e.g., file position,
+                   partition offset, row number, etc.)
+        """
+        self._current_offset.update(offset)
+
+    def get_offset(self) -> Dict[str, Any]:
+        """Get the current read offset for checkpointing.
+
+        Returns:
+            Dictionary containing the current offset state
+        """
+        return dict(self._current_offset)
+
+    def restore_offset(self, offset: Dict[str, Any]) -> None:
+        """Restore offset from a checkpoint.
+
+        Called during job recovery to resume from a previous position.
+
+        Args:
+            offset: Dictionary containing offset information from checkpoint
+        """
+        self._current_offset = dict(offset)
+        self.logger.info(f"Restored offset: {offset}")
+
 
 class SinkOperator(Operator):
-    """Base class for sink operators"""
+    """Base class for sink operators with exactly-once semantics support.
+
+    Sink operators can implement two-phase commit for exactly-once guarantees:
+    1. `process_split()` - Buffer/stage writes (pre-commit)
+    2. `prepare_commit()` - Prepare for commit (optional)
+    3. `commit()` - Finalize writes
+    4. `rollback()` - Rollback uncommitted writes on failure
+
+    For simpler at-least-once semantics, just implement `process_split()`.
+    """
+
+    def __init__(
+        self,
+        config: OperatorConfig,
+        worker_id: Optional[str] = None,
+    ):
+        super().__init__(config, worker_id)
+        # Track pending writes for exactly-once
+        self._pending_commit_id: Optional[str] = None
+        self._commit_offset: Dict[str, Any] = {}
+
+    def prepare_commit(self, checkpoint_id: str) -> bool:
+        """Prepare for commit (phase 1 of two-phase commit).
+
+        Called before checkpoint finalization. Implementations should
+        flush any buffered data and prepare for commit.
+
+        Args:
+            checkpoint_id: The checkpoint ID this commit is associated with
+
+        Returns:
+            True if prepare succeeded, False otherwise
+        """
+        self._pending_commit_id = checkpoint_id
+        return True
+
+    def commit(self, checkpoint_id: str) -> bool:
+        """Commit pending writes (phase 2 of two-phase commit).
+
+        Called after checkpoint is successfully finalized.
+        Implementations should finalize any staged writes.
+
+        Args:
+            checkpoint_id: The checkpoint ID to commit
+
+        Returns:
+            True if commit succeeded, False otherwise
+        """
+        if self._pending_commit_id == checkpoint_id:
+            self._pending_commit_id = None
+            return True
+        return False
+
+    def rollback(self, checkpoint_id: str) -> bool:
+        """Rollback uncommitted writes.
+
+        Called when checkpoint fails or job restarts.
+        Implementations should discard any uncommitted staged writes.
+
+        Args:
+            checkpoint_id: The checkpoint ID to rollback
+
+        Returns:
+            True if rollback succeeded, False otherwise
+        """
+        if self._pending_commit_id == checkpoint_id:
+            self._pending_commit_id = None
+        return True
+
+    def get_commit_offset(self) -> Dict[str, Any]:
+        """Get the current commit offset for checkpointing.
+
+        Returns:
+            Dictionary containing commit state information
+        """
+        return dict(self._commit_offset)
+
+    def restore_commit_offset(self, offset: Dict[str, Any]) -> None:
+        """Restore commit offset from a checkpoint.
+
+        Called during job recovery.
+
+        Args:
+            offset: Dictionary containing commit offset from checkpoint
+        """
+        self._commit_offset = dict(offset)
+        self.logger.info(f"Restored commit offset: {offset}")

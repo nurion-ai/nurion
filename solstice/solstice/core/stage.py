@@ -19,6 +19,7 @@ class Stage:
         master_config: Optional["StageMasterConfig"] = None,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
+        skip_checkpoint: bool = False,
     ):
         """
         Initialize a stage.
@@ -31,6 +32,8 @@ class Stage:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
             worker_resources: Resource requirements per worker (num_cpus, num_gpus, memory)
+            skip_checkpoint: If True, this stage will not participate in checkpoints.
+                Use for lightweight stateless operators (filter, map) to reduce I/O.
 
         Examples:
             >>> # Fixed 4 workers, no scaling
@@ -39,11 +42,12 @@ class Stage:
             >>> # Auto-scaling between 2 and 10 workers
             >>> Stage('process', MyOperatorConfig(param=value), parallelism=(2, 10))
 
-            >>> # With custom stage master config
-            >>> Stage('process', MyOperatorConfig(), master_config=MyMasterConfig())
+            >>> # Skip checkpoint for lightweight filter stage
+            >>> Stage('filter', FilterConfig(...), skip_checkpoint=True)
         """
         self.stage_id = stage_id
         self.operator_config = operator_config
+        self.skip_checkpoint = skip_checkpoint
 
         from solstice.core.stage_master import StageMasterConfig, DefaultStageMasterConfig
 
@@ -68,9 +72,9 @@ class Stage:
 
         # Default worker resources
         self.worker_resources = worker_resources or {
-            "num_cpus": 1,
+            "num_cpus": 0.5,
             "num_gpus": 0,
-            "memory": 2 * 1024**3,  # 2GB
+            "memory": 500 * 1024**2,  # 500MB
         }
 
         self.logger = logging.getLogger(f"Stage-{stage_id}")
@@ -89,4 +93,5 @@ class Stage:
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,
+            "skip_checkpoint": self.skip_checkpoint,
         }
