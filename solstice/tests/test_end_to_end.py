@@ -13,7 +13,7 @@ from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.runtime.local_runner import LocalJobRunner
-from solstice.state.backend import LocalStateBackend
+from solstice.state.store import LocalCheckpointStore
 
 
 @dataclass
@@ -82,8 +82,8 @@ ManualSourceConfig.operator_class = ManualSourceOperator
 
 
 def make_job(tmp_path, stages: List[Stage]) -> Job:
-    backend = LocalStateBackend(str(tmp_path / "state"))
-    job = Job(job_id="local-runner-tests", state_backend=backend)
+    store = LocalCheckpointStore(str(tmp_path / "checkpoints"))
+    job = Job(job_id="local-runner-tests", checkpoint_store=store)
     for stage in stages:
         upstream = []
         if stage.stage_id != stages[0].stage_id:

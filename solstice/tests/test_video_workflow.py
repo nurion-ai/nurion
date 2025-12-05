@@ -15,6 +15,7 @@ from tests.utils.video_dataset import ensure_video_metadata_table
 logger = logging.getLogger("test")
 
 
+@pytest.mark.integration
 @pytest.mark.timeout(1200)
 def test_video_slice_workflow_with_ray():
     """Verify scene detection, slicing, filtering, and hashing on real binaries."""
