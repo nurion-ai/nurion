@@ -34,6 +34,7 @@ Example:
 from solstice.queue.backend import QueueBackend, Record, QueueConfig
 from solstice.queue.memory import MemoryBackend
 from solstice.queue.tansu import TansuBackend
+from solstice.queue.ray_backend import RayBackend, QueueActor
 
 __all__ = [
     "QueueBackend",
@@ -41,4 +42,6 @@ __all__ = [
     "QueueConfig",
     "MemoryBackend",
     "TansuBackend",
+    "RayBackend",
+    "QueueActor",
 ]
