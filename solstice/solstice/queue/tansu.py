@@ -132,8 +132,9 @@ class TansuBackend(QueueBackend):
         """Start the Tansu broker subprocess."""
         cmd = [
             self.tansu_binary, "broker",
-            "--storage", self.storage_url,
-            "--kafka-listener", f"tcp://0.0.0.0:{self.port}",
+            "--storage-engine", self.storage_url,
+            "--listener-url", f"tcp://0.0.0.0:{self.port}",
+            "--advertised-listener-url", f"tcp://localhost:{self.port}",
         ]
         
         if self.data_dir:
@@ -166,6 +167,8 @@ class TansuBackend(QueueBackend):
         import socket
         
         start_time = time.time()
+        connected = False
+        
         while time.time() - start_time < self.startup_timeout:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -173,6 +176,13 @@ class TansuBackend(QueueBackend):
                 result = sock.connect_ex(("localhost", self.port))
                 sock.close()
                 if result == 0:
+                    if not connected:
+                        self.logger.info("Tansu broker port is open, waiting for initialization...")
+                        connected = True
+                        # Give Tansu extra time to fully initialize after port opens
+                        # S3 storage may need more time to initialize
+                        await asyncio.sleep(10.0)
+                        continue
                     self.logger.info("Tansu broker is ready")
                     return
             except Exception:
@@ -317,16 +327,20 @@ class TansuBackend(QueueBackend):
     
     async def _get_consumer(self, topic: str) -> object:
         """Get or create a consumer for the topic."""
+        from aiokafka import AIOKafkaConsumer, TopicPartition
+        
         if topic not in self._consumers:
-            from aiokafka import AIOKafkaConsumer
-            
             consumer = AIOKafkaConsumer(
-                topic,
                 bootstrap_servers=f"localhost:{self.port}",
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
             )
             await consumer.start()
+            
+            # Manually assign partition
+            tp = TopicPartition(topic, 0)
+            consumer.assign([tp])
+            
             self._consumers[topic] = consumer
         
         return self._consumers[topic]
@@ -351,8 +365,8 @@ class TansuBackend(QueueBackend):
         records = []
         try:
             batch = await asyncio.wait_for(
-                consumer.getmany(tp, max_records=max_records),
-                timeout=timeout_ms / 1000,
+                consumer.getmany(tp, max_records=max_records, timeout_ms=timeout_ms),
+                timeout=(timeout_ms / 1000) + 1,  # Extra second for safety
             )
             
             for tp_records in batch.values():
