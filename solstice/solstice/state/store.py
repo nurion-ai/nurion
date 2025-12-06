@@ -55,6 +55,7 @@ class StageCheckpointData:
     """Checkpoint data for a stage.
 
     Tracks which splits have been completed and which are in-flight.
+    Also tracks upstream cursors for Pull-based data flow.
     """
 
     stage_id: str
@@ -68,6 +69,10 @@ class StageCheckpointData:
     # Stage-level offset (e.g., for source stages)
     offset: Dict[str, Any] = field(default_factory=dict)
 
+    # Upstream cursors for Pull-based data flow
+    # Maps upstream_stage_id -> {"cursor": int, "finished": bool}
+    upstream_cursors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
     # Last checkpoint ID this stage was part of
     last_checkpoint_id: Optional[str] = None
 
@@ -79,6 +84,7 @@ class StageCheckpointData:
             "completed_splits": list(self.completed_splits),
             "inflight_splits": list(self.inflight_splits),
             "offset": self.offset,
+            "upstream_cursors": self.upstream_cursors,
             "last_checkpoint_id": self.last_checkpoint_id,
             "timestamp": self.timestamp,
         }
@@ -90,6 +96,7 @@ class StageCheckpointData:
             completed_splits=set(data.get("completed_splits", [])),
             inflight_splits=set(data.get("inflight_splits", [])),
             offset=data.get("offset", {}),
+            upstream_cursors=data.get("upstream_cursors", {}),
             last_checkpoint_id=data.get("last_checkpoint_id"),
             timestamp=data.get("timestamp", time.time()),
         )

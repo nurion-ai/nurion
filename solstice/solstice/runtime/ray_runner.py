@@ -31,9 +31,7 @@ class RayJobRunner:
 
         self._initialized = False
         self._running = False
-        self._topology: List[str] = []
         self._reverse_dag: Dict[str, List[str]] = {}
-        self._sink_stage_ids: List[str] = []
 
         self.job.attach_ray_runner(self)
 
@@ -84,7 +82,6 @@ class RayJobRunner:
                 .options(name=actor_name, max_concurrency=10, num_cpus=0.2)
                 .remote(
                     job_id=self.job.job_id,
-                    checkpoint_store=self.job.checkpoint_store,
                     upstream_stages=upstream_stages,
                     stage=stage,
                 )
@@ -96,44 +93,29 @@ class RayJobRunner:
             if not stage.skip_checkpoint:
                 self.checkpoint_manager.register_stage(stage_id)
 
+        # Configure upstream references for Pull-based data flow
+        # Each stage pulls from its upstreams (reverse of the old push model)
         for stage_id, actor_ref in self.stage_actor_refs.items():
-            downstream_ids = self.job.dag_edges.get(stage_id, [])
-            downstream_mapping = {
-                downstream_id: self.stage_actor_refs[downstream_id]
-                for downstream_id in downstream_ids
-                if downstream_id in self.stage_actor_refs
+            upstream_ids = self._reverse_dag.get(stage_id, [])
+            upstream_mapping = {
+                upstream_id: self.stage_actor_refs[upstream_id]
+                for upstream_id in upstream_ids
+                if upstream_id in self.stage_actor_refs
             }
-            ray.get(actor_ref.configure_downstream.remote(downstream_mapping))
-
-        self._topology = self._compute_topology()
-        self._sink_stage_ids = [
-            stage_id for stage_id in self.job.stages if not self.job.dag_edges.get(stage_id)
-        ]
+            ray.get(actor_ref.configure_upstream.remote(upstream_mapping))
 
         self._initialized = True
         self.logger.info(
             "Initialized %d stages for job %s", len(self.stage_actor_refs), self.job.job_id
         )
 
+        # Auto-restore from checkpoint if available
+        if self.job.checkpoint_config.enabled:
+            self._try_restore_from_checkpoint()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _compute_topology(self) -> list[str]:
-        visited = set[str]()
-        order = list[str]()
-
-        def visit(stage_id: str) -> None:
-            if stage_id in visited:
-                return
-            visited.add(stage_id)
-            for upstream in self._reverse_dag.get(stage_id, []):
-                visit(upstream)
-            order.append(stage_id)
-
-        for stage_id in self.job.stages.keys():
-            visit(stage_id)
-        return order
-
     def _start_stage_loops(self) -> None:
         if not self.stage_actor_refs:
             return
@@ -185,41 +167,26 @@ class RayJobRunner:
         self.stage_run_refs.clear()
 
     def _is_pipeline_idle(self) -> bool:
+        """Check if all stages are idle (no pending work and upstreams finished)."""
         if not self.stage_actor_refs:
             return True
 
-        stage_statuses: Dict[str, StageStatus] = {}
         for stage_id, actor_ref in self.stage_actor_refs.items():
-            stage_statuses[stage_id] = ray.get(actor_ref.get_stage_status.remote())
+            status: StageStatus = ray.get(actor_ref.get_stage_status.remote())
 
-        # Check for failed stages (fail-fast)
-        for stage_id, status in stage_statuses.items():
+            # Check for failed stages (fail-fast)
             if status.failed:
                 self.logger.error(f"Stage {stage_id} failed: {status.failure_message}")
                 raise RuntimeError(f"Stage {stage_id} failed: {status.failure_message}")
 
-        return self._are_stage_statuses_idle(stage_statuses)
-
-    @staticmethod
-    def _stage_has_work(status: StageStatus) -> bool:
-        return status.pending_splits > 0 or status.active_splits > 0 or status.inflight_results > 0
-
-    @staticmethod
-    def _upstreams_finished(status: StageStatus) -> bool:
-        if not status.upstream_finished:
-            return True
-        return all(status.upstream_finished.values())
-
-    @classmethod
-    def _are_stage_statuses_idle(cls, stage_statuses: Dict[str, StageStatus]) -> bool:
-        if not stage_statuses:
-            return True
-
-        for status in stage_statuses.values():
-            if not cls._upstreams_finished(status):
+            # Check if upstreams are finished
+            if status.upstream_finished and not all(status.upstream_finished.values()):
                 return False
-            if cls._stage_has_work(status):
+
+            # Check if stage has pending work
+            if status.pending_splits > 0 or status.active_splits > 0 or status.inflight_results > 0:
                 return False
+
         return True
 
     def run(self, poll_interval: float = 0.05, timeout: Optional[float] = None) -> None:
@@ -315,6 +282,27 @@ class RayJobRunner:
     # ------------------------------------------------------------------
     # Checkpointing
     # ------------------------------------------------------------------
+    def _try_restore_from_checkpoint(self) -> bool:
+        """Auto-restore from the latest checkpoint if available.
+
+        Called during initialization to resume from a previous checkpoint.
+        Returns True if restored, False if no checkpoint available.
+        """
+        if self.checkpoint_manager is None:
+            return False
+
+        checkpoint_id = self.checkpoint_manager.get_latest_checkpoint_id()
+        if not checkpoint_id:
+            self.logger.debug("No checkpoint found for job %s", self.job.job_id)
+            return False
+
+        self.logger.info(
+            "Found checkpoint %s for job %s, attempting auto-restore",
+            checkpoint_id,
+            self.job.job_id,
+        )
+        return self._restore_stages_from_checkpoint(checkpoint_id)
+
     def trigger_checkpoint(self) -> Optional[str]:
         """Manually trigger a checkpoint."""
         if not self._running:
@@ -329,7 +317,14 @@ class RayJobRunner:
         return self.checkpoint_manager.get_latest_checkpoint_id()
 
     def restore_from_checkpoint(self, checkpoint_id: Optional[str] = None) -> bool:
-        """Restore job state from a checkpoint."""
+        """Restore job state from a checkpoint.
+
+        Args:
+            checkpoint_id: Specific checkpoint to restore, or latest if None
+
+        Returns:
+            True if restored successfully
+        """
         if not self._initialized:
             self.initialize()
 
@@ -344,14 +339,16 @@ class RayJobRunner:
                 return False
 
         self.logger.info("Restoring job %s from checkpoint %s", self.job.job_id, checkpoint_id)
+        return self._restore_stages_from_checkpoint(checkpoint_id)
 
-        # Load checkpoint manifest
+    def _restore_stages_from_checkpoint(self, checkpoint_id: str) -> bool:
+        """Internal: restore all stages from a checkpoint manifest."""
         manifest = self.checkpoint_manager.load_checkpoint(checkpoint_id)
         if not manifest:
-            self.logger.error("Failed to load checkpoint %s", checkpoint_id)
+            self.logger.warning("Failed to load checkpoint %s", checkpoint_id)
             return False
 
-        # Restore each stage
+        restored_count = 0
         for stage_id, stage_data in manifest.stages.items():
             if stage_id in self.stage_actor_refs:
                 try:
@@ -361,12 +358,15 @@ class RayJobRunner:
                         ),
                         timeout=60,
                     )
+                    restored_count += 1
                 except Exception as e:
-                    self.logger.error(f"Failed to restore stage {stage_id}: {e}")
-                    return False
+                    self.logger.warning(f"Failed to restore stage {stage_id}: {e}")
 
-        self.logger.info("Successfully restored job %s from %s", self.job.job_id, checkpoint_id)
-        return True
+        if restored_count > 0:
+            self.logger.info("Restored %d stages from checkpoint %s", restored_count, checkpoint_id)
+            return True
+
+        return False
 
     def list_checkpoints(self) -> List[str]:
         """List available checkpoints."""
@@ -407,23 +407,6 @@ class RayJobRunner:
         except Exception as exc:
             self.logger.error("Failed to collect metrics: %s", exc)
             return {}
-
-    def wait_for_completion(self, timeout: Optional[float] = None) -> None:
-        if not self._running:
-            self.run()
-            return
-
-        deadline = time.time() + timeout if timeout is not None else None
-        while self._running:
-            self._check_stage_run_refs()
-            if self._is_pipeline_idle():
-                self._stop()
-                break
-
-            time.sleep(0.5)
-
-            if deadline is not None and time.time() > deadline:
-                raise TimeoutError(f"Timeout while waiting for job {self.job.job_id} to complete.")
 
     # ------------------------------------------------------------------
     # Properties

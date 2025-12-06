@@ -395,3 +395,5 @@ class TestIntegration:
             print(f"Source produced {latest} messages")
         
         await runner.stop()
+
+

@@ -1,82 +1,72 @@
-"""Operator Master interface for operator-specific control logic."""
+"""Source stage master for operator-specific control logic."""
 
 import time
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Iterator, List, Optional
+from typing import TYPE_CHECKING, Iterator
 
 from solstice.core.models import Split
 from solstice.core.stage_master import StageMasterActor
-from solstice.state.store import CheckpointStore
 
 if TYPE_CHECKING:
-    from solstice.core.stage import Stage
+    pass
 
 
 class SourceStageMaster(StageMasterActor):
-    """Master for source operators that handles split planning and generation."""
+    """Master for source stages that generates splits internally.
 
-    def __init__(
-        self,
-        job_id: str,
-        checkpoint_store: Optional[CheckpointStore],
-        stage: "Stage",
-        upstream_stages: List[str] | None = None,
-    ):
-        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
-
-        self.logger.info(f"Source operator master for stage {self.stage_id}")
+    Unlike regular stages that pull from upstream, source stages generate
+    their own splits via the abstract `plan_splits()` method.
+    """
 
     def run(self, poll_interval: float = 0.05) -> bool:
+        """Run loop for source stages - generates splits instead of pulling."""
         if self._running:
             return False
         self._running = True
-        self.logger.info(f"Stage {self.stage_id} run loop started")
+
         try:
-            split_iterator = self.fetch_splits()
-            has_more_splits = True
+            split_iterator = self.plan_splits()
+            has_more = True
 
-            def need_running() -> bool:
-                return self._running and (
-                    has_more_splits
-                    or len(self._pending_splits) > 0
-                    or len(self._inflight_results) > 0
-                )
-
-            while need_running():
-                self.logger.debug("This is a source stage, requesting splits from source")
-                has_more_splits = self._request_splits_from_source(split_iterator)
+            while (
+                not self._failed
+                and self._running
+                and (has_more or self._pending_splits or self._inflight_results)
+            ):
+                has_more = self._generate_splits(split_iterator)
                 self._schedule_pending_splits()
                 self._drain_completed_results(timeout=poll_interval * 2)
+                self.output_buffer.gc()
                 time.sleep(poll_interval)
-            for actor_ref in self.downstream_stage_refs.values():
-                actor_ref.set_upstream_finished.remote(self.stage_id)
-            self._running = False
+
+            if self._failed and self._failure_exception:
+                raise self._failure_exception
+
+            self.output_buffer.mark_upstream_finished()
             return True
         finally:
-            self.logger.info(f"Stage {self.stage_id} run loop stopped")
             self._running = False
-            return False
+            self._cleanup_workers()
 
-    def _request_splits_from_source(self, split_iterator: Iterator[Split]) -> bool:
-        available_capacity = self.max_queue_size - len(self._pending_splits)
-        if available_capacity <= 0:
-            return True  # Still has capacity, iterator might have more splits
+    def _generate_splits(self, split_iterator: Iterator[Split]) -> bool:
+        """Generate splits from the source iterator. Returns True if more splits may exist."""
+        if self._backpressure or len(self._pending_splits) >= self._max_queue_size:
+            return True
 
         try:
             for split in split_iterator:
-                self.enqueue_split(split)
-                if self.backpressure_active:
-                    self.logger.warning(
-                        f"Backpressure active for stage {self.stage_id}, stop enqueuing splits"
-                    )
-                    return True  # Iterator might still have more splits
-            # Iterator exhausted
+                if self.checkpoint_tracker.is_split_completed(split.split_id):
+                    continue
+                self._pending_splits.append(split)
+                if len(self._pending_splits) >= self._max_queue_size:
+                    self._backpressure = True
+                    return True
             return False
         except StopIteration:
-            # Iterator exhausted
             return False
 
     @abstractmethod
-    def fetch_splits(self) -> Iterator[Split]:
-        raise NotImplementedError("fetch_splits must be implemented by subclasses")
+    def plan_splits(self) -> Iterator[Split]:
+        """Plan and generate splits for this source stage."""
+        raise NotImplementedError("plan_splits must be implemented by subclasses")

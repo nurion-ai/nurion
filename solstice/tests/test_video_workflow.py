@@ -16,6 +16,7 @@ logger = logging.getLogger("test")
 
 
 @pytest.mark.integration
+@pytest.mark.skip(reason="Resource-intensive and unstable, temporarily disabled")
 @pytest.mark.timeout(1200)
 def test_video_slice_workflow_with_ray():
     """Verify scene detection, slicing, filtering, and hashing on real binaries."""

@@ -24,6 +24,22 @@ from solstice.state.store import LocalCheckpointStore
 
 logger = logging.getLogger(__name__)
 
+# Ray init kwargs to exclude large test data files
+RAY_INIT_KWARGS = {
+    "ignore_reinit_error": True,
+    "num_cpus": 4,
+    "include_dashboard": False,  # Don't start dashboard in tests
+    "runtime_env": {
+        "excludes": [
+            "tests/testdata/",
+            "*.mp4",
+            "*.tar.gz",
+            "*.lance",
+            ".cache/",
+        ]
+    },
+}
+
 
 # =============================================================================
 # Simple test operators for checkpoint testing
@@ -61,8 +77,8 @@ class SimpleSourceMasterConfig(StageMasterConfig):
 class SimpleSourceMaster(StageMasterActor):
     """Source master that generates test splits."""
 
-    def __init__(self, job_id, checkpoint_store, stage, upstream_stages):
-        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
+    def __init__(self, job_id, stage, upstream_stages):
+        super().__init__(job_id, stage, upstream_stages)
         self.num_items = getattr(stage.master_config, "num_items", 5)
         self._generated = False
 
@@ -77,7 +93,8 @@ class SimpleSourceMaster(StageMasterActor):
                     split = Split(
                         split_id=f"source:{i}", stage_id=self.stage_id, data_range={"idx": i}
                     )
-                    self.enqueue_split(split)
+                    # Direct append to pending queue (source generates its own splits)
+                    self._pending_splits.append(split)
                 self._generated = True
 
             while self._running and (self._pending_splits or self._inflight_results):
@@ -85,8 +102,8 @@ class SimpleSourceMaster(StageMasterActor):
                 self._drain_completed_results(timeout=poll_interval * 2)
                 time.sleep(poll_interval)
 
-            for actor_ref in self.downstream_stage_refs.values():
-                actor_ref.set_upstream_finished.remote(self.stage_id)
+            # Mark output buffer as finished for downstream to detect
+            self.output_buffer.mark_upstream_finished()
             return True
         finally:
             self._running = False
@@ -122,6 +139,41 @@ SlowProcessorConfig.operator_class = SlowProcessor
 
 
 @dataclass
+class TrackingProcessorConfig(OperatorConfig):
+    """Config for processor that tracks which splits it processes."""
+
+    tracking_file: str = ""
+    delay_secs: float = 0.1
+
+
+class TrackingProcessor(Operator):
+    """Processor that records which splits it processes to a file."""
+
+    def process_split(
+        self, split: Split, payload: Optional[SplitPayload] = None
+    ) -> Optional[SplitPayload]:
+        if payload is None:
+            return None
+
+        time.sleep(self.config.delay_secs)
+
+        # Record this split was processed using split.split_id (not payload.split_id)
+        # This must match what checkpoint_tracker uses for is_split_completed()
+        tracking_file = self.config.tracking_file
+        if tracking_file:
+            with open(tracking_file, "a") as f:
+                f.write(f"{split.split_id}\n")
+
+        data = payload.data.to_pylist()
+        for row in data:
+            row["processed"] = True
+        return SplitPayload(data=pa.Table.from_pylist(data), split_id=payload.split_id)
+
+
+TrackingProcessorConfig.operator_class = TrackingProcessor
+
+
+@dataclass
 class SimpleSinkConfig(OperatorConfig):
     """Config for simple sink."""
 
@@ -147,6 +199,7 @@ def create_simple_test_job(
     checkpoint_store: LocalCheckpointStore,
     num_items: int = 5,
     checkpoint_interval: int = 2,
+    tracking_file: Optional[str] = None,
 ) -> Job:
     """Create a simple test job for checkpoint testing."""
     job = Job(
@@ -169,9 +222,14 @@ def create_simple_test_job(
     )
 
     # Processor - needs checkpoint
+    if tracking_file:
+        processor_config = TrackingProcessorConfig(tracking_file=tracking_file, delay_secs=1.0)
+    else:
+        processor_config = SlowProcessorConfig(delay_secs=0.3)
+
     processor = Stage(
         stage_id="processor",
-        operator_config=SlowProcessorConfig(delay_secs=0.3),
+        operator_config=processor_config,
         parallelism=1,
         skip_checkpoint=False,
     )
@@ -197,9 +255,10 @@ class TestCheckpointWithWorkflow:
     @pytest.fixture(autouse=True)
     def setup(self, tmp_path: Path):
         """Setup test environment."""
-        # Ensure Ray is initialized
-        if not ray.is_initialized():
-            ray.init(ignore_reinit_error=True, num_cpus=4)
+        # Ensure Ray is initialized with proper excludes
+        if ray.is_initialized():
+            ray.shutdown()
+        ray.init(**RAY_INIT_KWARGS)
 
         self.tmp_path = tmp_path
         self.checkpoint_dir = tmp_path / "checkpoints"
@@ -260,14 +319,14 @@ class TestCheckpointWithWorkflow:
         finally:
             store.close()
 
-    def test_checkpoint_restoration(self):
-        """Test restoring from a checkpoint."""
+    def test_checkpoint_manual_restoration(self):
+        """Test manually restoring from a checkpoint."""
         store = LocalCheckpointStore(str(self.checkpoint_dir))
 
         try:
             # First run - create checkpoint
             job1 = create_simple_test_job(
-                "test_restore",
+                "test_manual_restore",
                 store,
                 num_items=10,
                 checkpoint_interval=1,
@@ -281,14 +340,14 @@ class TestCheckpointWithWorkflow:
             logger.info(f"Checkpoints after run 1: {checkpoints}")
             runner1.shutdown()
 
-            # Second run - restore from checkpoint
+            # Second run - manually restore from checkpoint
             if checkpoints:
                 # Reinit Ray for clean state
                 ray.shutdown()
-                ray.init(ignore_reinit_error=True, num_cpus=4)
+                ray.init(**RAY_INIT_KWARGS)
 
                 job2 = create_simple_test_job(
-                    "test_restore",
+                    "test_manual_restore",
                     store,
                     num_items=10,
                     checkpoint_interval=1,
@@ -308,3 +367,149 @@ class TestCheckpointWithWorkflow:
                 logger.info("No checkpoints created (job completed too fast)")
         finally:
             store.close()
+
+    def test_checkpoint_auto_restoration(self):
+        """Test that checkpoint restoration skips already-processed splits.
+
+        This test verifies:
+        1. First run processes PART of the splits, then stops
+        2. Second run restores checkpoint and processes REMAINING splits
+        3. Two runs have NO overlap (intersection is empty)
+        4. Two runs together process ALL splits (union equals full set)
+        """
+        import threading
+        import uuid
+
+        # Use unique job_id to avoid interference from other tests
+        job_id = f"test_auto_restore_{uuid.uuid4().hex[:8]}"
+        num_items = 20
+        tracking_file = str(self.tmp_path / "processed_splits.txt")
+        stop_after = 8  # Stop first run after processing this many
+
+        store = LocalCheckpointStore(str(self.checkpoint_dir))
+
+        try:
+            # First run - process PART of items then stop
+            job1 = create_simple_test_job(
+                job_id,
+                store,
+                num_items=num_items,
+                checkpoint_interval=1,
+                tracking_file=tracking_file,
+            )
+
+            runner1 = job1.create_ray_runner()
+            runner1.initialize()
+
+            # Run in background so we can monitor and stop
+            stop_event = threading.Event()
+
+            def run_until_stopped():
+                try:
+                    while not stop_event.is_set():
+                        # Check if we've processed enough
+                        if Path(tracking_file).exists():
+                            with open(tracking_file) as f:
+                                count = len([line for line in f if line.strip()])
+                            if count >= stop_after:
+                                stop_event.set()
+                                break
+                        time.sleep(0.1)
+                except Exception:
+                    pass
+
+            monitor = threading.Thread(target=run_until_stopped, daemon=True)
+            monitor.start()
+
+            # Run job in background
+            def run_job():
+                try:
+                    runner1.run(timeout=60)
+                except Exception:
+                    pass
+
+            job_thread = threading.Thread(target=run_job, daemon=True)
+            job_thread.start()
+
+            # Wait for stop condition
+            stop_event.wait(timeout=30)
+            time.sleep(0.5)  # Let last checkpoint complete
+
+            # Get checkpoint data before shutdown
+            checkpoints = runner1.list_checkpoints()
+            logger.info(f"Checkpoints after partial run: {checkpoints}")
+            assert len(checkpoints) > 0, "Expected at least one checkpoint"
+
+            latest_ckpt = checkpoints[-1]
+            manifest = runner1.checkpoint_manager.load_checkpoint(latest_ckpt)
+            checkpointed_splits = set()
+            if manifest and "processor" in manifest.stages:
+                checkpointed_splits = set(manifest.stages["processor"].completed_splits)
+
+            runner1.shutdown()
+            job_thread.join(timeout=2)
+
+            logger.info(f"First run checkpointed {len(checkpointed_splits)} splits")
+
+            # First run should NOT have processed all items
+            assert len(checkpointed_splits) > 0, "Expected some checkpointed splits"
+            assert len(checkpointed_splits) < num_items, (
+                f"First run should NOT process all {num_items} items, got {len(checkpointed_splits)}"
+            )
+
+            # Clear tracking file for second run
+            Path(tracking_file).unlink()
+
+            store.close()
+            ray.shutdown()
+            ray.init(**RAY_INIT_KWARGS)
+
+            # Second run - should restore and process REMAINING splits only
+            store2 = LocalCheckpointStore(str(self.checkpoint_dir))
+
+            job2 = create_simple_test_job(
+                job_id,
+                store2,
+                num_items=num_items,
+                checkpoint_interval=1,
+                tracking_file=tracking_file,
+            )
+
+            runner2 = job2.create_ray_runner()
+            runner2.initialize()
+            runner2.run(timeout=60)
+            runner2.shutdown()
+
+            # Read splits processed in second run
+            second_run_splits = set()
+            if Path(tracking_file).exists():
+                with open(tracking_file) as f:
+                    second_run_splits = {line.strip() for line in f if line.strip()}
+
+            logger.info(f"Second run processed {len(second_run_splits)} splits")
+
+            # KEY VERIFICATION 1: No overlap (intersection is empty)
+            overlap = checkpointed_splits & second_run_splits
+            assert len(overlap) == 0, (
+                f"OVERLAP DETECTED! These splits were processed twice: {overlap}"
+            )
+
+            # KEY VERIFICATION 2: Union equals full set
+            all_processed = checkpointed_splits | second_run_splits
+            assert len(all_processed) == num_items, (
+                f"INCOMPLETE! Expected {num_items} total, got {len(all_processed)}. "
+                f"First run: {len(checkpointed_splits)}, Second run: {len(second_run_splits)}, "
+                f"Missing: {num_items - len(all_processed)}"
+            )
+
+            logger.info(
+                f"SUCCESS: First run={len(checkpointed_splits)}, "
+                f"Second run={len(second_run_splits)}, "
+                f"Total={len(all_processed)}, No overlap!"
+            )
+
+            store2.close()
+
+        except Exception:
+            store.close()
+            raise

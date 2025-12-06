@@ -450,3 +450,5 @@ class TestExactlyOnce:
         # First remaining message should be msg_3
         first_msg = QueueMessage.from_bytes(remaining[0].value)
         assert first_msg.message_id == "msg_3"
+
+

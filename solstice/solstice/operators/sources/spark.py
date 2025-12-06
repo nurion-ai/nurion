@@ -12,7 +12,6 @@ from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
 from solstice.core.stage_master import StageMasterConfig
 from solstice.operators.sources.source import SourceStageMaster
-from solstice.state.store import CheckpointStore
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession, DataFrame
@@ -158,11 +157,10 @@ class SparkSourceStageMaster(SourceStageMaster):
     def __init__(
         self,
         job_id: str,
-        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
         upstream_stages: Optional[List[str]] = None,
     ):
-        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
+        super().__init__(job_id, stage, upstream_stages)
         config = stage.master_config
         if not isinstance(config, SparkSourceStageMasterConfig):
             raise TypeError(f"Expected SparkSourceStageMasterConfig, got {type(config)}")
