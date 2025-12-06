@@ -839,4 +839,243 @@ Worker pull model:
 
 ---
 
+## Implementation Progress (December 6, 2025)
+
+### Completed Work
+
+#### 1. Queue Backend Infrastructure (`solstice/queue/`)
+
+| File | Description | Status |
+|------|-------------|--------|
+| `backend.py` | `QueueBackend` abstract interface | ✅ Done |
+| `memory.py` | `MemoryBackend` - in-process queue | ✅ Done, 23 tests |
+| `ray_backend.py` | `RayBackend` - shared queue via Ray actor | ✅ Done |
+| `tansu.py` | `TansuBackend` - subprocess broker | ✅ Done (memory mode) |
+
+**Key interfaces:**
+```python
+class QueueBackend(ABC):
+    async def produce(topic, value, key) -> int  # Returns offset
+    async def fetch(topic, offset, max_records) -> List[Record]
+    async def commit_offset(group, topic, offset)
+    async def get_committed_offset(group, topic) -> Optional[int]
+```
+
+#### 2. Stage Master V2 (`solstice/core/stage_master_v2.py`)
+
+| Component | Description | Status |
+|-----------|-------------|--------|
+| `StageMasterV2` | Simplified master, manages output queue only | ✅ Done |
+| `StageWorkerV2` | Self-scheduling worker, pulls from upstream | ✅ Done |
+| `StageConfigV2` | Config with queue_type selection | ✅ Done |
+| `QueueEndpoint` | Serializable endpoint for workers | ✅ Done |
+
+**Architecture change:**
+```
+V1 (Old): Master-to-Master Push
+  [Master1] --push--> [Master2] --push--> [Master3]
+
+V2 (New): Worker Pull
+  [Queue1] <--pull-- [Workers] --produce--> [Queue2]
+```
+
+#### 3. Runner V2 (`solstice/runtime/ray_runner_v2.py`)
+
+| Component | Description | Status |
+|-----------|-------------|--------|
+| `RayJobRunnerV2` | Async runner using V2 architecture | ✅ Done |
+| `run_pipeline()` | Convenience function | ✅ Done |
+| Topological ordering | Stage initialization order | ✅ Done |
+
+#### 4. Legacy Deprecation
+
+| File | Status | Migration Target |
+|------|--------|------------------|
+| `stage_master.py` | ⚠️ Deprecated | `stage_master_v2.py` |
+| `worker.py` | ⚠️ Deprecated | `StageWorkerV2` |
+| `output_buffer.py` | ⚠️ Deprecated | `solstice.queue` |
+
+### Test Coverage
+
+| Test File | Tests | Status |
+|-----------|-------|--------|
+| `test_queue_backend.py` | 25 | ✅ All pass |
+| `test_stage_master_v2.py` | 13 | ✅ All pass |
+| `test_pipeline_v2.py` | 7 | ✅ All pass |
+| `test_tansu_s3.py` | 1 memory, 3 S3 skipped | ✅ Memory pass |
+
+### Git Commits (feat-backpressure branch)
+
+```
+6d93893 Fix TansuBackend and add S3 test infrastructure
+d260ce7 Mark legacy modules as deprecated, add v2 exports
+ff95f12 Add RayJobRunnerV2 and end-to-end pipeline tests
+7c6d0f1 Add stage_master_v2 with worker pull model architecture
+f5ec91b Add queue backend infrastructure for stream-based architecture
+```
+
+---
+
+## Remaining Work
+
+### High Priority
+
+1. **Tansu S3 Backend**
+   - Issue: Tansu needs `--features dynostore` to support S3
+   - Built Tansu with `--all-features` but S3 initialization still hangs
+   - Need to debug Tansu's S3 configuration (endpoint, auth)
+   - Workaround: Use `memory://` storage for testing
+
+2. **Integrate V2 with Existing Workflows**
+   - `examples/test_video_slice.py` uses legacy `LocalStateBackend` (not found)
+   - Need to update workflows to use V2 runner
+   - Or keep legacy runner for backward compatibility
+
+3. **Exactly-Once Processing Loop**
+   - Current `StageWorkerV2._process_from_upstream()` has basic logic
+   - Need to verify: produce output THEN commit input offset
+   - Add crash recovery tests
+
+### Medium Priority
+
+4. **Multi-Stage Pipeline Integration Test**
+   - Source → Transform → Sink with actual data
+   - Verify data flows correctly through queues
+   - Test crash/restart recovery
+
+5. **Performance Benchmarks**
+   - Target: 10K msg/s throughput
+   - Measure: produce/fetch latency
+   - Compare: MemoryBackend vs RayBackend vs TansuBackend
+
+6. **Topic Cleanup / GC**
+   - Old messages need garbage collection
+   - Based on minimum committed offset across consumers
+
+### Low Priority
+
+7. **Multi-Partition Support**
+   - Current: single partition (partition=0)
+   - Future: parallel partitions for higher throughput
+
+8. **Cross-Node Queue Access**
+   - TansuBackend: works (network broker)
+   - RayBackend: works (Ray actor serializable)
+   - MemoryBackend: single-process only
+
+---
+
+## Key Code Locations
+
+### New V2 Architecture
+
+```
+solstice/
+├── queue/
+│   ├── __init__.py          # Exports: QueueBackend, MemoryBackend, RayBackend, TansuBackend
+│   ├── backend.py            # Abstract interface
+│   ├── memory.py             # In-process queue
+│   ├── ray_backend.py        # Ray actor-based shared queue
+│   └── tansu.py              # Tansu subprocess broker
+├── core/
+│   ├── __init__.py           # Exports V2 classes
+│   └── stage_master_v2.py    # StageMasterV2, StageWorkerV2, StageConfigV2
+└── runtime/
+    ├── __init__.py           # Exports RayJobRunnerV2
+    └── ray_runner_v2.py      # Async runner
+```
+
+### Usage Example
+
+```python
+from solstice.core import StageMasterV2, StageConfigV2, QueueType
+from solstice.runtime import RayJobRunnerV2, run_pipeline
+from solstice.queue import RayBackend, TansuBackend
+
+# Create job
+job = Job(job_id="my_pipeline")
+job.add_stage(Stage(stage_id="source", operator_config=SourceConfig()))
+job.add_stage(Stage(stage_id="transform", operator_config=TransformConfig()),
+              upstream_stages=["source"])
+
+# Run with V2 architecture
+status = await run_pipeline(job, queue_type=QueueType.RAY)
+print(f"Completed in {status.elapsed_time:.2f}s")
+```
+
+### Tansu Configuration
+
+```python
+# Memory storage (for testing)
+backend = TansuBackend(storage_url="memory://", port=9092)
+
+# S3 storage (production) - requires AWS env vars
+backend = TansuBackend(
+    storage_url="s3://bucket/prefix",
+    port=9092,
+)
+
+# Required env vars for S3:
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT, AWS_REGION
+```
+
+### RayBackend for Distributed Testing
+
+```python
+# Master creates backend
+backend = RayBackend()
+await backend.start()
+actor_ref = backend.get_actor_ref()
+
+# Worker connects via actor ref (serializable)
+worker_backend = RayBackend.from_actor_ref(actor_ref)
+await worker_backend.start()
+
+# Both share same queue state
+```
+
+---
+
+## Troubleshooting
+
+### Tansu S3 Issues
+
+1. **Feature not enabled**:
+   ```
+   FeatureNotEnabled { feature: "dynostore", message: "s3://..." }
+   ```
+   Solution: Build Tansu with `--all-features` or `--features tansu-broker/dynostore`
+
+2. **Connection closed after port opens**:
+   - Tansu accepts TCP connection but Kafka protocol fails
+   - Likely S3 initialization is blocking/failing silently
+   - Check AWS credentials and endpoint
+
+3. **Workaround**: Use `memory://` storage for development/testing
+
+### Queue Tests Hanging
+
+1. Kill any zombie tansu processes: `pkill -9 tansu`
+2. Use different port for each test
+3. Check `startup_timeout` is sufficient (60s for S3)
+
+---
+
+## Next Steps for New Agent
+
+1. **Read this document** for context
+2. **Run tests** to verify current state:
+   ```bash
+   cd /root/workspace/nurion/solstice
+   pytest tests/test_queue_backend.py tests/test_stage_master_v2.py tests/test_pipeline_v2.py -v
+   ```
+3. **Debug Tansu S3** if needed:
+   - Check `/root/workspace/tansu/` for Tansu source
+   - Tansu built with `--all-features`
+   - Binary at `/usr/local/bin/tansu`
+4. **Integrate V2 with workflows** or continue with remaining work
+
+---
+
 _This document summarizes the design evolution for checkpoint, recovery, and stream-based architecture in Solstice._
+_Last updated: December 6, 2025_
