@@ -1,6 +1,30 @@
-"""StageWorker actor for executing operator logic over splits."""
+"""StageWorker actor for executing operator logic over splits.
+
+.. deprecated::
+    This module is deprecated. Use :class:`solstice.core.stage_master_v2.StageWorkerV2` instead.
+    
+    The v2 worker provides:
+    - Self-scheduling: Workers pull from upstream queue
+    - Exactly-once: Offset tracking with commit after output
+    - Async design: Better performance with async/await
+    
+    Migration:
+        # Old (deprecated)
+        from solstice.core.worker import StageWorker
+        
+        # New (recommended)
+        from solstice.core.stage_master_v2 import StageWorkerV2
+"""
 
 from __future__ import annotations
+
+import warnings
+
+warnings.warn(
+    "solstice.core.worker is deprecated. Use solstice.core.stage_master_v2.StageWorkerV2 instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import time
 from dataclasses import dataclass, field
