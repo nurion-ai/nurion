@@ -920,11 +920,11 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
 
 ### High Priority
 
-1. **Tansu S3 Backend**
-   - Issue: Tansu needs `--features dynostore` to support S3
-   - Built Tansu with `--all-features` but S3 initialization still hangs
-   - Need to debug Tansu's S3 configuration (endpoint, auth)
-   - Workaround: Use `memory://` storage for testing
+1. **Tansu S3 Backend** ✅ RESOLVED
+   - **Root cause**: Volcengine TOS requires virtual-hosted style S3 access, but Tansu's object_store uses path-style
+   - **Solution**: Use MinIO or other path-style compatible S3 services
+   - **Configuration**: Use `TansuBackend(s3_endpoint="http://minio:9000", s3_access_key=..., s3_secret_key=...)`
+   - Tested and working with MinIO Docker container
 
 2. **Integrate V2 with Existing Workflows**
    - `examples/test_video_slice.py` uses legacy `LocalStateBackend` (not found)
@@ -1025,13 +1025,19 @@ print(f"Completed in {status.elapsed_time:.2f}s")
 # Memory storage (for testing)
 backend = TansuBackend(storage_url="memory://", port=9092)
 
-# S3 storage (production) - requires AWS env vars
+# MinIO S3 storage (production)
+# NOTE: Tansu requires path-style S3 access. Use MinIO, Ceph, or AWS with path-style.
+# Virtual-hosted style S3 services (like Volcengine TOS) are NOT supported.
 backend = TansuBackend(
-    storage_url="s3://bucket/prefix",
+    storage_url="s3://bucket-name/",
     port=9092,
+    s3_endpoint="http://minio:9000",  # MinIO endpoint
+    s3_region="us-east-1",
+    s3_access_key="minioadmin",
+    s3_secret_key="minioadmin",
 )
 
-# Required env vars for S3:
+# Alternative: Use environment variables
 # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT, AWS_REGION
 ```
 
@@ -1062,12 +1068,23 @@ await worker_backend.start()
    ```
    Solution: Build Tansu with `--all-features` or `--features tansu-broker/dynostore`
 
-2. **Connection closed after port opens**:
-   - Tansu accepts TCP connection but Kafka protocol fails
-   - Likely S3 initialization is blocking/failing silently
-   - Check AWS credentials and endpoint
+2. **InvalidPathAccess / 403 Forbidden** (e.g., Volcengine TOS):
+   ```
+   PermissionDenied { path: "clusters/...", source: Status { status: 403, body: "InvalidPathAccess" } }
+   ```
+   - Cause: S3 service requires virtual-hosted style, but Tansu uses path-style
+   - Solution: Use MinIO or other path-style compatible S3 service
+   ```bash
+   # Start MinIO with Docker
+   docker run -d --name minio -p 9000:9000 -p 9001:9001 \
+     -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+     minio/minio server /data --console-address ":9001"
+   ```
 
-3. **Workaround**: Use `memory://` storage for development/testing
+3. **Connection closed after port opens**:
+   - Tansu accepts TCP connection but Kafka protocol fails
+   - Check S3 credentials and endpoint configuration
+   - Ensure bucket exists before starting Tansu
 
 ### Queue Tests Hanging
 

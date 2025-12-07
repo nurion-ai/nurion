@@ -53,17 +53,31 @@ class TansuBackend(QueueBackend):
     
     The backend supports multiple storage backends:
     - memory:// - In-memory storage (for testing)
-    - s3://bucket/ - S3 storage (durable)
+    - s3://bucket?endpoint=...&region=... - S3 storage (durable)
     - sqlite://path - SQLite storage (local durable)
     - postgres://... - PostgreSQL storage (durable)
+    
+    S3 Configuration:
+        S3 backends require path-style access. Use MinIO, Ceph, or AWS S3
+        with path-style enabled. Virtual-hosted style S3 services (like
+        Volcengine TOS) are NOT supported.
+        
+        Required environment variables:
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
+        - AWS_ALLOW_HTTP=true (for http endpoints)
+        
+        S3 URL format: s3://bucket?endpoint=http://host:port&region=us-east-1&allow_http=true
     
     Example:
         ```python
         # For testing (in-memory)
         backend = TansuBackend(storage_url="memory://")
         
-        # For production (S3)
-        backend = TansuBackend(storage_url="s3://my-bucket/tansu/")
+        # For production (MinIO S3)
+        backend = TansuBackend(
+            storage_url="s3://tansu-data?endpoint=http://minio:9000&region=us-east-1&allow_http=true"
+        )
         
         await backend.start()
         
@@ -86,21 +100,33 @@ class TansuBackend(QueueBackend):
         data_dir: Optional[Path] = None,
         tansu_binary: str = "tansu",
         startup_timeout: float = 30.0,
+        s3_endpoint: Optional[str] = None,
+        s3_region: str = "us-east-1",
+        s3_access_key: Optional[str] = None,
+        s3_secret_key: Optional[str] = None,
     ):
         """Initialize Tansu backend.
         
         Args:
-            storage_url: Storage backend URL (memory://, s3://, sqlite://, postgres://)
+            storage_url: Storage backend URL (memory://, s3://bucket/, sqlite://, postgres://)
             port: Port for Kafka protocol (default: 9092)
             data_dir: Directory for Tansu data (optional)
             tansu_binary: Path to tansu binary (default: "tansu")
             startup_timeout: Timeout for Tansu startup in seconds
+            s3_endpoint: S3 endpoint URL (e.g., http://localhost:9000 for MinIO)
+            s3_region: S3 region (default: us-east-1)
+            s3_access_key: S3 access key (can also use AWS_ACCESS_KEY_ID env var)
+            s3_secret_key: S3 secret key (can also use AWS_SECRET_ACCESS_KEY env var)
         """
         self.storage_url = storage_url
         self.port = port
         self.data_dir = data_dir
         self.tansu_binary = tansu_binary
         self.startup_timeout = startup_timeout
+        self.s3_endpoint = s3_endpoint
+        self.s3_region = s3_region
+        self.s3_access_key = s3_access_key
+        self.s3_secret_key = s3_secret_key
         
         self._process: Optional[subprocess.Popen] = None
         self._producer = None  # AIOKafkaProducer
@@ -140,6 +166,25 @@ class TansuBackend(QueueBackend):
         if self.data_dir:
             cmd.extend(["--data-dir", str(self.data_dir)])
         
+        # Build environment with S3 configuration
+        env = os.environ.copy()
+        
+        if self.storage_url.startswith("s3://"):
+            # S3 configuration via environment variables
+            if self.s3_endpoint:
+                env["AWS_ENDPOINT"] = self.s3_endpoint
+                env["AWS_ENDPOINT_URL"] = self.s3_endpoint
+                # Allow HTTP endpoints (like MinIO)
+                if self.s3_endpoint.startswith("http://"):
+                    env["AWS_ALLOW_HTTP"] = "true"
+            if self.s3_region:
+                env["AWS_REGION"] = self.s3_region
+                env["AWS_DEFAULT_REGION"] = self.s3_region
+            if self.s3_access_key:
+                env["AWS_ACCESS_KEY_ID"] = self.s3_access_key
+            if self.s3_secret_key:
+                env["AWS_SECRET_ACCESS_KEY"] = self.s3_secret_key
+        
         self.logger.info(f"Starting Tansu: {' '.join(cmd)}")
         
         # Start process
@@ -148,6 +193,7 @@ class TansuBackend(QueueBackend):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=env,
                 preexec_fn=os.setsid,  # Create new process group for clean shutdown
             )
         except FileNotFoundError:
@@ -179,9 +225,8 @@ class TansuBackend(QueueBackend):
                     if not connected:
                         self.logger.info("Tansu broker port is open, waiting for initialization...")
                         connected = True
-                        # Give Tansu extra time to fully initialize after port opens
-                        # S3 storage may need more time to initialize
-                        await asyncio.sleep(10.0)
+                        # Give Tansu a moment to fully initialize after port opens
+                        await asyncio.sleep(2.0)
                         continue
                     self.logger.info("Tansu broker is ready")
                     return

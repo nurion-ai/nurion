@@ -1,17 +1,19 @@
 """Test TansuBackend with S3 storage configuration.
 
-This test uses the S3 credentials from rclone config to test:
+This test uses MinIO (Docker) for S3-compatible storage to test:
 1. Starting Tansu with S3 storage backend
 2. Producing and fetching messages
 3. Offset tracking for exactly-once semantics
+
+NOTE: S3 backend requires path-style access. Virtual-hosted style S3 services
+(like Volcengine TOS) are NOT supported by Tansu's object_store.
+Use MinIO, Ceph, or AWS S3 with path-style enabled.
 """
 
 import asyncio
-import configparser
 import os
+import subprocess
 import pytest
-import pytest_asyncio
-from pathlib import Path
 
 # Skip if tansu not available
 import shutil
@@ -21,102 +23,145 @@ if not shutil.which("tansu"):
 from solstice.queue import TansuBackend
 
 
-def get_s3_config_from_rclone(remote_name: str = "s3") -> dict:
-    """Read S3 config from rclone configuration."""
-    rclone_paths = [
-        Path.home() / ".config/rclone/rclone.conf",
-        Path("/root/.config/rclone/rclone.conf"),
-    ]
-    
-    for rclone_config in rclone_paths:
-        if rclone_config.exists():
-            config = configparser.ConfigParser()
-            config.read(rclone_config)
-            
-            if remote_name in config:
-                section = config[remote_name]
-                return {
-                    "access_key_id": section.get("access_key_id", ""),
-                    "secret_access_key": section.get("secret_access_key", ""),
-                    "endpoint": section.get("endpoint", ""),
-                    "region": section.get("region", "us-east-1"),
-                }
-    
-    raise FileNotFoundError("rclone config not found")
+def check_minio_available() -> bool:
+    """Check if MinIO is running on localhost:9000."""
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(("localhost", 9000))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
 
 
-def build_s3_storage_url(bucket: str, prefix: str = "tansu") -> str:
-    """Build S3 storage URL for Tansu.
-    
-    Tansu S3 URL format: s3://bucket/prefix?endpoint=...&region=...
-    """
-    config = get_s3_config_from_rclone()
-    
-    # Set AWS env vars for tansu to use
-    os.environ["AWS_ACCESS_KEY_ID"] = config["access_key_id"]
-    os.environ["AWS_SECRET_ACCESS_KEY"] = config["secret_access_key"]
-    os.environ["AWS_ENDPOINT_URL"] = config["endpoint"]
-    os.environ["AWS_DEFAULT_REGION"] = config["region"]
-    
-    # Build URL with query params
-    # Keep the full endpoint URL including https:// - Tansu needs it
-    endpoint = config["endpoint"]
-    region = config["region"]
-    
-    return f"s3://{bucket}/{prefix}?endpoint={endpoint}&region={region}"
+def start_minio_docker() -> bool:
+    """Start MinIO using Docker if available."""
+    try:
+        # Check if docker is available
+        if not shutil.which("docker"):
+            return False
+        
+        # Remove existing container
+        subprocess.run(["docker", "rm", "-f", "minio-test"], 
+                      capture_output=True, timeout=10)
+        
+        # Start MinIO
+        result = subprocess.run([
+            "docker", "run", "-d", "--name", "minio-test",
+            "-p", "9000:9000", "-p", "9001:9001",
+            "-e", "MINIO_ROOT_USER=minioadmin",
+            "-e", "MINIO_ROOT_PASSWORD=minioadmin",
+            "minio/minio", "server", "/data", "--console-address", ":9001"
+        ], capture_output=True, timeout=60)
+        
+        if result.returncode != 0:
+            return False
+        
+        # Wait for MinIO to be ready
+        import time
+        for _ in range(30):
+            if check_minio_available():
+                # Create test bucket
+                subprocess.run([
+                    "docker", "exec", "minio-test",
+                    "mc", "alias", "set", "local", "http://localhost:9000", 
+                    "minioadmin", "minioadmin"
+                ], capture_output=True, timeout=10)
+                subprocess.run([
+                    "docker", "exec", "minio-test",
+                    "mc", "mb", "local/tansu-test"
+                ], capture_output=True, timeout=10)
+                return True
+            time.sleep(1)
+        
+        return False
+    except Exception:
+        return False
+
+
+def stop_minio_docker():
+    """Stop MinIO Docker container."""
+    try:
+        subprocess.run(["docker", "rm", "-f", "minio-test"], 
+                      capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
+def get_minio_config() -> dict:
+    """Get MinIO S3 configuration for Tansu."""
+    return {
+        "storage_url": "s3://tansu-test/",
+        "s3_endpoint": "http://localhost:9000",
+        "s3_region": "us-east-1",
+        "s3_access_key": "minioadmin",
+        "s3_secret_key": "minioadmin",
+    }
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
-@pytest.mark.skip(reason="S3 backend requires additional Tansu configuration - use memory backend for now")
-class TestTansuS3:
-    """Tests for TansuBackend with S3 storage.
+@pytest.mark.skipif(
+    not check_minio_available() and not shutil.which("docker"),
+    reason="MinIO not available and Docker not found"
+)
+class TestTansuMinioS3:
+    """Tests for TansuBackend with MinIO S3 storage.
     
-    NOTE: S3 backend is currently skipped because Tansu's S3 initialization
-    requires additional configuration that needs more debugging.
-    Use TansuBackend with memory:// for testing.
+    These tests require MinIO running on localhost:9000.
+    If MinIO is not available, it will try to start it via Docker.
     """
     
+    @pytest.fixture(scope="class", autouse=True)
+    def setup_minio(self):
+        """Ensure MinIO is running."""
+        if not check_minio_available():
+            if not start_minio_docker():
+                pytest.skip("Could not start MinIO")
+        yield
+        # Note: Don't stop MinIO here to allow reuse across test runs
+    
     @pytest.fixture
-    def s3_storage_url(self):
-        """Get S3 storage URL from rclone config."""
-        try:
-            # Use a test-specific prefix to avoid conflicts
-            return build_s3_storage_url("nurion", "tansu-test")
-        except FileNotFoundError:
-            pytest.skip("rclone config not found")
+    def minio_config(self):
+        """Get MinIO S3 configuration."""
+        return get_minio_config()
     
     @pytest.mark.asyncio
-    async def test_tansu_start_with_s3(self, s3_storage_url):
-        """Test starting Tansu with S3 storage backend."""
+    async def test_tansu_start_with_minio(self, minio_config):
+        """Test starting Tansu with MinIO S3 storage backend."""
         backend = TansuBackend(
-            storage_url=s3_storage_url,
             port=19092,
             startup_timeout=60.0,
+            **minio_config,
         )
         
         try:
             await backend.start()
             assert await backend.health_check()
-            print(f"Tansu started with S3 storage: {s3_storage_url}")
+            print(f"Tansu started with MinIO S3")
         finally:
             await backend.stop()
     
     @pytest.mark.asyncio
-    async def test_produce_fetch_with_s3(self, s3_storage_url):
-        """Test produce and fetch operations with S3 backend."""
+    async def test_produce_fetch_with_minio(self, minio_config):
+        """Test produce and fetch operations with MinIO S3 backend."""
         backend = TansuBackend(
-            storage_url=s3_storage_url,
             port=19093,
             startup_timeout=60.0,
+            **minio_config,
         )
         
         try:
             await backend.start()
             
-            topic = "test-s3-topic"
+            topic = "test-minio-topic"
             await backend.create_topic(topic)
+            
+            # Wait for topic to be ready
+            await asyncio.sleep(2)
             
             # Produce messages
             offsets = []
@@ -137,21 +182,22 @@ class TestTansuS3:
             await backend.stop()
     
     @pytest.mark.asyncio
-    async def test_offset_commit_with_s3(self, s3_storage_url):
-        """Test offset commit and recovery with S3 backend."""
+    async def test_offset_commit_with_minio(self, minio_config):
+        """Test offset commit and recovery with MinIO S3 backend."""
         backend = TansuBackend(
-            storage_url=s3_storage_url,
             port=19094,
             startup_timeout=60.0,
+            **minio_config,
         )
         
         try:
             await backend.start()
             
-            topic = "test-s3-offset-topic"
+            topic = "test-minio-offset-topic"
             group = "test-consumer-group"
             
             await backend.create_topic(topic)
+            await asyncio.sleep(2)
             
             # Produce messages
             for i in range(10):
@@ -172,14 +218,14 @@ class TestTansuS3:
             assert len(remaining) == 5
             assert remaining[0].value == b"msg-5"
             
-            print("Offset commit and recovery works correctly with S3!")
+            print("Offset commit and recovery works correctly with MinIO S3!")
             
         finally:
             await backend.stop()
 
 
 class TestTansuMemory:
-    """Tests for TansuBackend with memory storage (for comparison)."""
+    """Tests for TansuBackend with memory storage."""
     
     @pytest.mark.asyncio
     async def test_tansu_memory_backend(self):
@@ -196,6 +242,7 @@ class TestTansuMemory:
             
             topic = "test-memory-topic"
             await backend.create_topic(topic)
+            await asyncio.sleep(1)
             
             # Quick produce/fetch test
             await backend.produce(topic, b"hello")
@@ -213,20 +260,19 @@ class TestTansuMemory:
 if __name__ == "__main__":
     # Run a quick manual test
     async def main():
-        print("Testing TansuBackend with S3...")
+        print("Testing TansuBackend with MinIO S3...")
         
-        try:
-            storage_url = build_s3_storage_url("nurion", "tansu-test")
-            print(f"S3 Storage URL: {storage_url}")
-        except Exception as e:
-            print(f"Failed to build S3 URL: {e}")
-            print("Falling back to memory backend...")
-            storage_url = "memory://"
+        if check_minio_available():
+            config = get_minio_config()
+            print(f"MinIO S3 config: {config}")
+        else:
+            print("MinIO not available, using memory backend...")
+            config = {"storage_url": "memory://"}
         
         backend = TansuBackend(
-            storage_url=storage_url,
             port=19096,
             startup_timeout=60.0,
+            **config,
         )
         
         try:
@@ -236,6 +282,7 @@ if __name__ == "__main__":
             
             topic = "test-topic"
             await backend.create_topic(topic)
+            await asyncio.sleep(2)
             
             print("Producing messages...")
             for i in range(3):
