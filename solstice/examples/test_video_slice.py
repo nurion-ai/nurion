@@ -196,8 +196,8 @@ async def run_workflow_async(
 
         logger.info(f"Job created with {len(job.stages)} stages")
 
-        # Use new async RayJobRunner API
-        runner = RayJobRunner(job, queue_type=QueueType.RAY)
+        # Use new async RayJobRunner API with Tansu queue
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         await runner.initialize()
 
         logger.info("Starting workflow execution (timeout=300s)...")

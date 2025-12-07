@@ -218,7 +218,7 @@ class TestRayJobRunner:
     @pytest.mark.asyncio
     async def test_initialization(self, simple_job, ray_cluster):
         """Test runner initialization."""
-        runner = RayJobRunner(simple_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(simple_job, queue_type=QueueType.TANSU)
         
         assert not runner.is_initialized
         assert not runner.is_running
@@ -231,7 +231,7 @@ class TestRayJobRunner:
     @pytest.mark.asyncio
     async def test_get_status(self, simple_job, ray_cluster):
         """Test getting pipeline status."""
-        runner = RayJobRunner(simple_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(simple_job, queue_type=QueueType.TANSU)
         await runner.initialize()
         
         status = runner.get_status()
@@ -245,7 +245,7 @@ class TestRayJobRunner:
     @pytest.mark.asyncio
     async def test_stop_before_run(self, simple_job, ray_cluster):
         """Test stopping before running."""
-        runner = RayJobRunner(simple_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(simple_job, queue_type=QueueType.TANSU)
         await runner.initialize()
         await runner.stop()  # Should not raise
         
@@ -267,7 +267,7 @@ class TestPipelineExecution:
         )
         job.add_stage(source_stage)
         
-        runner = RayJobRunner(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         await runner.initialize()
         
         # Start the source
@@ -296,7 +296,7 @@ class TestQueueCommunication:
     @pytest.mark.asyncio
     async def test_upstream_downstream_connection(self, two_stage_job, ray_cluster):
         """Test that downstream stage connects to upstream queue."""
-        runner = RayJobRunner(two_stage_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(two_stage_job, queue_type=QueueType.TANSU)
         await runner.initialize()
         
         source_master = runner._masters["source"]
@@ -307,7 +307,7 @@ class TestQueueCommunication:
         assert transform_master.upstream_topic is not None
         
         # Endpoint should point to source's output
-        assert transform_master.upstream_endpoint.queue_type == QueueType.RAY
+        assert transform_master.upstream_endpoint.queue_type == QueueType.TANSU
         
         await runner.stop()
 
@@ -318,10 +318,10 @@ class TestExactlyOnce:
     @pytest.mark.asyncio
     async def test_offset_tracking(self, ray_cluster):
         """Test that offsets are tracked correctly."""
-        from solstice.queue import RayBackend
+        from solstice.queue import MemoryBackend
         
         # Create a shared queue
-        backend = RayBackend()
+        backend = MemoryBackend()
         await backend.start()
         
         topic = "test_topic"
@@ -375,7 +375,7 @@ class TestIntegration:
         )
         job.add_stage(source_stage)
         
-        runner = RayJobRunner(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         await runner.initialize()
         
         source_master = runner._masters["source"]
@@ -464,7 +464,7 @@ class TestMultiStagePipeline:
         )
         job.add_stage(transform_stage, upstream_stages=["source"])
         
-        runner = RayJobRunner(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         await runner.initialize()
         
         # Verify topology
@@ -506,7 +506,7 @@ class TestMultiStagePipeline:
         )
         job.add_stage(transform_stage, upstream_stages=["source"])
         
-        runner = RayJobRunner(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         await runner.initialize()
         
         transform_master = runner._masters["transform"]
@@ -534,7 +534,7 @@ class TestMultiStagePipeline:
         )
         job.add_stage(source_stage)
         
-        runner = RayJobRunner(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         
         try:
             # Run should complete (or timeout)

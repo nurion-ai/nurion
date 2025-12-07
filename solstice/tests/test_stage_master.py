@@ -93,9 +93,9 @@ def mock_stage():
 
 @pytest.fixture
 def stage_config():
-    """Provide default stage config using RAY backend for distributed tests."""
+    """Provide default stage config using TANSU backend for distributed tests."""
     return StageConfig(
-        queue_type=QueueType.RAY,
+        queue_type=QueueType.TANSU,
         min_workers=1,
         max_workers=2,
         batch_size=10,
@@ -151,7 +151,7 @@ class TestStageConfig:
         """Test default config values."""
         config = StageConfig()
         
-        assert config.queue_type == QueueType.RAY  # Default is RAY for distributed
+        assert config.queue_type == QueueType.TANSU  # Default is RAY for distributed
         assert config.min_workers == 1
         assert config.max_workers == 4
         assert config.batch_size == 100
@@ -247,7 +247,7 @@ class TestStageMaster:
     @pytest.mark.asyncio
     async def test_get_output_queue(self, mock_stage, stage_config, ray_init):
         """Test getting output queue for downstream."""
-        from solstice.queue import RayBackend
+        from solstice.queue import TansuBackend
         
         master = StageMaster(
             job_id="test_job",
@@ -261,7 +261,7 @@ class TestStageMaster:
         
         queue = master.get_output_queue()
         assert queue is not None
-        assert isinstance(queue, RayBackend)
+        assert isinstance(queue, TansuBackend)
         
         await master.stop()
 
@@ -318,7 +318,7 @@ class TestIntegration:
     async def test_two_stage_pipeline(self, ray_context):
         """Test two-stage pipeline with queue communication."""
         stage_config = StageConfig(
-            queue_type=QueueType.RAY,
+            queue_type=QueueType.TANSU,
             min_workers=1,
             max_workers=1,
         )

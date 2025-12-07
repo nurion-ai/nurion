@@ -104,6 +104,7 @@ class TansuBackend(QueueBackend):
         s3_region: str = "us-east-1",
         s3_access_key: Optional[str] = None,
         s3_secret_key: Optional[str] = None,
+        client_only: bool = False,
     ):
         """Initialize Tansu backend.
         
@@ -117,6 +118,7 @@ class TansuBackend(QueueBackend):
             s3_region: S3 region (default: us-east-1)
             s3_access_key: S3 access key (can also use AWS_ACCESS_KEY_ID env var)
             s3_secret_key: S3 secret key (can also use AWS_SECRET_ACCESS_KEY env var)
+            client_only: If True, only connect to existing Tansu server, don't start one
         """
         self.storage_url = storage_url
         self.port = port
@@ -127,6 +129,7 @@ class TansuBackend(QueueBackend):
         self.s3_region = s3_region
         self.s3_access_key = s3_access_key
         self.s3_secret_key = s3_secret_key
+        self.client_only = client_only
         
         self._process: Optional[subprocess.Popen] = None
         self._producer = None  # AIOKafkaProducer
@@ -142,17 +145,19 @@ class TansuBackend(QueueBackend):
         if self._running:
             return
         
-        # Start Tansu subprocess
-        await self._start_tansu_process()
-        
-        # Wait for broker to be ready
-        await self._wait_for_ready()
+        if not self.client_only:
+            # Start Tansu subprocess
+            await self._start_tansu_process()
+            
+            # Wait for broker to be ready
+            await self._wait_for_ready()
         
         # Initialize Kafka clients
         await self._init_kafka_clients()
         
         self._running = True
-        self.logger.info(f"TansuBackend started on port {self.port}")
+        mode = "client-only" if self.client_only else "server"
+        self.logger.info(f"TansuBackend started on port {self.port} ({mode})")
     
     async def _start_tansu_process(self) -> None:
         """Start the Tansu broker subprocess."""
@@ -375,18 +380,27 @@ class TansuBackend(QueueBackend):
         from aiokafka import AIOKafkaConsumer, TopicPartition
         
         if topic not in self._consumers:
+            # Use manual partition assignment for more control
             consumer = AIOKafkaConsumer(
                 bootstrap_servers=f"localhost:{self.port}",
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
+                request_timeout_ms=30000,  # Increase timeout
             )
             await consumer.start()
             
-            # Manually assign partition
+            # Wait a bit for metadata to be available
+            await asyncio.sleep(0.2)
+            
+            # Manually assign partition 0
             tp = TopicPartition(topic, 0)
             consumer.assign([tp])
             
+            # Wait for partition assignment to take effect
+            await asyncio.sleep(0.1)
+            
             self._consumers[topic] = consumer
+            self.logger.debug(f"Created consumer for topic {topic} with manual assignment")
         
         return self._consumers[topic]
     
@@ -403,15 +417,15 @@ class TansuBackend(QueueBackend):
         consumer = await self._get_consumer(topic)
         tp = TopicPartition(topic, 0)
         
-        # Seek to offset
+        # Seek to the desired offset
         consumer.seek(tp, offset)
         
-        # Fetch records
+        # Fetch records using getmany
         records = []
         try:
             batch = await asyncio.wait_for(
                 consumer.getmany(tp, max_records=max_records, timeout_ms=timeout_ms),
-                timeout=(timeout_ms / 1000) + 1,  # Extra second for safety
+                timeout=(timeout_ms / 1000) + 2,
             )
             
             for tp_records in batch.values():
@@ -423,7 +437,9 @@ class TansuBackend(QueueBackend):
                         timestamp=record.timestamp or int(time.time() * 1000),
                     ))
         except asyncio.TimeoutError:
-            pass  # Return what we have
+            pass
+        except Exception as e:
+            self.logger.warning(f"Fetch error: {e}")
         
         return records
     

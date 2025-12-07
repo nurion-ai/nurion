@@ -58,7 +58,6 @@ if TYPE_CHECKING:
 class QueueType(str, Enum):
     """Type of queue backend to use."""
     MEMORY = "memory"      # In-process only (for single-worker testing)
-    RAY = "ray"            # Shared via Ray actor (for distributed testing)
     TANSU = "tansu"        # Persistent broker (for production)
 
 
@@ -79,7 +78,7 @@ class StageConfig:
         commit_interval_ms: Interval between offset commits (ms)
         processing_timeout_s: Timeout for processing a single message
     """
-    queue_type: QueueType = QueueType.RAY  # Default to Ray for distributed
+    queue_type: QueueType = QueueType.TANSU  # Default to Tansu for persistence
     tansu_storage_url: str = "memory://"
     tansu_port: int = 9092
     
@@ -154,14 +153,11 @@ class QueueEndpoint:
     """Queue connection info that can be serialized to workers.
     
     Workers use this to create their own queue connections.
-    For Ray backend, includes the actor reference.
     """
     queue_type: QueueType
     host: str = "localhost"
     port: int = 9092
     storage_url: str = "memory://"
-    # Ray actor reference (for QueueType.RAY)
-    actor_ref: Optional[ray.actor.ActorHandle] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -228,26 +224,19 @@ class StageMaster:
         """Create the appropriate queue backend."""
         if self.config.queue_type == QueueType.TANSU:
             from solstice.queue import TansuBackend
+            import random
+            # Use a unique port for each stage to avoid conflicts
+            port = self.config.tansu_port + hash(self.stage_id) % 1000
             queue = TansuBackend(
                 storage_url=self.config.tansu_storage_url,
-                port=self.config.tansu_port,
+                port=port,
             )
             self._output_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                port=self.config.tansu_port,
+                port=port,
                 storage_url=self.config.tansu_storage_url,
             )
-        elif self.config.queue_type == QueueType.RAY:
-            from solstice.queue import RayBackend
-            queue = RayBackend()
-            await queue.start()
-            self._output_endpoint = QueueEndpoint(
-                queue_type=QueueType.RAY,
-                actor_ref=queue.get_actor_ref(),
-            )
-            self.logger.info(f"Master created queue with actor {queue.get_actor_ref()}, creating topic {self._output_topic}")
-            await queue.create_topic(self._output_topic)
-            return queue
+            self.logger.info(f"Created Tansu backend on port {port}")
         else:
             # MEMORY - only for single-process testing
             queue = MemoryBackend()
@@ -496,15 +485,12 @@ class StageWorker:
         """Create a queue connection from endpoint info."""
         if endpoint.queue_type == QueueType.TANSU:
             from solstice.queue import TansuBackend
+            # Client-only mode: connect to existing Tansu server
             queue = TansuBackend(
                 storage_url=endpoint.storage_url,
                 port=endpoint.port,
+                client_only=True,  # Don't start a new Tansu process
             )
-        elif endpoint.queue_type == QueueType.RAY:
-            from solstice.queue import RayBackend
-            # Use existing actor reference
-            self.logger.debug(f"Connecting to RayBackend actor: {endpoint.actor_ref}")
-            queue = RayBackend.from_actor_ref(endpoint.actor_ref)
         else:
             queue = MemoryBackend()
         
@@ -519,8 +505,6 @@ class StageWorker:
         try:
             # Create queue connections
             self.logger.info(f"Output endpoint received: {self.output_endpoint}")
-            if self.output_endpoint.queue_type == QueueType.RAY and self.output_endpoint.actor_ref:
-                self.logger.info(f"Output actor_ref: {self.output_endpoint.actor_ref}")
             self.output_queue = await self._create_queue_from_endpoint(self.output_endpoint)
             
             if self.upstream_endpoint and self.upstream_topic:

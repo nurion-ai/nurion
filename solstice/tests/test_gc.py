@@ -9,7 +9,7 @@ These tests verify that:
 import pytest
 import ray
 
-from solstice.queue import MemoryBackend, RayBackend
+from solstice.queue import MemoryBackend
 from solstice.core.stage_master import QueueMessage
 
 
@@ -138,56 +138,6 @@ class TestMemoryBackendGC:
         # Fast consumer can continue from where it was
         records = await backend.fetch(topic, offset=80, max_records=100)
         assert len(records) == 20  # 80-99
-        
-        await backend.stop()
-
-
-class TestRayBackendGC:
-    """Test GC functionality in RayBackend."""
-    
-    @pytest.fixture(scope="class")
-    def ray_cluster(self):
-        if not ray.is_initialized():
-            ray.init(num_cpus=2, ignore_reinit_error=True)
-        yield
-    
-    @pytest.mark.asyncio
-    async def test_truncate_before(self, ray_cluster):
-        """Truncate should remove records in RayBackend."""
-        backend = RayBackend()
-        await backend.start()
-        
-        topic = "ray-gc-test"
-        await backend.create_topic(topic)
-        
-        # Produce 10 messages
-        for i in range(10):
-            await backend.produce(topic, f"msg-{i}".encode())
-        
-        # Truncate before offset 5
-        deleted = await backend.truncate_before(topic, 5)
-        assert deleted == 5
-        
-        # Fetch should only return records 5-9
-        records = await backend.fetch(topic, offset=0, max_records=20)
-        assert len(records) == 5
-        
-        await backend.stop()
-    
-    @pytest.mark.asyncio
-    async def test_get_min_committed_offset(self, ray_cluster):
-        """get_min_committed_offset in RayBackend."""
-        backend = RayBackend()
-        await backend.start()
-        
-        topic = "ray-min-offset"
-        await backend.create_topic(topic)
-        
-        await backend.commit_offset("group1", topic, 100)
-        await backend.commit_offset("group2", topic, 50)
-        
-        min_offset = await backend.get_min_committed_offset(topic)
-        assert min_offset == 50
         
         await backend.stop()
 

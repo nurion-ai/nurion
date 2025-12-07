@@ -60,7 +60,7 @@ class RayJobRunner:
     def __init__(
         self,
         job: Job,
-        queue_type: QueueType = QueueType.RAY,
+        queue_type: QueueType = QueueType.TANSU,
         ray_init_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """Initialize the runner.
@@ -333,7 +333,7 @@ class RayJobRunner:
 # Convenience function for simple pipeline execution
 async def run_pipeline(
     job: Job,
-    queue_type: QueueType = QueueType.RAY,
+    queue_type: QueueType = QueueType.TANSU,
     timeout: Optional[float] = None,
 ) -> PipelineStatus:
     """Run a pipeline and return its status.

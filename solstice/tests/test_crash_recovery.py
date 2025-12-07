@@ -11,7 +11,7 @@ import asyncio
 import pytest
 import ray
 
-from solstice.queue import MemoryBackend, RayBackend
+from solstice.queue import MemoryBackend
 from solstice.core.stage_master import QueueMessage
 
 
@@ -284,55 +284,6 @@ class TestExactlyOnceSemantics:
         finally:
             await input_queue.stop()
             await output_queue.stop()
-
-
-class TestRayBackendRecovery:
-    """Test crash recovery with RayBackend (distributed queue)."""
-    
-    @pytest.fixture
-    def ray_cluster(self):
-        """Initialize Ray for distributed tests."""
-        if not ray.is_initialized():
-            ray.init(num_cpus=2, ignore_reinit_error=True)
-        yield
-        # Don't shutdown - other tests may need it
-    
-    @pytest.mark.asyncio
-    async def test_ray_backend_offset_persistence(self, ray_cluster):
-        """Test that RayBackend persists offsets correctly."""
-        backend = RayBackend()
-        await backend.start()
-        
-        topic = "test-topic"
-        group = "test-group"
-        
-        try:
-            await backend.create_topic(topic)
-            
-            # Produce messages
-            for i in range(5):
-                msg = QueueMessage(
-                    message_id=str(i),
-                    split_id=f"split_{i}",
-                    data_ref="dummy",
-                    metadata={},
-                )
-                await backend.produce(topic, msg.to_bytes())
-            
-            # Commit offset
-            await backend.commit_offset(group, topic, 3)
-            
-            # Create new backend from same actor
-            actor_ref = backend.get_actor_ref()
-            backend2 = RayBackend.from_actor_ref(actor_ref)
-            await backend2.start()
-            
-            # Verify offset is preserved
-            offset = await backend2.get_committed_offset(group, topic)
-            assert offset == 3
-            
-        finally:
-            await backend.stop()
 
 
 if __name__ == "__main__":

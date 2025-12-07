@@ -166,7 +166,7 @@ async def main_async():
     job.add_stage(sink_stage, upstream_stages=["filter"])
 
     # Use runner with queue-based architecture
-    runner = RayJobRunner(job, queue_type=QueueType.RAY)
+    runner = RayJobRunner(job, queue_type=QueueType.TANSU)
 
     print("Initializing job...")
     await runner.initialize()
