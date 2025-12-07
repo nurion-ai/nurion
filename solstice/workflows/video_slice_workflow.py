@@ -13,7 +13,6 @@ from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.operators.sinks import FileSinkConfig, LanceSinkConfig
 from solstice.operators.sources import LanceTableSourceConfig
-from solstice.operators.sources.lance import LanceSourceStageMasterConfig
 from solstice.operators.video import (
     FFmpegSceneDetectConfig,
     FFmpegSliceConfig,
@@ -66,10 +65,6 @@ def create_job(
     source_stage = Stage(
         stage_id="source",
         operator_config=LanceTableSourceConfig(
-            dataset_uri=input_path,
-            split_size=10,
-        ),
-        master_config=LanceSourceStageMasterConfig(
             dataset_uri=input_path,
             split_size=10,
         ),
