@@ -161,7 +161,6 @@ def run_workflow(
     import signal
     from contextlib import contextmanager
 
-    from solstice.state.backend import LocalStateBackend
     from workflows.video_slice_workflow import create_job
 
     @contextmanager
@@ -187,8 +186,6 @@ def run_workflow(
     try:
         logger.info(f"Creating job with input={input_path}, output={output_path}")
 
-        state_backend = LocalStateBackend("/tmp/solstice_test")
-
         config = {
             "input": input_path,
             "output": output_path,
@@ -204,10 +201,11 @@ def run_workflow(
             "checkpoint_interval_secs": 300,
         }
 
+        # Create job with new API (no state_backend parameter)
         job = create_job(
             job_id="test_video_slice_s3",
             config=config,
-            state_backend=state_backend,
+            # Uses default checkpoint store (local filesystem)
         )
 
         logger.info(f"Job created with {len(job.stages)} stages")

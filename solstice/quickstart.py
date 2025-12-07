@@ -6,9 +6,10 @@ This is a minimal example that demonstrates the core concepts:
 1. Creating a job
 2. Defining stages with operators
 3. Building a DAG
-4. Running with checkpoints
+4. Running with the V2 queue-based architecture
 """
 
+import asyncio
 import logging
 import time
 
@@ -18,7 +19,6 @@ from solstice.core.job import Job
 from solstice.core.stage import Stage
 from solstice.core.operator import SourceOperator, Operator, SinkOperator
 from solstice.core.models import Record
-from solstice.state.backend import LocalStateBackend
 
 
 # 1. Define custom operators
@@ -98,15 +98,18 @@ class PrintSinkOperator(SinkOperator):
         print(f"\nProcessed {self.count} records total")
 
 
-def main():
-    """Run the quickstart example"""
+async def main_async():
+    """Run the quickstart example with V2 runner"""
+    from solstice.runtime import RayJobRunnerV2
+    from solstice.core.stage_master_v2 import QueueType
+    
     # Setup logging
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
     print("=" * 80)
-    print("Solstice Streaming - Quickstart Example")
+    print("Solstice Streaming - Quickstart Example (V2)")
     print("=" * 80)
     print()
 
@@ -114,15 +117,10 @@ def main():
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True)
 
-    # Create state backend (local for this example)
-    state_backend = LocalStateBackend("/tmp/solstice/quickstart")
-
-    # Create job
+    # Create job with checkpoint store URI
     job = Job(
         job_id="quickstart_job",
-        state_backend=state_backend,
-        checkpoint_interval_secs=10,  # Checkpoint every 10 seconds
-        checkpoint_interval_records=20,  # Or every 20 records
+        checkpoint_store_uri="/tmp/solstice/quickstart",  # Local filesystem store
     )
 
     print("Creating job pipeline:")
@@ -167,29 +165,30 @@ def main():
     job.add_stage(filter_stage, upstream_stages=["square"])
     job.add_stage(sink_stage, upstream_stages=["filter"])
 
-    runner = job.create_ray_runner()
+    # Use V2 runner with queue-based architecture
+    runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
 
     print("Initializing job...")
-    runner.initialize()
+    await runner.initialize()
 
     print("Starting job execution...")
-    runner.run()
+    status = await runner.run(timeout=60)  # 60 second timeout
 
-    # Get status and metrics after completion
-    status = runner.get_status()
     print(f"\nFinal job status: {status}")
-
-    metrics = runner.get_metrics()
-    if metrics:
-        print(f"\nFinal job metrics: {metrics}")
+    print(f"Elapsed time: {status.elapsed_time:.2f}s")
 
     print("\n" + "=" * 80)
     print("Quickstart example completed!")
     print("=" * 80)
 
     # Cleanup
-    runner.shutdown()
+    await runner.stop()
     ray.shutdown()
+
+
+def main():
+    """Entry point - runs the async main function"""
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
