@@ -10,8 +10,7 @@ class Stage:
     """Represents a stage in the processing pipeline.
     
     A stage consists of:
-    - An operator class that processes data
-    - Configuration for that operator
+    - An OperatorConfig that defines the operator and its configuration
     - Parallelism settings (number of workers)
     - Resource requirements per worker
     
@@ -20,16 +19,14 @@ class Stage:
         # Simple source stage
         source = Stage(
             stage_id="source",
-            operator_class=MySourceOperator,
-            operator_config={"batch_size": 100},
+            operator_config=MySourceConfig(batch_size=100),
             parallelism=1,
         )
         
         # Parallel transform stage
         transform = Stage(
             stage_id="transform",
-            operator_class=MyTransformOperator,
-            operator_config={},
+            operator_config=MyTransformConfig(param="value"),
             parallelism=4,  # 4 parallel workers
             worker_resources={"num_gpus": 1},
         )
@@ -39,20 +36,18 @@ class Stage:
     def __init__(
         self,
         stage_id: str,
-        operator_class: Type[Operator] = None,
-        operator_config: Union[OperatorConfig, Dict[str, Any], None] = None,
+        operator_config: OperatorConfig,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
         skip_checkpoint: bool = False,
-        master_config: Any = None,  # Legacy parameter, ignored
     ):
         """
         Initialize a stage.
 
         Args:
             stage_id: Unique identifier for the stage
-            operator_class: The operator class to use for processing
-            operator_config: Configuration for the operator (dict or OperatorConfig)
+            operator_config: OperatorConfig dataclass instance that defines 
+                           the operator and its configuration
             parallelism: Number of workers. Can be:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
@@ -62,21 +57,23 @@ class Stage:
 
         Examples:
             >>> # Fixed 4 workers, no scaling
-            >>> Stage('process', MyOperator, {'param': 'value'}, parallelism=4)
+            >>> Stage('process', MyOperatorConfig(param='value'), parallelism=4)
 
             >>> # Auto-scaling between 2 and 10 workers
-            >>> Stage('process', MyOperator, {}, parallelism=(2, 10))
+            >>> Stage('process', MyOperatorConfig(), parallelism=(2, 10))
 
             >>> # Skip checkpoint for lightweight filter stage
-            >>> Stage('filter', FilterOperator, {}, skip_checkpoint=True)
+            >>> Stage('filter', FilterOperatorConfig(fn=my_filter), skip_checkpoint=True)
         """
-        self.stage_id = stage_id
-        self.operator_class = operator_class
-        self.skip_checkpoint = skip_checkpoint
+        if not isinstance(operator_config, OperatorConfig):
+            raise TypeError(
+                f"operator_config must be an OperatorConfig instance, "
+                f"got {type(operator_config).__name__}"
+            )
         
-        # Store operator_config as-is (may be dict, OperatorConfig, or None)
-        # Keep original object to preserve setup() method for legacy OperatorConfig
-        self.operator_config = operator_config if operator_config is not None else {}
+        self.stage_id = stage_id
+        self.operator_config = operator_config
+        self.skip_checkpoint = skip_checkpoint
 
         # Parse parallelism parameter
         if isinstance(parallelism, int):
@@ -111,18 +108,10 @@ class Stage:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert stage to dictionary representation"""
-        # Convert operator_config to dict if it has a to_dict method
-        if hasattr(self.operator_config, 'to_dict'):
-            config_dict = self.operator_config.to_dict()
-        elif isinstance(self.operator_config, dict):
-            config_dict = self.operator_config
-        else:
-            config_dict = {}
-            
         return {
             "stage_id": self.stage_id,
-            "operator_class": self.operator_class.__name__ if self.operator_class else None,
-            "operator_config": config_dict,
+            "operator_class": self.operator_config.operator_class.__name__,
+            "operator_config": self.operator_config.to_dict(),
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,

@@ -458,22 +458,8 @@ class StageWorker:
         
         self.logger = create_ray_logger(f"Worker-{self.stage_id}-{worker_id}")
         
-        # Initialize operator
-        from solstice.core.operator import Operator
-        operator_class = getattr(stage, 'operator_class', None)
-        
-        if operator_class is not None:
-            # New style: Stage has operator_class directly
-            self.operator: Operator = operator_class(config=stage.operator_config)
-        elif hasattr(stage.operator_config, 'setup'):
-            # Legacy style: OperatorConfig with setup() method
-            self.operator: Operator = stage.operator_config.setup(worker_id=worker_id)
-        elif hasattr(stage.operator_config, 'operator_class') and stage.operator_config.operator_class:
-            # OperatorConfig has operator_class attribute (common pattern)
-            op_class = stage.operator_config.operator_class
-            self.operator: Operator = op_class(config=stage.operator_config, worker_id=worker_id)
-        else:
-            raise ValueError(f"Stage {stage.stage_id} has no valid operator configuration")
+        # Initialize operator using OperatorConfig.setup()
+        self.operator = stage.operator_config.setup(worker_id=worker_id)
         
         # State
         self._running = False

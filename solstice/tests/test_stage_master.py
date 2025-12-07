@@ -23,6 +23,7 @@ from solstice.core.stage_master import (
     QueueMessage,
     QueueEndpoint,
 )
+from solstice.core.operator import OperatorConfig, Operator
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -31,19 +32,11 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 # Test Fixtures
 # ============================================================================
 
-@dataclass
-class MockOperatorConfig:
-    """Mock operator config for testing."""
-    
-    def setup(self, worker_id: str):
-        return MockOperator(worker_id)
-
-
-class MockOperator:
+class MockOperator(Operator):
     """Mock operator that passes through data."""
     
-    def __init__(self, worker_id: str):
-        self.worker_id = worker_id
+    def __init__(self, config: "MockOperatorConfig", worker_id: str = None):
+        super().__init__(config, worker_id)
         self._closed = False
     
     def process_split(self, split, payload):
@@ -60,6 +53,15 @@ class MockOperator:
     
     def close(self):
         self._closed = True
+
+
+@dataclass
+class MockOperatorConfig(OperatorConfig):
+    """Mock operator config for testing."""
+    pass
+
+# Set operator_class after class definition
+MockOperatorConfig.operator_class = MockOperator
 
 
 @dataclass  

@@ -30,22 +30,11 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 # Test Operators
 # ============================================================================
 
-@dataclass
-class TestSourceConfig(OperatorConfig):
-    """Config for test source operator."""
-    num_records: int = 100
-    batch_size: int = 10
-    
-    def setup(self, worker_id: str) -> "TestSourceOperator":
-        return TestSourceOperator(self, worker_id)
-
-
 class TestSourceOperator(Operator):
     """Source operator that generates test data."""
     
-    def __init__(self, config: TestSourceConfig, worker_id: str):
-        self.config = config
-        self.worker_id = worker_id
+    def __init__(self, config: "TestSourceConfig", worker_id: str = None):
+        super().__init__(config, worker_id)
         self._generated = 0
     
     def generate_splits(self) -> List[Split]:
@@ -82,20 +71,20 @@ class TestSourceOperator(Operator):
 
 
 @dataclass
-class TestTransformConfig(OperatorConfig):
-    """Config for test transform operator."""
-    suffix: str = "_transformed"
-    
-    def setup(self, worker_id: str) -> "TestTransformOperator":
-        return TestTransformOperator(self, worker_id)
+class TestSourceConfig(OperatorConfig):
+    """Config for test source operator."""
+    num_records: int = 100
+    batch_size: int = 10
+
+# Set operator_class after class definition
+TestSourceConfig.operator_class = TestSourceOperator
 
 
 class TestTransformOperator(Operator):
     """Transform operator that modifies data."""
     
-    def __init__(self, config: TestTransformConfig, worker_id: str):
-        self.config = config
-        self.worker_id = worker_id
+    def __init__(self, config: "TestTransformConfig", worker_id: str = None):
+        super().__init__(config, worker_id)
         self._processed = 0
     
     def process_split(self, split: Split, payload: Optional[SplitPayload]) -> Optional[SplitPayload]:
@@ -122,11 +111,12 @@ class TestTransformOperator(Operator):
 
 
 @dataclass
-class TestSinkConfig(OperatorConfig):
-    """Config for test sink operator."""
-    
-    def setup(self, worker_id: str) -> "TestSinkOperator":
-        return TestSinkOperator(self, worker_id)
+class TestTransformConfig(OperatorConfig):
+    """Config for test transform operator."""
+    suffix: str = "_transformed"
+
+# Set operator_class after class definition
+TestTransformConfig.operator_class = TestTransformOperator
 
 
 class TestSinkOperator(Operator):
@@ -135,9 +125,8 @@ class TestSinkOperator(Operator):
     # Shared storage for test verification
     collected_records: List[Dict] = []
     
-    def __init__(self, config: TestSinkConfig, worker_id: str):
-        self.config = config
-        self.worker_id = worker_id
+    def __init__(self, config: "TestSinkConfig", worker_id: str = None):
+        super().__init__(config, worker_id)
     
     def process_split(self, split: Split, payload: Optional[SplitPayload]) -> Optional[SplitPayload]:
         """Collect records from payload."""
@@ -156,6 +145,15 @@ class TestSinkOperator(Operator):
     @classmethod
     def reset(cls):
         cls.collected_records = []
+
+
+@dataclass
+class TestSinkConfig(OperatorConfig):
+    """Config for test sink operator."""
+    pass
+
+# Set operator_class after class definition
+TestSinkConfig.operator_class = TestSinkOperator
 
 
 # ============================================================================
