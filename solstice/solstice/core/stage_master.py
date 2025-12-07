@@ -540,7 +540,7 @@ class StageWorker:
                 self.upstream_topic,
                 offset=offset,
                 max_records=self.config.batch_size,
-                timeout_ms=100,
+                timeout_ms=2000,  # Longer timeout for Tansu consumer
             )
             
             # Debug: Check queue status periodically

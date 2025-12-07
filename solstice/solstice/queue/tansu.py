@@ -420,18 +420,16 @@ class TansuBackend(QueueBackend):
         # Seek to the desired offset
         consumer.seek(tp, offset)
         
-        # Important: Wait a moment after seek for the consumer to be ready
-        await asyncio.sleep(0.05)
-        
-        # Fetch records using getmany
+        # Fetch records using getmany with proper timeout
         records = []
         try:
-            batch = await asyncio.wait_for(
-                consumer.getmany(tp, max_records=max_records, timeout_ms=timeout_ms),
-                timeout=(timeout_ms / 1000) + 2,
+            # getmany returns {TopicPartition: [ConsumerRecord]}
+            batch = await consumer.getmany(
+                timeout_ms=timeout_ms,
+                max_records=max_records,
             )
             
-            for tp_records in batch.values():
+            for tp_key, tp_records in batch.items():
                 for record in tp_records:
                     records.append(Record(
                         offset=record.offset,
