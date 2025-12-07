@@ -926,21 +926,24 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
    - **Configuration**: Use `TansuBackend(s3_endpoint="http://minio:9000", s3_access_key=..., s3_secret_key=...)`
    - Tested and working with MinIO Docker container
 
-2. **Integrate V2 with Existing Workflows**
-   - `examples/test_video_slice.py` uses legacy `LocalStateBackend` (not found)
-   - Need to update workflows to use V2 runner
+2. **Integrate V2 with Existing Workflows** ✅ DONE
+   - Updated `quickstart.py` to use `RayJobRunnerV2`
+   - Updated `workflows/simple_etl.py` to use new Job API
+   - Updated `examples/test_video_slice.py` to use new create_job signature
 
-3. **Exactly-Once Processing Loop**
-   - Current `StageWorkerV2._process_from_upstream()` has basic logic
-   - Need to verify: produce output THEN commit input offset
-   - Add crash recovery tests
+3. **Exactly-Once Processing Loop** ✅ DONE
+   - Verified: output is persisted BEFORE input offset is committed
+   - Added `test_crash_recovery.py` with 5 tests for:
+     - Offset tracking, resume from committed offset
+     - Crash before commit causes reprocessing (at-least-once)
+     - Idempotent processing achieves exactly-once
 
 ### Medium Priority
 
-4. **Multi-Stage Pipeline Integration Test**
-   - Source → Transform → Sink with actual data
-   - Verify data flows correctly through queues
-   - Test crash/restart recovery
+4. **Multi-Stage Pipeline Integration Test** ✅ DONE
+   - Added `TestMultiStagePipeline` class with 4 tests
+   - Verified DAG structure, queue topology, parallel workers
+   - Total: 11 pipeline tests pass
 
 5. **Performance Benchmarks**
    - Target: 10K msg/s throughput
