@@ -1,32 +1,19 @@
 """Runtime modules for executing Solstice jobs.
 
-V2 Runtime (Recommended):
-- RayJobRunnerV2: Async runner with queue-based communication
+Components:
+- RayJobRunner: Async runner with queue-based communication
 - run_pipeline: Convenience function for simple execution
-
-Legacy Runtime:
-- RayJobRunner: Original runner with master-to-master push
+- PipelineStatus: Status enum for pipeline state
 """
 
-# V2 Runtime (recommended)
-from solstice.runtime.ray_runner_v2 import (
-    RayJobRunnerV2,
+from solstice.runtime.ray_runner import (
+    RayJobRunner,
     run_pipeline,
     PipelineStatus,
 )
 
-# Legacy Runtime
-from solstice.runtime.ray_runner import RayJobRunner
-
 __all__ = [
-    # V2 (recommended)
-    "RayJobRunnerV2",
+    "RayJobRunner",
     "run_pipeline",
     "PipelineStatus",
-    
-    # Legacy
-    "RayJobRunner",
 ]
-
-
-

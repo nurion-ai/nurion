@@ -1,420 +1,347 @@
-"""Ray runtime for executing Solstice jobs."""
+"""Ray runtime for executing Solstice jobs with queue-based architecture.
+
+Architecture:
+- Workers pull directly from upstream queues
+- Masters manage their output queue
+- Offset-based recovery via queue backends
+"""
 
 from __future__ import annotations
 
-import logging
+import asyncio
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import ray
-import ray.actor
-from solstice.utils.logging import create_ray_logger
-from solstice.core.stage_master import StageStatus
-from solstice.actors.meta_service import MetaService
+
 from solstice.core.job import Job
-from solstice.state.checkpoint_manager import CheckpointManager
+from solstice.core.stage_master import (
+    StageMaster,
+    StageConfig,
+    QueueEndpoint,
+    QueueType,
+)
+from solstice.utils.logging import create_ray_logger
+
+
+@dataclass
+class PipelineStatus:
+    """Status of the entire pipeline."""
+    job_id: str
+    is_running: bool
+    stages: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    start_time: Optional[float] = None
+    elapsed_time: float = 0.0
+    error: Optional[str] = None
 
 
 class RayJobRunner:
-    """Control-plane responsible for running a :class:`Job` on Ray."""
-
-    def __init__(self, job: Job, ray_init_kwargs: Optional[dict[str, Any]] = None) -> None:
+    """Job runner using queue-based architecture.
+    
+    Features:
+    - StageMaster for simplified, output-queue only management
+    - Workers pull from upstream queues
+    - Offset-based recovery via queue backends
+    - Async-first design
+    
+    Example:
+        ```python
+        job = Job(job_id="my_job")
+        job.add_stage(source_stage)
+        job.add_stage(transform_stage)
+        job.add_stage(sink_stage)
+        
+        runner = RayJobRunner(job)
+        await runner.run()
+        ```
+    """
+    
+    def __init__(
+        self,
+        job: Job,
+        queue_type: QueueType = QueueType.RAY,
+        ray_init_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        """Initialize the runner.
+        
+        Args:
+            job: The job to run
+            queue_type: Type of queue backend (RAY for testing, TANSU for production)
+            ray_init_kwargs: Arguments to pass to ray.init()
+        """
         self.job = job
+        self.queue_type = queue_type
         self._ray_init_kwargs = ray_init_kwargs or {}
-
-        self.logger = create_ray_logger(f"RayJobRunner-{job.job_id}")
-
-        self.meta_service: Optional[ray.actor.ActorHandle] = None
-        self.checkpoint_manager: Optional[CheckpointManager] = None
-        self.stage_actor_refs: dict[str, ray.actor.ActorHandle] = {}
-        self.stage_run_refs: dict[str, ray.ObjectRef] = {}
-
+        
+        self.logger = create_ray_logger(f"RunnerV2-{job.job_id}")
+        
+        # Stage masters (not Ray actors - they manage their own workers)
+        self._masters: Dict[str, StageMaster] = {}
+        self._master_tasks: Dict[str, asyncio.Task] = {}
+        
+        # State
         self._initialized = False
         self._running = False
+        self._start_time: Optional[float] = None
+        self._error: Optional[str] = None
+        
+        # DAG info
         self._reverse_dag: Dict[str, List[str]] = {}
-
-        self.job.attach_ray_runner(self)
-
-        self._stage_run_poll_interval = float(self.job.config.get("stage_run_poll_interval", 0.05))
-
-    # ------------------------------------------------------------------
-    # Lifecycle helpers
-    # ------------------------------------------------------------------
+    
     def _ensure_ray(self) -> None:
+        """Ensure Ray is initialized."""
         if not ray.is_initialized():
             ray.init(ignore_reinit_error=True, **self._ray_init_kwargs)
-
-    def initialize(self) -> None:
+    
+    async def initialize(self) -> None:
+        """Initialize the pipeline."""
         if self._initialized:
             return
-
+        
         self._ensure_ray()
-        self.logger.info("Initializing job %s", self.job.job_id)
-
-        # Initialize checkpoint manager
-        self.checkpoint_manager = CheckpointManager(
-            job_id=self.job.job_id,
-            store=self.job.checkpoint_store,
-            config=self.job.checkpoint_config,
-        )
-
-        self.meta_service = MetaService.remote(
-            job_id=self.job.job_id,
-            checkpoint_store=self.job.checkpoint_store,
-            config=self.job.config,
-        )
-
+        self.logger.info(f"Initializing job {self.job.job_id}")
+        
+        # Build reverse DAG (stage -> its upstreams)
         self._reverse_dag = self.job.build_reverse_dag()
+        
+        # Create stage masters in topological order
+        # First, create all masters without upstream connections
         for stage_id, stage in self.job.stages.items():
-            ray.get(
-                self.meta_service.add_stage.remote(
-                    stage_id=stage_id,
-                    stage_config=stage.to_dict(),
-                    upstream_stages=self._reverse_dag.get(stage_id, []),
+            # Get or create stage config
+            if hasattr(stage, 'config_v2') and stage.config_v2:
+                config = stage.config_v2
+            else:
+                # Create default config with specified queue type
+                config = StageConfig(
+                    queue_type=self.queue_type,
+                    min_workers=stage.min_parallelism,
+                    max_workers=stage.max_parallelism,
                 )
+            
+            master = StageMaster(
+                job_id=self.job.job_id,
+                stage=stage,
+                config=config,
             )
-
-        for stage_id, stage in self.job.stages.items():
-            actor_name = stage_id
-            upstream_stages = self._reverse_dag.get(stage_id, [])
-            stage_master = (
-                ray.remote(stage.master_config.master_class)
-                .options(name=actor_name, max_concurrency=10, num_cpus=0.2)
-                .remote(
-                    job_id=self.job.job_id,
-                    upstream_stages=upstream_stages,
-                    stage=stage,
-                )
-            )
-            self.stage_actor_refs[stage_id] = stage_master
-            ray.get(self.meta_service.register_stage_master.remote(stage_id, stage_master))
-
-            # Register stage with checkpoint manager (unless skipped)
-            if not stage.skip_checkpoint:
-                self.checkpoint_manager.register_stage(stage_id)
-
-        # Configure upstream references for Pull-based data flow
-        # Each stage pulls from its upstreams (reverse of the old push model)
-        for stage_id, actor_ref in self.stage_actor_refs.items():
+            self._masters[stage_id] = master
+        
+        # Connect upstreams in topological order
+        # This ensures upstream masters are started before downstream
+        processing_order = self._get_topological_order()
+        
+        for stage_id in processing_order:
+            master = self._masters[stage_id]
             upstream_ids = self._reverse_dag.get(stage_id, [])
-            upstream_mapping = {
-                upstream_id: self.stage_actor_refs[upstream_id]
-                for upstream_id in upstream_ids
-                if upstream_id in self.stage_actor_refs
-            }
-            ray.get(actor_ref.configure_upstream.remote(upstream_mapping))
-
+            
+            if upstream_ids:
+                # Get first upstream's endpoint and topic
+                # (for multi-input stages, this would need more complex handling)
+                upstream_id = upstream_ids[0]
+                upstream_master = self._masters[upstream_id]
+                
+                # Start upstream to get its endpoint
+                if not upstream_master._running:
+                    await upstream_master.start()
+                
+                # Update master with upstream info
+                master.upstream_endpoint = upstream_master._output_endpoint
+                master.upstream_topic = upstream_master._output_topic
+    
         self._initialized = True
-        self.logger.info(
-            "Initialized %d stages for job %s", len(self.stage_actor_refs), self.job.job_id
-        )
-
-        # Auto-restore from checkpoint if available
-        if self.job.checkpoint_config.enabled:
-            self._try_restore_from_checkpoint()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-    def _start_stage_loops(self) -> None:
-        if not self.stage_actor_refs:
-            return
-        started: List[str] = []
-        for stage_id, actor_ref in self.stage_actor_refs.items():
-            if stage_id in self.stage_run_refs:
-                continue
-            run_ref = actor_ref.run.remote(poll_interval=self._stage_run_poll_interval)
-            self.stage_run_refs[stage_id] = run_ref
-            started.append(stage_id)
-        if started:
-            self.logger.debug("Started stage run loops for: %s", ", ".join(sorted(started)))
-
-    def _check_stage_run_refs(self) -> None:
-        if not self.stage_run_refs:
-            return
-        for stage_id, run_ref in list(self.stage_run_refs.items()):
-            ready_refs, _ = ray.wait([run_ref], timeout=0)
-            if ready_refs:
-                try:
-                    ray.get(run_ref)
-                except Exception as exc:
-                    self.logger.exception(f"Stage {stage_id} run loop failed: {exc}")
-                    raise
-                # else:
-                #     self.logger.error(
-                #         "Stage %s run loop exited unexpectedly; stopping job", stage_id
-                #     )
-                #     raise RuntimeError(f"Stage {stage_id} run loop exited unexpectedly")
-
-    def _stop_stage_loops(self) -> None:
-        if not self.stage_actor_refs:
-            return
-        if self.stage_run_refs and self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug(
-                "Stopping stage run loops for: %s", ", ".join(sorted(self.stage_run_refs.keys()))
-            )
-        stop_refs = []
-        for actor_ref in self.stage_actor_refs.values():
-            stop_refs.append(actor_ref.stop.remote())
-        if stop_refs:
-            ray.get(stop_refs)
-
-        if self.stage_run_refs:
-            try:
-                ray.get(list(self.stage_run_refs.values()), timeout=10)
-            except Exception:
-                pass
-        self.stage_run_refs.clear()
-
-    def _is_pipeline_idle(self) -> bool:
-        """Check if all stages are idle (no pending work and upstreams finished)."""
-        if not self.stage_actor_refs:
-            return True
-
-        for stage_id, actor_ref in self.stage_actor_refs.items():
-            status: StageStatus = ray.get(actor_ref.get_stage_status.remote())
-
-            # Check for failed stages (fail-fast)
-            if status.failed:
-                self.logger.error(f"Stage {stage_id} failed: {status.failure_message}")
-                raise RuntimeError(f"Stage {stage_id} failed: {status.failure_message}")
-
-            # Check if upstreams are finished
-            if status.upstream_finished and not all(status.upstream_finished.values()):
-                return False
-
-            # Check if stage has pending work
-            if status.pending_splits > 0 or status.active_splits > 0 or status.inflight_results > 0:
-                return False
-
-        return True
-
-    def run(self, poll_interval: float = 0.05, timeout: Optional[float] = None) -> None:
-        self.initialize()
-        if not self._running:
-            ray.get(self.meta_service.start_job.remote())
-            self._running = True
-
-        self._start_stage_loops()
-
-        deadline = time.time() + timeout if timeout is not None else None
-        last_checkpoint_check = time.time()
-        checkpoint_check_interval = 1.0  # Check every 1 second
-
-        try:
-            while self._running:
-                if deadline is not None and time.time() > deadline:
-                    raise TimeoutError(
-                        f"Timeout while waiting for job {self.job.job_id} to complete."
-                    )
-                self._check_stage_run_refs()
-
-                # Periodic checkpoint trigger check
-                if (
-                    self.job.checkpoint_config.enabled
-                    and time.time() - last_checkpoint_check >= checkpoint_check_interval
-                ):
-                    last_checkpoint_check = time.time()
-                    self._maybe_trigger_checkpoint()
-
-                if self._is_pipeline_idle():
-                    self.logger.info("All stages idle; stopping job %s", self.job.job_id)
-                    self._stop()
-                    break
-
-                time.sleep(poll_interval)
-        except Exception:
-            self._stop()
-            raise
-
-    def _maybe_trigger_checkpoint(self) -> None:
-        """Check if a checkpoint should be triggered and trigger it if so."""
-        if self.checkpoint_manager is None:
-            return
-
-        try:
-            if not self.checkpoint_manager.should_trigger_checkpoint():
-                return
-
-            self.logger.info("Auto-triggering checkpoint for job %s", self.job.job_id)
-            checkpoint_id = self.checkpoint_manager.trigger_checkpoint()
-
-            if checkpoint_id:
-                # Collect checkpoint data only from registered stages
-                registered_stages = self.checkpoint_manager.get_registered_stages()
-                for stage_id in registered_stages:
-                    actor_ref = self.stage_actor_refs.get(stage_id)
-                    if actor_ref is None:
-                        continue
-                    try:
-                        ray.get(actor_ref.trigger_checkpoint.remote(checkpoint_id), timeout=30)
-                        data = ray.get(actor_ref.get_checkpoint_data.remote(), timeout=30)
-                        if data:
-                            from solstice.state.store import StageCheckpointData
-
-                            self.checkpoint_manager.collect_stage_checkpoint(
-                                stage_id, StageCheckpointData.from_dict(data)
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Failed to checkpoint stage {stage_id}: {e}")
-
-                # Finalize checkpoint
-                self.checkpoint_manager.finalize_checkpoint()
-
-        except Exception as e:
-            self.logger.warning("Error during checkpoint trigger: %s", e)
-
-    def _stop(self) -> None:
-        self.logger.debug("Stopping job %s (running=%s)", self.job.job_id, self._running)
-        self._stop_stage_loops()
-        if self._running and self.meta_service is not None:
-            ray.get(self.meta_service.stop_job.remote())
-            self._running = False
-
-    def shutdown(self) -> None:
-        self._stop()
-        self.stage_actor_refs.clear()
-        self.stage_run_refs.clear()
-        self.meta_service = None
-        self.checkpoint_manager = None
-        self._initialized = False
-
-    # ------------------------------------------------------------------
-    # Checkpointing
-    # ------------------------------------------------------------------
-    def _try_restore_from_checkpoint(self) -> bool:
-        """Auto-restore from the latest checkpoint if available.
-
-        Called during initialization to resume from a previous checkpoint.
-        Returns True if restored, False if no checkpoint available.
-        """
-        if self.checkpoint_manager is None:
-            return False
-
-        checkpoint_id = self.checkpoint_manager.get_latest_checkpoint_id()
-        if not checkpoint_id:
-            self.logger.debug("No checkpoint found for job %s", self.job.job_id)
-            return False
-
-        self.logger.info(
-            "Found checkpoint %s for job %s, attempting auto-restore",
-            checkpoint_id,
-            self.job.job_id,
-        )
-        return self._restore_stages_from_checkpoint(checkpoint_id)
-
-    def trigger_checkpoint(self) -> Optional[str]:
-        """Manually trigger a checkpoint."""
-        if not self._running:
-            self.logger.warning("Job %s is not running", self.job.job_id)
-            return None
-
-        if self.checkpoint_manager is None:
-            return None
-
-        self.logger.info("Triggering checkpoint for job %s", self.job.job_id)
-        self._maybe_trigger_checkpoint()
-        return self.checkpoint_manager.get_latest_checkpoint_id()
-
-    def restore_from_checkpoint(self, checkpoint_id: Optional[str] = None) -> bool:
-        """Restore job state from a checkpoint.
-
+        self.logger.info(f"Initialized {len(self._masters)} stages")
+    
+    def _get_topological_order(self) -> List[str]:
+        """Get stages in topological order (sources first)."""
+        # Simple BFS from sources
+        in_degree = {stage_id: len(self._reverse_dag.get(stage_id, []))
+                     for stage_id in self._masters}
+        
+        # Start with sources (no upstreams)
+        queue = [s for s, d in in_degree.items() if d == 0]
+        result = []
+        
+        while queue:
+            stage_id = queue.pop(0)
+            result.append(stage_id)
+            
+            # Find downstream stages
+            for downstream_id, upstreams in self._reverse_dag.items():
+                if stage_id in upstreams:
+                    in_degree[downstream_id] -= 1
+                    if in_degree[downstream_id] == 0:
+                        queue.append(downstream_id)
+        
+        return result
+    
+    async def run(self, timeout: Optional[float] = None) -> PipelineStatus:
+        """Run the pipeline until completion.
+        
         Args:
-            checkpoint_id: Specific checkpoint to restore, or latest if None
-
+            timeout: Maximum time to wait (seconds), None for no timeout
+        
         Returns:
-            True if restored successfully
+            Final pipeline status
         """
         if not self._initialized:
-            self.initialize()
-
-        if self.checkpoint_manager is None:
-            self.logger.error("Checkpoint manager not initialized")
-            return False
-
-        if checkpoint_id is None:
-            checkpoint_id = self.checkpoint_manager.get_latest_checkpoint_id()
-            if not checkpoint_id:
-                self.logger.error("No checkpoint available to restore job %s", self.job.job_id)
-                return False
-
-        self.logger.info("Restoring job %s from checkpoint %s", self.job.job_id, checkpoint_id)
-        return self._restore_stages_from_checkpoint(checkpoint_id)
-
-    def _restore_stages_from_checkpoint(self, checkpoint_id: str) -> bool:
-        """Internal: restore all stages from a checkpoint manifest."""
-        manifest = self.checkpoint_manager.load_checkpoint(checkpoint_id)
-        if not manifest:
-            self.logger.warning("Failed to load checkpoint %s", checkpoint_id)
-            return False
-
-        restored_count = 0
-        for stage_id, stage_data in manifest.stages.items():
-            if stage_id in self.stage_actor_refs:
-                try:
-                    ray.get(
-                        self.stage_actor_refs[stage_id].restore_from_checkpoint.remote(
-                            stage_data.to_dict()
-                        ),
-                        timeout=60,
+            await self.initialize()
+        
+        self._running = True
+        self._start_time = time.time()
+        deadline = time.time() + timeout if timeout else None
+        
+        try:
+            # Start all masters that haven't been started
+            for stage_id, master in self._masters.items():
+                if not master._running:
+                    await master.start()
+            
+            # Create tasks for all master run loops
+            for stage_id, master in self._masters.items():
+                if stage_id not in self._master_tasks:
+                    task = asyncio.create_task(
+                        master.run(),
+                        name=f"master_{stage_id}",
                     )
-                    restored_count += 1
-                except Exception as e:
-                    self.logger.warning(f"Failed to restore stage {stage_id}: {e}")
-
-        if restored_count > 0:
-            self.logger.info("Restored %d stages from checkpoint %s", restored_count, checkpoint_id)
-            return True
-
-        return False
-
-    def list_checkpoints(self) -> List[str]:
-        """List available checkpoints."""
-        if self.checkpoint_manager is None:
-            return []
-        return self.checkpoint_manager.list_checkpoints()
-
-    def cleanup_checkpoints(self, keep_last_n: int = 5) -> None:
-        """Clean up old checkpoints."""
-        if self.checkpoint_manager is None:
-            return
-        self.checkpoint_manager.cleanup_old_checkpoints(keep_last_n)
-
-    # ------------------------------------------------------------------
-    # Observability
-    # ------------------------------------------------------------------
-    def get_status(self) -> Dict[str, Any]:
-        if not self._initialized:
-            return {
-                "job_id": self.job.job_id,
-                "is_running": False,
-                "initialized": False,
+                    self._master_tasks[stage_id] = task
+            
+            # Wait for all masters to complete
+            while self._running and self._master_tasks:
+                # Check timeout
+                if deadline and time.time() > deadline:
+                    raise TimeoutError(f"Pipeline timeout after {timeout}s")
+                
+                # Check for completed tasks
+                done_stages = []
+                for stage_id, task in list(self._master_tasks.items()):
+                    if task.done():
+                        try:
+                            result = task.result()
+                            self.logger.info(f"Stage {stage_id} completed: {result}")
+                        except Exception as e:
+                            self._error = f"Stage {stage_id} failed: {e}"
+                            self.logger.error(self._error)
+                            raise
+                        done_stages.append(stage_id)
+                
+                for stage_id in done_stages:
+                    del self._master_tasks[stage_id]
+                
+                if not self._master_tasks:
+                    break
+                
+                await asyncio.sleep(0.1)
+            
+            self.logger.info(f"Pipeline completed successfully")
+            return self.get_status()
+            
+        except Exception as e:
+            self._error = str(e)
+            raise
+        finally:
+            self._running = False
+            await self.stop()
+    
+    async def stop(self) -> None:
+        """Stop the pipeline."""
+        self._running = False
+        
+        # Cancel all running tasks
+        for stage_id, task in list(self._master_tasks.items()):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        
+        self._master_tasks.clear()
+        
+        # Stop all masters
+        for stage_id, master in self._masters.items():
+            try:
+                await master.stop()
+            except Exception as e:
+                self.logger.warning(f"Error stopping stage {stage_id}: {e}")
+        
+        self.logger.info("Pipeline stopped")
+    
+    def get_status(self) -> PipelineStatus:
+        """Get current pipeline status."""
+        stages = {}
+        for stage_id, master in self._masters.items():
+            status = master.get_status()
+            stages[stage_id] = {
+                "worker_count": status.worker_count,
+                "output_queue_size": status.output_queue_size,
+                "is_running": status.is_running,
+                "is_finished": status.is_finished,
+                "failed": status.failed,
             }
-
-        try:
-            status = ray.get(self.meta_service.get_job_status.remote(), timeout=5)
-            status["is_running"] = self._running
-            return status
-        except Exception as exc:
-            self.logger.error("Failed to fetch job status: %s", exc)
-            return {"job_id": self.job.job_id, "error": str(exc)}
-
-    def get_metrics(self) -> Dict[str, Any]:
-        if not self._initialized:
-            return {}
-        try:
-            return ray.get(self.meta_service.collect_all_metrics.remote(), timeout=10)
-        except Exception as exc:
-            self.logger.error("Failed to collect metrics: %s", exc)
-            return {}
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
+        
+        elapsed = time.time() - self._start_time if self._start_time else 0
+        
+        return PipelineStatus(
+            job_id=self.job.job_id,
+            is_running=self._running,
+            stages=stages,
+            start_time=self._start_time,
+            elapsed_time=elapsed,
+            error=self._error,
+        )
+    
+    async def get_status_async(self) -> PipelineStatus:
+        """Get current pipeline status with queue metrics."""
+        stages = {}
+        for stage_id, master in self._masters.items():
+            status = await master.get_status_async()
+            stages[stage_id] = {
+                "worker_count": status.worker_count,
+                "output_queue_size": status.output_queue_size,
+                "is_running": status.is_running,
+                "is_finished": status.is_finished,
+                "failed": status.failed,
+            }
+        
+        elapsed = time.time() - self._start_time if self._start_time else 0
+        
+        return PipelineStatus(
+            job_id=self.job.job_id,
+            is_running=self._running,
+            stages=stages,
+            start_time=self._start_time,
+            elapsed_time=elapsed,
+            error=self._error,
+        )
+    
     @property
     def is_running(self) -> bool:
         return self._running
-
+    
     @property
     def is_initialized(self) -> bool:
         return self._initialized
+
+
+# Convenience function for simple pipeline execution
+async def run_pipeline(
+    job: Job,
+    queue_type: QueueType = QueueType.RAY,
+    timeout: Optional[float] = None,
+) -> PipelineStatus:
+    """Run a pipeline and return its status.
+    
+    Example:
+        ```python
+        job = Job(job_id="my_job")
+        # ... add stages ...
+        
+        status = await run_pipeline(job)
+        print(f"Completed in {status.elapsed_time:.2f}s")
+        ```
+    """
+    runner = RayJobRunner(job, queue_type=queue_type)
+    return await runner.run(timeout=timeout)
+
+
+

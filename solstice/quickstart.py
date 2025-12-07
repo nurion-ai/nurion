@@ -99,9 +99,9 @@ class PrintSinkOperator(SinkOperator):
 
 
 async def main_async():
-    """Run the quickstart example with V2 runner"""
-    from solstice.runtime import RayJobRunnerV2
-    from solstice.core.stage_master_v2 import QueueType
+    """Run the quickstart example"""
+    from solstice.runtime import RayJobRunner
+    from solstice.core.stage_master import QueueType
     
     # Setup logging
     logging.basicConfig(
@@ -109,7 +109,7 @@ async def main_async():
     )
 
     print("=" * 80)
-    print("Solstice Streaming - Quickstart Example (V2)")
+    print("Solstice Streaming - Quickstart Example")
     print("=" * 80)
     print()
 
@@ -165,8 +165,8 @@ async def main_async():
     job.add_stage(filter_stage, upstream_stages=["square"])
     job.add_stage(sink_stage, upstream_stages=["filter"])
 
-    # Use V2 runner with queue-based architecture
-    runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
+    # Use runner with queue-based architecture
+    runner = RayJobRunner(job, queue_type=QueueType.RAY)
 
     print("Initializing job...")
     await runner.initialize()

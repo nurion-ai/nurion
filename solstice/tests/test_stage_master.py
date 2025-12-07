@@ -15,10 +15,10 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from solstice.queue import MemoryBackend
-from solstice.core.stage_master_v2 import (
-    StageMasterV2,
-    StageConfigV2,
-    StageWorkerV2,
+from solstice.core.stage_master import (
+    StageMaster,
+    StageConfig,
+    StageWorker,
     QueueType,
     QueueMessage,
     QueueEndpoint,
@@ -94,7 +94,7 @@ def mock_stage():
 @pytest.fixture
 def stage_config():
     """Provide default stage config using RAY backend for distributed tests."""
-    return StageConfigV2(
+    return StageConfig(
         queue_type=QueueType.RAY,
         min_workers=1,
         max_workers=2,
@@ -141,15 +141,15 @@ class TestQueueMessage:
 
 
 # ============================================================================
-# StageConfigV2 Tests
+# StageConfig Tests
 # ============================================================================
 
-class TestStageConfigV2:
-    """Tests for StageConfigV2."""
+class TestStageConfig:
+    """Tests for StageConfig."""
     
     def test_default_values(self):
         """Test default config values."""
-        config = StageConfigV2()
+        config = StageConfig()
         
         assert config.queue_type == QueueType.RAY  # Default is RAY for distributed
         assert config.min_workers == 1
@@ -158,7 +158,7 @@ class TestStageConfigV2:
     
     def test_tansu_config(self):
         """Test Tansu-specific config."""
-        config = StageConfigV2(
+        config = StageConfig(
             queue_type=QueueType.TANSU,
             tansu_storage_url="s3://my-bucket/",
             tansu_port=19092,
@@ -170,7 +170,7 @@ class TestStageConfigV2:
     
     def test_to_dict(self):
         """Test config serialization."""
-        config = StageConfigV2(batch_size=50)
+        config = StageConfig(batch_size=50)
         d = config.to_dict()
         
         assert d["batch_size"] == 50
@@ -178,7 +178,7 @@ class TestStageConfigV2:
 
 
 # ============================================================================
-# StageMasterV2 Tests
+# StageMaster Tests
 # ============================================================================
 
 @pytest.fixture(scope="class")
@@ -189,13 +189,13 @@ def ray_init():
     ray.shutdown()
 
 
-class TestStageMasterV2:
-    """Tests for StageMasterV2."""
+class TestStageMaster:
+    """Tests for StageMaster."""
     
     @pytest.mark.asyncio
     async def test_create_output_queue(self, mock_stage, stage_config, ray_init):
         """Test that master creates output queue."""
-        master = StageMasterV2(
+        master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
@@ -211,7 +211,7 @@ class TestStageMasterV2:
     @pytest.mark.asyncio
     async def test_get_status(self, mock_stage, stage_config, ray_init):
         """Test getting stage status."""
-        master = StageMasterV2(
+        master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
@@ -234,7 +234,7 @@ class TestStageMasterV2:
     @pytest.mark.asyncio
     async def test_stop_idempotent(self, mock_stage, stage_config, ray_init):
         """Test that stop can be called multiple times."""
-        master = StageMasterV2(
+        master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
@@ -249,7 +249,7 @@ class TestStageMasterV2:
         """Test getting output queue for downstream."""
         from solstice.queue import RayBackend
         
-        master = StageMasterV2(
+        master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
@@ -284,7 +284,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_produce_to_output_queue(self, mock_stage, stage_config, ray_context):
         """Test that messages can be produced to output queue."""
-        master = StageMasterV2(
+        master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
@@ -317,7 +317,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_two_stage_pipeline(self, ray_context):
         """Test two-stage pipeline with queue communication."""
-        stage_config = StageConfigV2(
+        stage_config = StageConfig(
             queue_type=QueueType.RAY,
             min_workers=1,
             max_workers=1,
@@ -325,7 +325,7 @@ class TestIntegration:
         
         # Stage 1 (source)
         stage1 = MockStage(stage_id="stage1")
-        master1 = StageMasterV2(
+        master1 = StageMaster(
             job_id="test_job",
             stage=stage1,
             config=stage_config,
@@ -347,7 +347,7 @@ class TestIntegration:
         
         # Stage 2 (consumer) - uses endpoint from stage1
         stage2 = MockStage(stage_id="stage2", upstream_stages=["stage1"])
-        master2 = StageMasterV2(
+        master2 = StageMaster(
             job_id="test_job",
             stage=stage2,
             config=stage_config,

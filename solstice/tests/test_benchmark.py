@@ -13,7 +13,7 @@ import pytest
 import ray
 
 from solstice.queue import MemoryBackend, RayBackend
-from solstice.core.stage_master_v2 import QueueMessage
+from solstice.core.stage_master import QueueMessage
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")

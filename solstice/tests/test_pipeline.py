@@ -20,8 +20,8 @@ from solstice.core.job import Job
 from solstice.core.stage import Stage
 from solstice.core.operator import Operator, OperatorConfig
 from solstice.core.models import Split, SplitPayload
-from solstice.core.stage_master_v2 import StageConfigV2, QueueType
-from solstice.runtime.ray_runner_v2 import RayJobRunnerV2, run_pipeline, PipelineStatus
+from solstice.core.stage_master import StageConfig, QueueType
+from solstice.runtime.ray_runner import RayJobRunner, run_pipeline, PipelineStatus
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -212,13 +212,13 @@ def two_stage_job():
 # Tests
 # ============================================================================
 
-class TestRayJobRunnerV2:
-    """Tests for RayJobRunnerV2."""
+class TestRayJobRunner:
+    """Tests for RayJobRunner."""
     
     @pytest.mark.asyncio
     async def test_initialization(self, simple_job, ray_cluster):
         """Test runner initialization."""
-        runner = RayJobRunnerV2(simple_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(simple_job, queue_type=QueueType.RAY)
         
         assert not runner.is_initialized
         assert not runner.is_running
@@ -231,7 +231,7 @@ class TestRayJobRunnerV2:
     @pytest.mark.asyncio
     async def test_get_status(self, simple_job, ray_cluster):
         """Test getting pipeline status."""
-        runner = RayJobRunnerV2(simple_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(simple_job, queue_type=QueueType.RAY)
         await runner.initialize()
         
         status = runner.get_status()
@@ -245,7 +245,7 @@ class TestRayJobRunnerV2:
     @pytest.mark.asyncio
     async def test_stop_before_run(self, simple_job, ray_cluster):
         """Test stopping before running."""
-        runner = RayJobRunnerV2(simple_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(simple_job, queue_type=QueueType.RAY)
         await runner.initialize()
         await runner.stop()  # Should not raise
         
@@ -267,7 +267,7 @@ class TestPipelineExecution:
         )
         job.add_stage(source_stage)
         
-        runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.RAY)
         await runner.initialize()
         
         # Start the source
@@ -296,7 +296,7 @@ class TestQueueCommunication:
     @pytest.mark.asyncio
     async def test_upstream_downstream_connection(self, two_stage_job, ray_cluster):
         """Test that downstream stage connects to upstream queue."""
-        runner = RayJobRunnerV2(two_stage_job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(two_stage_job, queue_type=QueueType.RAY)
         await runner.initialize()
         
         source_master = runner._masters["source"]
@@ -329,7 +329,7 @@ class TestExactlyOnce:
         await backend.create_topic(topic)
         
         # Produce messages
-        from solstice.core.stage_master_v2 import QueueMessage
+        from solstice.core.stage_master import QueueMessage
         for i in range(10):
             msg = QueueMessage(
                 message_id=f"msg_{i}",
@@ -375,7 +375,7 @@ class TestIntegration:
         )
         job.add_stage(source_stage)
         
-        runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.RAY)
         await runner.initialize()
         
         source_master = runner._masters["source"]
@@ -464,7 +464,7 @@ class TestMultiStagePipeline:
         )
         job.add_stage(transform_stage, upstream_stages=["source"])
         
-        runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.RAY)
         await runner.initialize()
         
         # Verify topology
@@ -506,7 +506,7 @@ class TestMultiStagePipeline:
         )
         job.add_stage(transform_stage, upstream_stages=["source"])
         
-        runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.RAY)
         await runner.initialize()
         
         transform_master = runner._masters["transform"]
@@ -534,7 +534,7 @@ class TestMultiStagePipeline:
         )
         job.add_stage(source_stage)
         
-        runner = RayJobRunnerV2(job, queue_type=QueueType.RAY)
+        runner = RayJobRunner(job, queue_type=QueueType.RAY)
         
         try:
             # Run should complete (or timeout)

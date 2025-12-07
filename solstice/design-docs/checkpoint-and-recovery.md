@@ -950,9 +950,10 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
    - RayBackend: **2K msg/s** produce (remote overhead), **100K msg/s** fetch
    - Exceeds 10K msg/s target for batch operations
 
-6. **Topic Cleanup / GC**
-   - Old messages need garbage collection
-   - Based on minimum committed offset across consumers
+6. **Topic Cleanup / GC** ✅ DONE
+   - Added `truncate_before(topic, offset)` - delete records before offset
+   - Added `get_min_committed_offset(topic)` - find safe GC point
+   - Implemented in MemoryBackend and RayBackend
 
 7. **Remove V2 Suffix and Replace Legacy Code**
    - After V2 is validated stable, perform cleanup:
