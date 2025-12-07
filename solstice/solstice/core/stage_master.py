@@ -735,9 +735,12 @@ class StageWorker:
             )
             
             # Produce to output queue
-            await self.output_queue.produce(
+            offset = await self.output_queue.produce(
                 self.output_topic, output_message.to_bytes()
             )
+            self.logger.debug(f"Produced output for {message.split_id} at offset {offset}")
+        else:
+            self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
     
     def stop(self) -> None:
         """Stop the worker."""
