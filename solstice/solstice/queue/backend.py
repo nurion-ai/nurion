@@ -299,3 +299,41 @@ class QueueBackend(ABC):
             for more sophisticated health checks.
         """
         return True
+    
+    async def truncate_before(self, topic: str, offset: int) -> int:
+        """Truncate (garbage collect) records before the given offset.
+        
+        This is useful for cleaning up old messages that have been processed
+        by all consumers. The offset should typically be the minimum committed
+        offset across all consumer groups.
+        
+        Args:
+            topic: Name of the topic.
+            offset: Delete all records with offset < this value.
+        
+        Returns:
+            Number of records deleted.
+        
+        Note:
+            Default implementation is a no-op. Backends that support GC
+            should override this method.
+        """
+        return 0
+    
+    async def get_min_committed_offset(self, topic: str) -> Optional[int]:
+        """Get the minimum committed offset across all consumer groups.
+        
+        This is useful for determining which messages can be safely garbage
+        collected (all messages before this offset have been processed).
+        
+        Args:
+            topic: Name of the topic.
+        
+        Returns:
+            The minimum committed offset, or None if no offsets are committed.
+        
+        Note:
+            Default implementation returns None. Backends that track multiple
+            consumer groups should override this method.
+        """
+        return None

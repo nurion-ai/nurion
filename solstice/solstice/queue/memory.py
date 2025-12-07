@@ -284,3 +284,42 @@ class MemoryBackend(QueueBackend):
                         "next_offset": topic_data.next_offset,
                     }
             return stats
+    
+    async def truncate_before(self, topic: str, offset: int) -> int:
+        """Truncate (garbage collect) records before the given offset.
+        
+        Args:
+            topic: Name of the topic.
+            offset: Delete all records with offset < this value.
+        
+        Returns:
+            Number of records deleted.
+        """
+        with self._global_lock:
+            if topic not in self._topics:
+                return 0
+            topic_data = self._topics[topic]
+        
+        with topic_data.lock:
+            original_count = len(topic_data.records)
+            topic_data.records = [
+                r for r in topic_data.records if r[0] >= offset
+            ]
+            return original_count - len(topic_data.records)
+    
+    async def get_min_committed_offset(self, topic: str) -> Optional[int]:
+        """Get the minimum committed offset across all consumer groups.
+        
+        Args:
+            topic: Name of the topic.
+        
+        Returns:
+            The minimum committed offset, or None if no offsets are committed.
+        """
+        with self._global_lock:
+            min_offset = None
+            for (group, t), offset in self._committed_offsets.items():
+                if t == topic:
+                    if min_offset is None or offset < min_offset:
+                        min_offset = offset
+            return min_offset

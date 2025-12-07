@@ -149,6 +149,26 @@ class QueueActor:
             },
             "committed_offsets": dict(self._committed_offsets),
         }
+    
+    def truncate_before(self, topic: str, offset: int) -> int:
+        """Truncate records before the given offset."""
+        if topic not in self._topics:
+            return 0
+        
+        original_count = len(self._topics[topic])
+        self._topics[topic] = [
+            r for r in self._topics[topic] if r[0] >= offset
+        ]
+        return original_count - len(self._topics[topic])
+    
+    def get_min_committed_offset(self, topic: str) -> Optional[int]:
+        """Get minimum committed offset across all consumer groups."""
+        min_offset = None
+        for (group, t), offset in self._committed_offsets.items():
+            if t == topic:
+                if min_offset is None or offset < min_offset:
+                    min_offset = offset
+        return min_offset
 
 
 class RayBackend(QueueBackend):
@@ -310,6 +330,11 @@ class RayBackend(QueueBackend):
         if not self._actor:
             return {}
         return ray.get(self._actor.get_stats.remote())
-
-
-
+    
+    async def truncate_before(self, topic: str, offset: int) -> int:
+        """Truncate records before the given offset."""
+        return ray.get(self._actor.truncate_before.remote(topic, offset))
+    
+    async def get_min_committed_offset(self, topic: str) -> Optional[int]:
+        """Get minimum committed offset across all consumer groups."""
+        return ray.get(self._actor.get_min_committed_offset.remote(topic))
