@@ -148,6 +148,7 @@ class TestTansuMinioS3:
     @pytest.mark.asyncio
     async def test_produce_fetch_with_minio(self, minio_config):
         """Test produce and fetch operations with MinIO S3 backend."""
+        import uuid
         backend = TansuBackend(
             port=19093,
             startup_timeout=60.0,
@@ -157,7 +158,8 @@ class TestTansuMinioS3:
         try:
             await backend.start()
             
-            topic = "test-minio-topic"
+            # Use unique topic name to avoid conflicts from previous runs
+            topic = f"test-minio-topic-{uuid.uuid4().hex[:8]}"
             await backend.create_topic(topic)
             
             # Wait for topic to be ready
@@ -184,6 +186,7 @@ class TestTansuMinioS3:
     @pytest.mark.asyncio
     async def test_offset_commit_with_minio(self, minio_config):
         """Test offset commit and recovery with MinIO S3 backend."""
+        import uuid
         backend = TansuBackend(
             port=19094,
             startup_timeout=60.0,
@@ -193,7 +196,8 @@ class TestTansuMinioS3:
         try:
             await backend.start()
             
-            topic = "test-minio-offset-topic"
+            # Use unique topic name to avoid conflicts from previous runs
+            topic = f"test-minio-offset-topic-{uuid.uuid4().hex[:8]}"
             group = "test-consumer-group"
             
             await backend.create_topic(topic)
