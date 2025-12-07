@@ -371,12 +371,16 @@ class StageMaster:
         self._workers.clear()
         self._worker_tasks.clear()
         
-        # Stop output queue
+        # Note: Don't stop output queue here - downstream stages may still need it
+        # The queue will be cleaned up by the runner after all stages are done
+        
+        self.logger.info(f"Stage {self.stage_id} stopped")
+    
+    async def cleanup_queue(self) -> None:
+        """Clean up the output queue. Called by runner after all consumers are done."""
         if self._output_queue:
             await self._output_queue.stop()
             self._output_queue = None
-        
-        self.logger.info(f"Stage {self.stage_id} stopped")
     
     def get_output_queue(self) -> Optional[QueueBackend]:
         """Get the output queue for downstream stages."""
@@ -467,12 +471,17 @@ class StageWorker:
         # Initialize operator
         from solstice.core.operator import Operator
         operator_class = getattr(stage, 'operator_class', None)
+        
         if operator_class is not None:
-            # New style: operator_class + operator_config dict
+            # New style: Stage has operator_class directly
             self.operator: Operator = operator_class(config=stage.operator_config)
         elif hasattr(stage.operator_config, 'setup'):
             # Legacy style: OperatorConfig with setup() method
             self.operator: Operator = stage.operator_config.setup(worker_id=worker_id)
+        elif hasattr(stage.operator_config, 'operator_class') and stage.operator_config.operator_class:
+            # OperatorConfig has operator_class attribute (common pattern)
+            op_class = stage.operator_config.operator_class
+            self.operator: Operator = op_class(config=stage.operator_config, worker_id=worker_id)
         else:
             raise ValueError(f"Stage {stage.stage_id} has no valid operator configuration")
         
@@ -493,6 +502,7 @@ class StageWorker:
         elif endpoint.queue_type == QueueType.RAY:
             from solstice.queue import RayBackend
             # Use existing actor reference
+            self.logger.debug(f"Connecting to RayBackend actor: {endpoint.actor_ref}")
             queue = RayBackend.from_actor_ref(endpoint.actor_ref)
         else:
             queue = MemoryBackend()
@@ -507,9 +517,11 @@ class StageWorker:
         
         try:
             # Create queue connections
+            self.logger.info(f"Connecting to output queue: {self.output_endpoint}")
             self.output_queue = await self._create_queue_from_endpoint(self.output_endpoint)
             
             if self.upstream_endpoint and self.upstream_topic:
+                self.logger.info(f"Connecting to upstream queue: {self.upstream_endpoint}")
                 self.upstream_queue = await self._create_queue_from_endpoint(self.upstream_endpoint)
                 # Regular worker: pull from upstream
                 await self._process_from_upstream()
@@ -541,10 +553,12 @@ class StageWorker:
             self.consumer_group, self.upstream_topic
         ) or 0
         
-        self.logger.info(f"Starting from offset {offset}")
+        # Check topic exists
+        latest_check = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+        self.logger.info(f"Starting from offset {offset} on topic {self.upstream_topic}, current latest: {latest_check}")
         
         consecutive_empty = 0
-        max_empty_polls = 100  # Give up after 100 empty polls (~10 seconds)
+        max_empty_polls = 300  # Give up after 300 empty polls (~30 seconds)
         
         while self._running:
             # Fetch batch from upstream
@@ -554,6 +568,11 @@ class StageWorker:
                 max_records=self.config.batch_size,
                 timeout_ms=100,
             )
+            
+            # Debug: Check queue status
+            if consecutive_empty == 0:
+                latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+                self.logger.debug(f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}")
             
             if not records:
                 consecutive_empty += 1
@@ -575,7 +594,9 @@ class StageWorker:
                     await self._process_message(message)
                     self._processed_count += 1
                 except Exception as e:
-                    self.logger.error(f"Error processing message at offset {record.offset}: {e}")
+                    import traceback
+                    self.logger.error(f"Error processing message at offset {record.offset}: {type(e).__name__}: {e}")
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
                     self._error_count += 1
                     # Continue processing - don't block on single errors
                 
@@ -596,18 +617,26 @@ class StageWorker:
     
     async def _process_as_source(self) -> None:
         """Process as a source stage (no upstream)."""
-        # For source operators, we need to call generate_splits
-        # This is a simplified version - full implementation would handle pagination
         from solstice.core.models import Split
         
-        splits = self.operator.generate_splits() if hasattr(self.operator, 'generate_splits') else []
+        # Get splits from operator or generate from config
+        splits = []
+        if hasattr(self.operator, 'generate_splits'):
+            splits = list(self.operator.generate_splits())
+        elif hasattr(self.operator, 'fetch_splits'):
+            splits = list(self.operator.fetch_splits())
+        else:
+            # Try to generate splits from operator config (e.g., LanceTableSourceConfig)
+            splits = self._generate_splits_from_config()
+        
+        self.logger.info(f"Source worker processing {len(splits)} splits, output topic: {self.output_topic}")
         
         for split in splits:
             if not self._running:
                 break
             
             try:
-                # Process split
+                # Process split using operator
                 output_payload = self.operator.process_split(split, None)
                 
                 if output_payload:
@@ -615,17 +644,23 @@ class StageWorker:
                     output_ref = ray.put(output_payload)
                     
                     # Create output message
+                    # Use binary() for serialization (from_hex doesn't work)
+                    import base64
+                    ref_b64 = base64.b64encode(output_ref.binary()).decode('ascii')
+                    
                     message = QueueMessage(
                         message_id=f"{self.worker_id}_{self._processed_count}",
                         split_id=split.split_id,
-                        data_ref=output_ref.hex(),  # Serialize ObjectRef
+                        data_ref=ref_b64,  # Base64-encoded binary ObjectRef
                         metadata={"source_stage": self.stage_id},
                     )
                     
                     # Produce to output queue
-                    await self.output_queue.produce(
+                    self.logger.debug(f"Producing to topic {self.output_topic}")
+                    offset = await self.output_queue.produce(
                         self.output_topic, message.to_bytes()
                     )
+                    self.logger.debug(f"Produced message for {split.split_id} at offset {offset} on topic {self.output_topic}")
                 
                 self._processed_count += 1
                 
@@ -633,12 +668,63 @@ class StageWorker:
                 self.logger.error(f"Error processing split {split.split_id}: {e}")
                 self._error_count += 1
     
+    def _generate_splits_from_config(self) -> List:
+        """Generate splits from operator config (for Lance/Spark sources)."""
+        from solstice.core.models import Split
+        
+        config = self.stage.operator_config
+        splits = []
+        
+        # Handle LanceTableSourceConfig
+        if hasattr(config, 'dataset_uri'):
+            try:
+                import lance
+                
+                # Get storage options for S3
+                storage_options = None
+                if config.dataset_uri.startswith("s3://"):
+                    from solstice.utils.remote import get_lance_storage_options
+                    bucket = config.dataset_uri[5:].split("/")[0]
+                    storage_options = get_lance_storage_options(bucket)
+                
+                dataset = lance.dataset(config.dataset_uri, storage_options=storage_options)
+                split_size = getattr(config, 'split_size', 1024)
+                filter_expr = getattr(config, 'filter', None)
+                columns = getattr(config, 'columns', None)
+                
+                sorted_fragments = sorted(dataset.get_fragments(), key=lambda x: x.fragment_id)
+                split_idx = 0
+                for frag in sorted_fragments:
+                    row_count = frag.count_rows()
+                    for offset in range(0, row_count, split_size):
+                        splits.append(Split(
+                            split_id=f"{self.stage_id}_split_{split_idx}",
+                            stage_id=self.stage_id,
+                            data_range={
+                                "filter": filter_expr,
+                                "columns": columns,
+                                "fragment_id": frag.fragment_id,
+                                "offset": offset,
+                                "limit": split_size,
+                            },
+                        ))
+                        split_idx += 1
+                
+                self.logger.info(f"Generated {len(splits)} splits from Lance dataset")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to generate splits from Lance config: {e}")
+        
+        return splits
+    
     async def _process_message(self, message: QueueMessage) -> None:
         """Process a single message."""
         from solstice.core.models import Split, SplitPayload
+        import base64
         
-        # Reconstruct the data reference
-        data_ref = ray.ObjectRef.from_hex(message.data_ref)
+        # Reconstruct the data reference from base64-encoded binary
+        ref_binary = base64.b64decode(message.data_ref)
+        data_ref = ray.ObjectRef(ref_binary)
         
         # Fetch the actual payload
         payload: SplitPayload = ray.get(data_ref, timeout=self.config.processing_timeout_s)
@@ -659,10 +745,14 @@ class StageWorker:
             output_ref = ray.put(output_payload)
             
             # Create output message
+            # Use binary() for serialization (base64 encoded)
+            import base64
+            ref_b64 = base64.b64encode(output_ref.binary()).decode('ascii')
+            
             output_message = QueueMessage(
                 message_id=f"{self.worker_id}_{self._processed_count}",
                 split_id=f"{self.stage_id}_{message.split_id}",
-                data_ref=output_ref.hex(),
+                data_ref=ref_b64,
                 metadata={
                     "source_stage": self.stage_id,
                     "parent_message_id": message.message_id,
@@ -695,4 +785,51 @@ class StageWorker:
         }
 
 
+# ============================================================================
+# Legacy compatibility layer (deprecated)
+# These classes are provided for backward compatibility with existing workflows.
+# New code should use StageMaster and StageConfig directly.
+# ============================================================================
+
+import warnings
+
+
+@dataclass
+class StageMasterConfig:
+    """Legacy configuration class for backward compatibility.
+    
+    .. deprecated::
+        Use StageConfig instead. This class is only for compatibility
+        with existing workflows.
+    """
+    pass
+
+
+class DefaultStageMasterConfig(StageMasterConfig):
+    """Default legacy config for backward compatibility.
+    
+    .. deprecated::
+        Use StageConfig instead.
+    """
+    pass
+
+
+class StageMasterActor:
+    """Legacy class for backward compatibility.
+    
+    .. deprecated::
+        Use StageMaster instead. This class is only for compatibility
+        with existing source operators.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "StageMasterActor is deprecated. Use StageMaster instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        raise NotImplementedError(
+            "StageMasterActor is deprecated and no longer functional. "
+            "Please migrate to the new StageMaster API."
+        )
 

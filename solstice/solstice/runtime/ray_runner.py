@@ -257,12 +257,19 @@ class RayJobRunner:
         
         self._master_tasks.clear()
         
-        # Stop all masters
+        # Stop all masters (but don't clean up queues yet)
         for stage_id, master in self._masters.items():
             try:
                 await master.stop()
             except Exception as e:
                 self.logger.warning(f"Error stopping stage {stage_id}: {e}")
+        
+        # Now clean up all queues (after all consumers are done)
+        for stage_id, master in self._masters.items():
+            try:
+                await master.cleanup_queue()
+            except Exception as e:
+                self.logger.warning(f"Error cleaning up queue for {stage_id}: {e}")
         
         self.logger.info("Pipeline stopped")
     

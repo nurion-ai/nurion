@@ -44,6 +44,7 @@ class Stage:
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
         skip_checkpoint: bool = False,
+        master_config: Any = None,  # Legacy parameter, ignored
     ):
         """
         Initialize a stage.
