@@ -245,6 +245,7 @@ class StageMaster:
                 queue_type=QueueType.RAY,
                 actor_ref=queue.get_actor_ref(),
             )
+            self.logger.info(f"Master created queue with actor {queue.get_actor_ref()}, creating topic {self._output_topic}")
             await queue.create_topic(self._output_topic)
             return queue
         else:
@@ -517,7 +518,9 @@ class StageWorker:
         
         try:
             # Create queue connections
-            self.logger.info(f"Connecting to output queue: {self.output_endpoint}")
+            self.logger.info(f"Output endpoint received: {self.output_endpoint}")
+            if self.output_endpoint.queue_type == QueueType.RAY and self.output_endpoint.actor_ref:
+                self.logger.info(f"Output actor_ref: {self.output_endpoint.actor_ref}")
             self.output_queue = await self._create_queue_from_endpoint(self.output_endpoint)
             
             if self.upstream_endpoint and self.upstream_topic:
@@ -554,8 +557,9 @@ class StageWorker:
         ) or 0
         
         # Check topic exists
+        actual_actor = self.upstream_queue.get_actor_ref() if hasattr(self.upstream_queue, 'get_actor_ref') else None
         latest_check = await self.upstream_queue.get_latest_offset(self.upstream_topic)
-        self.logger.info(f"Starting from offset {offset} on topic {self.upstream_topic}, current latest: {latest_check}")
+        self.logger.info(f"Starting from offset {offset} on topic {self.upstream_topic}, current latest: {latest_check}, actual actor: {actual_actor}")
         
         consecutive_empty = 0
         max_empty_polls = 300  # Give up after 300 empty polls (~30 seconds)
@@ -569,10 +573,10 @@ class StageWorker:
                 timeout_ms=100,
             )
             
-            # Debug: Check queue status
-            if consecutive_empty == 0:
+            # Debug: Check queue status periodically
+            if consecutive_empty == 0 or consecutive_empty % 50 == 0:
                 latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
-                self.logger.debug(f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}")
+                self.logger.debug(f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}, empty polls: {consecutive_empty}")
             
             if not records:
                 consecutive_empty += 1
@@ -629,7 +633,7 @@ class StageWorker:
             # Try to generate splits from operator config (e.g., LanceTableSourceConfig)
             splits = self._generate_splits_from_config()
         
-        self.logger.info(f"Source worker processing {len(splits)} splits, output topic: {self.output_topic}")
+        self.logger.info(f"Source worker processing {len(splits)} splits, output topic: {self.output_topic}, output_queue actor: {self.output_queue.get_actor_ref() if hasattr(self.output_queue, 'get_actor_ref') else 'N/A'}")
         
         for split in splits:
             if not self._running:
@@ -656,11 +660,12 @@ class StageWorker:
                     )
                     
                     # Produce to output queue
-                    self.logger.debug(f"Producing to topic {self.output_topic}")
                     offset = await self.output_queue.produce(
                         self.output_topic, message.to_bytes()
                     )
-                    self.logger.debug(f"Produced message for {split.split_id} at offset {offset} on topic {self.output_topic}")
+                    # Verify write
+                    latest = await self.output_queue.get_latest_offset(self.output_topic)
+                    self.logger.debug(f"Produced message for {split.split_id} at offset {offset} on topic {self.output_topic}, latest now: {latest}")
                 
                 self._processed_count += 1
                 
