@@ -929,7 +929,6 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
 2. **Integrate V2 with Existing Workflows**
    - `examples/test_video_slice.py` uses legacy `LocalStateBackend` (not found)
    - Need to update workflows to use V2 runner
-   - Or keep legacy runner for backward compatibility
 
 3. **Exactly-Once Processing Loop**
    - Current `StageWorkerV2._process_from_upstream()` has basic logic
@@ -952,13 +951,30 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
    - Old messages need garbage collection
    - Based on minimum committed offset across consumers
 
+7. **Remove V2 Suffix and Replace Legacy Code**
+   - After V2 is validated stable, perform cleanup:
+   - **Files to delete**:
+     - `solstice/core/stage_master.py` (legacy master)
+     - `solstice/core/worker.py` (legacy worker)
+     - `solstice/core/output_buffer.py` (legacy buffer)
+     - `solstice/runtime/ray_runner.py` (legacy runner)
+   - **Files to rename**:
+     - `stage_master_v2.py` → `stage_master.py`
+     - `ray_runner_v2.py` → `ray_runner.py`
+   - **Classes to rename**:
+     - `StageMasterV2` → `StageMaster`
+     - `StageWorkerV2` → `StageWorker`
+     - `StageConfigV2` → `StageConfig`
+     - `RayJobRunnerV2` → `RayJobRunner`
+   - Update all imports and references across codebase
+
 ### Low Priority
 
-7. **Multi-Partition Support**
+8. **Multi-Partition Support**
    - Current: single partition (partition=0)
    - Future: parallel partitions for higher throughput
 
-8. **Cross-Node Queue Access**
+9. **Cross-Node Queue Access**
    - TansuBackend: works (network broker)
    - RayBackend: works (Ray actor serializable)
    - MemoryBackend: single-process only
@@ -1078,4 +1094,4 @@ await worker_backend.start()
 ---
 
 _This document summarizes the design evolution for checkpoint, recovery, and stream-based architecture in Solstice._
-_Last updated: December 6, 2025_
+_Last updated: December 7, 2025_
