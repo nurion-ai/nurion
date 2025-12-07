@@ -955,22 +955,11 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
    - Added `get_min_committed_offset(topic)` - find safe GC point
    - Implemented in MemoryBackend and RayBackend
 
-7. **Remove V2 Suffix and Replace Legacy Code**
-   - After V2 is validated stable, perform cleanup:
-   - **Files to delete**:
-     - `solstice/core/stage_master.py` (legacy master)
-     - `solstice/core/worker.py` (legacy worker)
-     - `solstice/core/output_buffer.py` (legacy buffer)
-     - `solstice/runtime/ray_runner.py` (legacy runner)
-   - **Files to rename**:
-     - `stage_master_v2.py` → `stage_master.py`
-     - `ray_runner_v2.py` → `ray_runner.py`
-   - **Classes to rename**:
-     - `StageMasterV2` → `StageMaster`
-     - `StageWorkerV2` → `StageWorker`
-     - `StageConfigV2` → `StageConfig`
-     - `RayJobRunnerV2` → `RayJobRunner`
-   - Update all imports and references across codebase
+7. **Remove V2 Suffix and Replace Legacy Code** ✅ DONE
+   - Deleted legacy files: stage_master.py, worker.py, output_buffer.py, ray_runner.py
+   - Renamed V2 files to standard names
+   - Renamed classes: StageMaster, StageWorker, StageConfig, RayJobRunner
+   - Updated all imports and references (44 tests passing)
 
 ### Low Priority
 
