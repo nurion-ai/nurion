@@ -50,7 +50,7 @@ class TestExactlyOnceSemantics:
                 msg = QueueMessage(
                     message_id=str(i),
                     split_id=f"split_{i}",
-                    data_ref="dummy",
+                    payload_key="dummy",
                     metadata={},
                 )
                 await input_queue.produce(topic, msg.to_bytes())
@@ -94,7 +94,7 @@ class TestExactlyOnceSemantics:
                 msg = QueueMessage(
                     message_id=str(i),
                     split_id=f"split_{i}",
-                    data_ref="dummy",
+                    payload_key="dummy",
                     metadata={"value": i},
                 )
                 await input_queue.produce(topic, msg.to_bytes())
@@ -109,7 +109,7 @@ class TestExactlyOnceSemantics:
                     out_msg = QueueMessage(
                         message_id=f"out_{msg.message_id}",
                         split_id=f"out_{msg.split_id}",
-                        data_ref="processed",
+                        payload_key="processed",
                         metadata=msg.metadata,
                     )
                     await output_queue.produce(out_topic, out_msg.to_bytes())
@@ -135,7 +135,7 @@ class TestExactlyOnceSemantics:
                     out_msg = QueueMessage(
                         message_id=f"out_{msg.message_id}",
                         split_id=f"out_{msg.split_id}",
-                        data_ref="processed",
+                        payload_key="processed",
                         metadata=msg.metadata,
                     )
                     await output_queue.produce(out_topic, out_msg.to_bytes())
@@ -170,7 +170,7 @@ class TestExactlyOnceSemantics:
                 msg = QueueMessage(
                     message_id=str(i),
                     split_id=f"split_{i}",
-                    data_ref="dummy",
+                    payload_key="dummy",
                     metadata={"value": i},
                 )
                 await input_queue.produce(topic, msg.to_bytes())
@@ -184,7 +184,7 @@ class TestExactlyOnceSemantics:
                     out_msg = QueueMessage(
                         message_id=f"out_{msg.message_id}",
                         split_id=f"out_{msg.split_id}",
-                        data_ref="processed",
+                        payload_key="processed",
                         metadata=msg.metadata,
                     )
                     await output_queue.produce(out_topic, out_msg.to_bytes())
@@ -206,7 +206,7 @@ class TestExactlyOnceSemantics:
                     out_msg = QueueMessage(
                         message_id=f"out_{msg.message_id}",
                         split_id=f"out_{msg.split_id}",
-                        data_ref="processed",
+                        payload_key="processed",
                         metadata=msg.metadata,
                     )
                     await output_queue.produce(out_topic, out_msg.to_bytes())
@@ -240,7 +240,7 @@ class TestExactlyOnceSemantics:
                 msg = QueueMessage(
                     message_id=str(i),
                     split_id=f"split_{i}",
-                    data_ref="dummy",
+                    payload_key="dummy",
                     metadata={"value": i},
                 )
                 await input_queue.produce(topic, msg.to_bytes())

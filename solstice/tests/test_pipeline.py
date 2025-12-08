@@ -332,7 +332,7 @@ class TestExactlyOnce:
             msg = QueueMessage(
                 message_id=f"msg_{i}",
                 split_id=f"split_{i}",
-                data_ref=f"ref_{i}",
+                payload_key=f"ref_{i}",
             )
             await backend.produce(topic, msg.to_bytes())
         

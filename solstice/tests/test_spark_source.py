@@ -323,7 +323,6 @@ class TestSparkSourcePipeline:
 
         assert total_records == 100  # 5 blocks * 20 records
 
-
 @pytest.mark.integration
 class TestSparkSourceStageMaster:
     """Integration tests for SparkSourceStageMaster using raydp.
@@ -662,3 +661,4 @@ class TestSparkSourceStageMaster:
                     assert record["age"] > 30
 
         master.stop()
+

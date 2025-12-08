@@ -116,7 +116,7 @@ class TestQueueMessage:
         msg = QueueMessage(
             message_id="msg_001",
             split_id="split_001",
-            data_ref="abc123",
+            payload_key="abc123",
             metadata={"key": "value"},
         )
         
@@ -125,7 +125,7 @@ class TestQueueMessage:
         
         assert restored.message_id == msg.message_id
         assert restored.split_id == msg.split_id
-        assert restored.data_ref == msg.data_ref
+        assert restored.payload_key == msg.payload_key
         assert restored.metadata == msg.metadata
     
     def test_empty_metadata(self):
@@ -133,7 +133,7 @@ class TestQueueMessage:
         msg = QueueMessage(
             message_id="msg_001",
             split_id="split_001",
-            data_ref="abc123",
+            payload_key="abc123",
         )
         
         data = msg.to_bytes()
@@ -176,7 +176,7 @@ class TestStageConfig:
         d = config.to_dict()
         
         assert d["batch_size"] == 50
-        assert d["queue_type"] == "ray"  # Default is ray
+        assert d["queue_type"] == "tansu"  # Default is tansu
 
 
 # ============================================================================
@@ -301,7 +301,7 @@ class TestIntegration:
         msg = QueueMessage(
             message_id="test_001",
             split_id="split_001",
-            data_ref="abc123",
+            payload_key="abc123",
         )
         
         offset = await queue.produce(topic, msg.to_bytes())
@@ -343,7 +343,7 @@ class TestIntegration:
             msg = QueueMessage(
                 message_id=f"msg_{i}",
                 split_id=f"split_{i}",
-                data_ref=f"ref_{i}",
+                payload_key=f"ref_{i}",
             )
             await queue1.produce(topic1, msg.to_bytes())
         
@@ -390,7 +390,7 @@ class TestExactlyOnce:
             msg = QueueMessage(
                 message_id=f"msg_{i}",
                 split_id=f"split_{i}",
-                data_ref=f"ref_{i}",
+                payload_key=f"ref_{i}",
             )
             await memory_backend.produce(topic, msg.to_bytes())
         
@@ -427,7 +427,7 @@ class TestExactlyOnce:
             msg = QueueMessage(
                 message_id=f"msg_{i}",
                 split_id=f"split_{i}",
-                data_ref=f"ref_{i}",
+                payload_key=f"ref_{i}",
             )
             await memory_backend.produce(topic, msg.to_bytes())
         

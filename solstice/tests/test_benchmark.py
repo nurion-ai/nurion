@@ -109,7 +109,7 @@ class TestMemoryBackendBenchmark:
         msg = QueueMessage(
             message_id="bench",
             split_id="split",
-            data_ref="x" * message_size,
+            payload_key="x" * message_size,
             metadata={},
         )
         msg_bytes = msg.to_bytes()
@@ -148,7 +148,7 @@ class TestMemoryBackendBenchmark:
         msg = QueueMessage(
             message_id="bench",
             split_id="split",
-            data_ref="x" * 256,
+            payload_key="x" * 256,
             metadata={},
         )
         msg_bytes = msg.to_bytes()
@@ -184,7 +184,7 @@ class TestMemoryBackendBenchmark:
         msg = QueueMessage(
             message_id="bench",
             split_id="split",
-            data_ref="x" * 256,
+            payload_key="x" * 256,
             metadata={},
         )
         msg_bytes = msg.to_bytes()
@@ -230,7 +230,7 @@ class TestMemoryBackendBenchmark:
         msg = QueueMessage(
             message_id="bench",
             split_id="split",
-            data_ref="x" * 256,
+            payload_key="x" * 256,
             metadata={},
         )
         

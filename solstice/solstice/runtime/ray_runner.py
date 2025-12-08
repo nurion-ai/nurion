@@ -22,6 +22,7 @@ from solstice.core.stage_master import (
     QueueEndpoint,
     QueueType,
 )
+from solstice.core.split_payload_store import RaySplitPayloadStore
 from solstice.utils.logging import create_ray_logger
 
 
@@ -76,6 +77,9 @@ class RayJobRunner:
         
         self.logger = create_ray_logger(f"RunnerV2-{job.job_id}")
         
+        # SplitPayloadStore - shared across all stages
+        self._payload_store: Optional[RaySplitPayloadStore] = None
+        
         # Stage masters (not Ray actors - they manage their own workers)
         self._masters: Dict[str, StageMaster] = {}
         self._master_tasks: Dict[str, asyncio.Task] = {}
@@ -102,6 +106,12 @@ class RayJobRunner:
         self._ensure_ray()
         self.logger.info(f"Initializing job {self.job.job_id}")
         
+        # Create SplitPayloadStore - shared across all stages
+        self._payload_store = RaySplitPayloadStore(
+            name=f"payload_store_{self.job.job_id}"
+        )
+        self.logger.info(f"Created SplitPayloadStore for job {self.job.job_id}")
+        
         # Build reverse DAG (stage -> its upstreams)
         self._reverse_dag = self.job.build_reverse_dag()
         
@@ -123,6 +133,7 @@ class RayJobRunner:
                 job_id=self.job.job_id,
                 stage=stage,
                 config=config,
+                payload_store=self._payload_store,
             )
             self._masters[stage_id] = master
         
@@ -271,6 +282,14 @@ class RayJobRunner:
             except Exception as e:
                 self.logger.warning(f"Error cleaning up queue for {stage_id}: {e}")
         
+        # Clean up SplitPayloadStore
+        if self._payload_store:
+            try:
+                self._payload_store.clear()
+            except Exception as e:
+                self.logger.warning(f"Error cleaning up SplitPayloadStore: {e}")
+            self._payload_store = None
+        
         self.logger.info("Pipeline stopped")
     
     def get_status(self) -> PipelineStatus:
@@ -329,7 +348,6 @@ class RayJobRunner:
     def is_initialized(self) -> bool:
         return self._initialized
 
-
 # Convenience function for simple pipeline execution
 async def run_pipeline(
     job: Job,
@@ -349,6 +367,7 @@ async def run_pipeline(
     """
     runner = RayJobRunner(job, queue_type=queue_type)
     return await runner.run(timeout=timeout)
+
 
 
 

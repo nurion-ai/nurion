@@ -1,42 +1,22 @@
 """Stage definition and management"""
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 import logging
 
-from solstice.core.operator import OperatorConfig, Operator
+from solstice.core.operator import OperatorConfig
+
+if TYPE_CHECKING:
+    from solstice.core.stage_master import StageMasterConfig
 
 
 class Stage:
-    """Represents a stage in the processing pipeline.
-    
-    A stage consists of:
-    - An OperatorConfig that defines the operator and its configuration
-    - Parallelism settings (number of workers)
-    - Resource requirements per worker
-    
-    Example:
-        ```python
-        # Simple source stage
-        source = Stage(
-            stage_id="source",
-            operator_config=MySourceConfig(batch_size=100),
-            parallelism=1,
-        )
-        
-        # Parallel transform stage
-        transform = Stage(
-            stage_id="transform",
-            operator_config=MyTransformConfig(param="value"),
-            parallelism=4,  # 4 parallel workers
-            worker_resources={"num_gpus": 1},
-        )
-        ```
-    """
+    """Represents a stage in the processing pipeline"""
 
     def __init__(
         self,
         stage_id: str,
         operator_config: OperatorConfig,
+        master_config: Optional["StageMasterConfig"] = None,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
         skip_checkpoint: bool = False,
@@ -46,8 +26,8 @@ class Stage:
 
         Args:
             stage_id: Unique identifier for the stage
-            operator_config: OperatorConfig dataclass instance that defines 
-                           the operator and its configuration
+            operator_config: Configuration for the operator (OperatorConfig subclass)
+            master_config: Configuration for the stage master (StageMasterConfig subclass)
             parallelism: Number of workers. Can be:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
@@ -57,23 +37,21 @@ class Stage:
 
         Examples:
             >>> # Fixed 4 workers, no scaling
-            >>> Stage('process', MyOperatorConfig(param='value'), parallelism=4)
+            >>> Stage('process', MyOperatorConfig(param=value), parallelism=4)
 
             >>> # Auto-scaling between 2 and 10 workers
-            >>> Stage('process', MyOperatorConfig(), parallelism=(2, 10))
+            >>> Stage('process', MyOperatorConfig(param=value), parallelism=(2, 10))
 
             >>> # Skip checkpoint for lightweight filter stage
-            >>> Stage('filter', FilterOperatorConfig(fn=my_filter), skip_checkpoint=True)
+            >>> Stage('filter', FilterConfig(...), skip_checkpoint=True)
         """
-        if not isinstance(operator_config, OperatorConfig):
-            raise TypeError(
-                f"operator_config must be an OperatorConfig instance, "
-                f"got {type(operator_config).__name__}"
-            )
-        
         self.stage_id = stage_id
         self.operator_config = operator_config
         self.skip_checkpoint = skip_checkpoint
+
+        from solstice.core.stage_master import StageMasterConfig, DefaultStageMasterConfig
+
+        self.master_config: StageMasterConfig = master_config or DefaultStageMasterConfig()
 
         # Parse parallelism parameter
         if isinstance(parallelism, int):
@@ -110,8 +88,8 @@ class Stage:
         """Convert stage to dictionary representation"""
         return {
             "stage_id": self.stage_id,
-            "operator_class": self.operator_config.operator_class.__name__,
             "operator_config": self.operator_config.to_dict(),
+            "master_config": self.master_config.to_dict(),
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,

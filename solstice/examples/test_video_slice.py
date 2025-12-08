@@ -200,12 +200,12 @@ async def run_workflow_async(
         runner = RayJobRunner(job, queue_type=QueueType.TANSU)
         await runner.initialize()
 
-        logger.info("Starting workflow execution (timeout=300s)...")
+        logger.info("Starting workflow execution (timeout=1800s)...")
         try:
             import asyncio
             status = await asyncio.wait_for(
-                runner.run(timeout=300),
-                timeout=320  # Extra buffer for cleanup
+                runner.run(timeout=1800),
+                timeout=1820  # Extra buffer for cleanup
             )
             logger.info(f"Workflow completed! Status: {status}")
         except asyncio.TimeoutError:

@@ -50,6 +50,7 @@ import ray
 
 from solstice.queue import QueueBackend, MemoryBackend, Record
 from solstice.utils.logging import create_ray_logger
+from solstice.core.split_payload_store import SplitPayloadStore
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
@@ -111,12 +112,12 @@ class StageConfig:
 class QueueMessage:
     """Message format for inter-stage communication.
     
-    The actual data payload is stored in Ray object store, 
-    only the reference is passed through the queue.
+    The actual data payload is stored in SplitPayloadStore,
+    only the reference key is passed through the queue.
     """
     message_id: str
     split_id: str
-    data_ref: str  # Serialized Ray ObjectRef or S3 URI
+    payload_key: str  # Key to lookup SplitPayload in SplitPayloadStore
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
     
@@ -124,7 +125,7 @@ class QueueMessage:
         return json.dumps({
             "message_id": self.message_id,
             "split_id": self.split_id,
-            "data_ref": self.data_ref,
+            "payload_key": self.payload_key,
             "metadata": self.metadata,
             "timestamp": self.timestamp,
         }).encode()
@@ -187,6 +188,7 @@ class StageMaster:
         job_id: str,
         stage: "Stage",
         config: StageConfig,
+        payload_store: SplitPayloadStore,
         upstream_endpoint: Optional[QueueEndpoint] = None,
         upstream_topic: Optional[str] = None,
     ):
@@ -198,6 +200,9 @@ class StageMaster:
         self.upstream_topic = upstream_topic
         
         self.logger = create_ray_logger(f"MasterV2-{self.stage_id}")
+        
+        # SplitPayloadStore - shared across all stages
+        self.payload_store = payload_store
         
         # Output queue (managed by master)
         self._output_queue: Optional[QueueBackend] = None
@@ -291,6 +296,7 @@ class StageMaster:
             output_topic=self._output_topic,
             consumer_group=self._consumer_group,
             config=self.config,
+            payload_store=self.payload_store,
         )
         
         self._workers[worker_id] = worker
@@ -439,11 +445,15 @@ class StageWorker:
         output_topic: str,
         consumer_group: str,
         config: StageConfig,
+        payload_store: SplitPayloadStore,
     ):
         self.worker_id = worker_id
         self.stage_id = stage.stage_id
         self.stage = stage
         self.config = config
+        
+        # SplitPayloadStore for storing SplitPayload data across workers
+        self.payload_store = payload_store
         
         # Store endpoints (will create connections in run())
         self.upstream_endpoint = upstream_endpoint
@@ -614,18 +624,16 @@ class StageWorker:
                 output_payload = self.operator.process_split(split, None)
                 
                 if output_payload:
-                    # Store payload in Ray object store
-                    output_ref = ray.put(output_payload)
+                    # Generate unique key for this payload
+                    payload_key = f"{self.worker_id}_{self._processed_count}_{split.split_id}"
                     
-                    # Create output message
-                    # Use binary() for serialization (from_hex doesn't work)
-                    import base64
-                    ref_b64 = base64.b64encode(output_ref.binary()).decode('ascii')
+                    # Store payload in SplitPayloadStore
+                    self.payload_store.store(payload_key, output_payload)
                     
                     message = QueueMessage(
                         message_id=f"{self.worker_id}_{self._processed_count}",
                         split_id=split.split_id,
-                        data_ref=ref_b64,  # Base64-encoded binary ObjectRef
+                        payload_key=payload_key,
                         metadata={"source_stage": self.stage_id},
                     )
                     
@@ -695,14 +703,11 @@ class StageWorker:
     async def _process_message(self, message: QueueMessage) -> None:
         """Process a single message."""
         from solstice.core.models import Split, SplitPayload
-        import base64
         
-        # Reconstruct the data reference from base64-encoded binary
-        ref_binary = base64.b64decode(message.data_ref)
-        data_ref = ray.ObjectRef(ref_binary)
-        
-        # Fetch the actual payload
-        payload: SplitPayload = ray.get(data_ref, timeout=self.config.processing_timeout_s)
+        # Get payload from SplitPayloadStore
+        payload: Optional[SplitPayload] = self.payload_store.get(message.payload_key)
+        if payload is None:
+            raise RuntimeError(f"Payload not found for key: {message.payload_key}")
         
         # Create split for processing
         split = Split(
@@ -716,18 +721,16 @@ class StageWorker:
         output_payload = self.operator.process_split(split, payload)
         
         if output_payload:
-            # Store output in Ray object store
-            output_ref = ray.put(output_payload)
+            # Generate unique key for this payload
+            payload_key = f"{self.worker_id}_{self._processed_count}_{split.split_id}"
             
-            # Create output message
-            # Use binary() for serialization (base64 encoded)
-            import base64
-            ref_b64 = base64.b64encode(output_ref.binary()).decode('ascii')
+            # Store in SplitPayloadStore
+            self.payload_store.store(payload_key, output_payload)
             
             output_message = QueueMessage(
                 message_id=f"{self.worker_id}_{self._processed_count}",
                 split_id=f"{self.stage_id}_{message.split_id}",
-                data_ref=ref_b64,
+                payload_key=payload_key,
                 metadata={
                     "source_stage": self.stage_id,
                     "parent_message_id": message.message_id,
@@ -741,6 +744,9 @@ class StageWorker:
             self.logger.debug(f"Produced output for {message.split_id} at offset {offset}")
         else:
             self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
+        
+        # Delete input payload (no longer needed)
+        self.payload_store.delete(message.payload_key)
     
     def stop(self) -> None:
         """Stop the worker."""
