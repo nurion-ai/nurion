@@ -17,6 +17,9 @@ class IcebergSourceConfig(OperatorConfig):
     catalog_uri: Optional[str] = None
     """URI of the Iceberg catalog."""
 
+    warehouse: Optional[str] = None
+    """Warehouse path for Iceberg catalog (e.g., file:///path/to/warehouse)."""
+
     table_name: Optional[str] = None
     """Full name of the Iceberg table (namespace.table)."""
 
@@ -60,7 +63,7 @@ class IcebergSource(SourceOperator):
         if snapshot_id:
             scan = scan.use_snapshot(snapshot_id)
 
-        arrow_table = scan.to_table()
+        arrow_table = scan.to_arrow()
         if arrow_table.num_rows == 0:
             return None
 

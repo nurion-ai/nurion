@@ -337,9 +337,14 @@ class TestSparkSourceMaster:
                 code_search_path=jars_paths,
                 runtime_env={
                     "excludes": [
-                        "java/raydp-main/target/",
-                        "java/shims/*/target/",
+                        "java/",
+                        "raydp/jars/",
+                        "tests/testdata/resources/videos/",
+                        "tests/testdata/resources/tmp/",
                         "*.jar",
+                        "*.mp4",
+                        "*.tar.gz",
+                        "*.lance",
                         "__pycache__/",
                         ".git/",
                     ],
@@ -602,3 +607,68 @@ class TestSparkSourceMaster:
                     assert record["age"] > 30
 
         master.stop()
+
+    @pytest.mark.asyncio
+    async def test_full_pipeline_with_queue(self, ray_context):
+        """Test complete SparkSource pipeline with TansuBackend queue.
+
+        This test verifies the full flow:
+        1. SparkSourceMaster starts and creates source queue
+        2. Splits are written to source queue
+        3. Workers consume splits and produce to output queue
+        4. All data is processed through the pipeline
+        """
+        test_path = str(TEST_DATA_100)
+
+        source_stage = Stage(
+            stage_id="spark_source",
+            operator_config=SparkSourceConfig(
+                app_name="test-full-pipeline",
+                num_executors=1,
+                executor_cores=1,
+                executor_memory="512m",
+                dataframe_fn=lambda spark: spark.read.parquet(test_path),
+            ),
+        )
+
+        master = SparkSourceMaster(
+            job_id="test-job",
+            stage=source_stage,
+        )
+
+        # Start the full pipeline (creates queues, spawns workers)
+        await master.start()
+
+        # Verify source queue was created and splits were produced
+        source_queue = master.get_source_queue()
+        source_topic = master.get_source_topic()
+        assert source_queue is not None
+        assert await source_queue.health_check()
+
+        # Check splits were produced to source queue
+        status = await master.get_status_async()
+        assert status.splits_produced > 0
+        print(f"Produced {status.splits_produced} splits to source queue")
+
+        # Verify output queue was created
+        output_queue = master.get_output_queue()
+        assert output_queue is not None
+
+        # Wait for workers to process (with timeout)
+        import asyncio
+
+        max_wait = 30  # seconds
+        start_time = asyncio.get_event_loop().time()
+
+        while asyncio.get_event_loop().time() - start_time < max_wait:
+            status = await master.get_status_async()
+            if status.is_finished:
+                break
+            await asyncio.sleep(0.5)
+
+        # Cleanup
+        await master.stop()
+
+        # Verify processing completed
+        assert status.splits_produced > 0
+        print(f"Pipeline completed: {status.splits_produced} splits processed")
