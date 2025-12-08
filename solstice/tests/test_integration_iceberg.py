@@ -137,19 +137,19 @@ class TestIcebergSource:
             table_name=iceberg_test_table["table_name"],
             filter="value > 25",
         )
-    source = config.setup()
+        source = config.setup()
 
-    split = Split(
-        split_id="split-0",
-        stage_id="source",
-        data_range={
+        split = Split(
+            split_id="split-0",
+            stage_id="source",
+            data_range={
                 "catalog_uri": iceberg_test_table["catalog_uri"],
                 "table_name": iceberg_test_table["table_name"],
                 "filter": "value > 25",
-        },
-    )
+            },
+        )
 
-    batch = source.process_split(split)
+        batch = source.process_split(split)
 
         assert batch is not None
         # Should only get rows with value > 25 (30, 40, 50)

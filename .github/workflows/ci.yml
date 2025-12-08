@@ -266,6 +266,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ffmpeg
     
+    - name: Install Tansu
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        curl -fsSL https://pub-8bc1f1d3d1984bdfb056d0bc0bf97c3d.r2.dev/tansu/tansu -o /usr/local/bin/tansu
+        chmod +x /usr/local/bin/tansu
+    
     - name: Set up Java 11
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: actions/setup-java@v4

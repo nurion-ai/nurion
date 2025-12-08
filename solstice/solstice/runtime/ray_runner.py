@@ -67,6 +67,7 @@ class RayJobRunner:
         job: Job,
         queue_type: QueueType = QueueType.TANSU,
         ray_init_kwargs: Optional[Dict[str, Any]] = None,
+        tansu_storage_url: str = "memory://",
     ):
         """Initialize the runner.
 
@@ -74,9 +75,11 @@ class RayJobRunner:
             job: The job to run
             queue_type: Type of queue backend (RAY for testing, TANSU for production)
             ray_init_kwargs: Arguments to pass to ray.init()
+            tansu_storage_url: Storage URL for Tansu backend (memory://, s3://)
         """
         self.job = job
         self.queue_type = queue_type
+        self.tansu_storage_url = tansu_storage_url
         self._ray_init_kwargs = ray_init_kwargs or {}
 
         self.logger = create_ray_logger(f"RunnerV2-{job.job_id}")
@@ -137,6 +140,7 @@ class RayJobRunner:
                 else:
                     config = StageConfig(
                         queue_type=self.queue_type,
+                        tansu_storage_url=self.tansu_storage_url,
                         min_workers=stage.min_parallelism,
                         max_workers=stage.max_parallelism,
                     )
@@ -210,6 +214,20 @@ class RayJobRunner:
 
         return result
 
+    def _notify_downstream_stages(self, finished_stage_id: str, all_finished: set) -> None:
+        """Notify downstream stages that an upstream has finished.
+        
+        A downstream stage is notified when ALL its upstreams have finished.
+        """
+        # Find all stages that have this stage as an upstream
+        for stage_id, upstream_ids in self._reverse_dag.items():
+            if finished_stage_id in upstream_ids:
+                # Check if ALL upstreams of this stage are finished
+                all_upstreams_done = all(up_id in all_finished for up_id in upstream_ids)
+                if all_upstreams_done and stage_id in self._masters:
+                    self._masters[stage_id].notify_upstream_finished()
+                    self.logger.info(f"Notified stage {stage_id}: all upstreams finished")
+
     async def run(self, timeout: Optional[float] = None) -> PipelineStatus:
         """Run the pipeline until completion.
 
@@ -241,6 +259,9 @@ class RayJobRunner:
                     )
                     self._master_tasks[stage_id] = task
 
+            # Track which stages have finished (for upstream completion notification)
+            finished_stages = set()
+
             # Wait for all masters to complete
             while self._running and self._master_tasks:
                 # Check timeout
@@ -262,6 +283,10 @@ class RayJobRunner:
 
                 for stage_id in done_stages:
                     del self._master_tasks[stage_id]
+                    finished_stages.add(stage_id)
+                    
+                    # Notify downstream stages that this upstream has finished
+                    self._notify_downstream_stages(stage_id, finished_stages)
 
                 if not self._master_tasks:
                     break

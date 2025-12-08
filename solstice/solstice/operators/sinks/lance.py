@@ -136,11 +136,6 @@ class LanceSink(SinkOperator):
         """Flush remaining buffered records when closing."""
         self._flush()
 
-    def shutdown(self) -> None:
-        """Flush remaining buffered records on shutdown."""
-        self._flush()
-        super().shutdown()
-
 
 # Set operator_class after class definition
 LanceSinkConfig.operator_class = LanceSink

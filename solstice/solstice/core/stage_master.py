@@ -72,7 +72,7 @@ class StageConfig:
             - MEMORY: In-process only (single-worker testing)
             - RAY: Shared via Ray actor (distributed testing)
             - TANSU: Persistent broker (production)
-        tansu_storage_url: Storage URL for Tansu backend (s3://, sqlite://, etc.)
+        tansu_storage_url: Storage URL for Tansu backend (memory://, s3://)
         tansu_port: Port for Tansu broker
         max_workers: Maximum number of workers
         min_workers: Minimum number of workers
@@ -228,6 +228,9 @@ class StageMaster:
         self._failed = False
         self._failure_message: Optional[str] = None
         self._start_time: Optional[float] = None
+
+        # Upstream completion tracking
+        self._upstream_finished = False
 
         # Consumer group for offset tracking
         self._consumer_group = f"{job_id}_{self.stage_id}"
@@ -386,6 +389,22 @@ class StageMaster:
             await self._output_queue.stop()
             self._output_queue = None
 
+    def notify_upstream_finished(self) -> None:
+        """Notify this stage that all upstream stages have finished.
+        
+        This allows workers to stop waiting for more data once
+        they've consumed everything from the upstream queue.
+        """
+        self._upstream_finished = True
+        self.logger.info(f"Stage {self.stage_id} notified: upstream finished")
+        
+        # Notify all workers that upstream is done
+        for worker_id, worker in self._workers.items():
+            try:
+                ray.get(worker.notify_upstream_finished.remote(), timeout=5)
+            except Exception as e:
+                self.logger.warning(f"Failed to notify worker {worker_id}: {e}")
+
     def get_output_queue(self) -> Optional[QueueBackend]:
         """Get the output queue for downstream stages."""
         return self._output_queue
@@ -484,6 +503,7 @@ class StageWorker:
         self._processed_count = 0
         self._error_count = 0
         self._last_commit_time = time.time()
+        self._upstream_finished = False
 
     async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> QueueBackend:
         """Create a queue connection from endpoint info."""
@@ -539,14 +559,31 @@ class StageWorker:
             raise
         finally:
             self._running = False
+            
+            # Close operator (allows sink to flush buffers, etc.)
+            try:
+                self.operator.close()
+            except Exception as e:
+                self.logger.warning(f"Error during operator close: {e}")
+            
             # Cleanup queue connections
             if self.upstream_queue:
                 await self.upstream_queue.stop()
             if self.output_queue:
                 await self.output_queue.stop()
 
+    def notify_upstream_finished(self) -> None:
+        """Called by master when upstream stage(s) have finished."""
+        self._upstream_finished = True
+        self.logger.info(f"Worker {self.worker_id} notified: upstream finished")
+
     async def _process_from_upstream(self) -> None:
-        """Process messages from upstream queue."""
+        """Process messages from upstream queue.
+        
+        Completion criteria:
+        - When upstream is finished AND we've consumed all messages (offset >= latest)
+        - Exit immediately when both conditions are met
+        """
         # Get starting offset
         offset = (
             await self.upstream_queue.get_committed_offset(self.consumer_group, self.upstream_topic)
@@ -565,7 +602,6 @@ class StageWorker:
         )
 
         consecutive_empty = 0
-        max_empty_polls = 300  # Give up after 300 empty polls (~30 seconds)
 
         while self._running:
             # Fetch batch from upstream
@@ -573,25 +609,37 @@ class StageWorker:
                 self.upstream_topic,
                 offset=offset,
                 max_records=self.config.batch_size,
-                timeout_ms=2000,  # Longer timeout for Tansu consumer
+                timeout_ms=1000,  # Shorter timeout for faster completion detection
             )
 
             # Debug: Check queue status periodically
-            if consecutive_empty == 0 or consecutive_empty % 50 == 0:
+            if consecutive_empty == 0 or consecutive_empty % 10 == 0:
                 latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
                 self.logger.debug(
-                    f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}, empty polls: {consecutive_empty}"
+                    f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}, empty polls: {consecutive_empty}, upstream_finished: {self._upstream_finished}"
                 )
 
             if not records:
                 consecutive_empty += 1
-                if consecutive_empty >= max_empty_polls:
-                    # Check if upstream is done
-                    latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
-                    if offset >= latest:
-                        self.logger.info(f"Upstream exhausted at offset {offset}")
+                
+                # Check if we should stop: upstream finished AND queue exhausted
+                latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+                if offset >= latest:
+                    if self._upstream_finished:
+                        # Upstream is done and we've consumed everything
+                        self.logger.info(
+                            f"Worker {self.worker_id} finished: upstream done, consumed all {offset} messages"
+                        )
                         break
-                await asyncio.sleep(0.1)
+                    elif consecutive_empty >= 50:
+                        # Not notified yet but no new data for 5 seconds, check again
+                        self.logger.debug(f"Waiting for upstream completion signal, offset={offset}, latest={latest}")
+                
+                # Don't wait too long if upstream is finished
+                if self._upstream_finished:
+                    await asyncio.sleep(0.05)  # Quick check
+                else:
+                    await asyncio.sleep(0.1)
                 continue
 
             consecutive_empty = 0

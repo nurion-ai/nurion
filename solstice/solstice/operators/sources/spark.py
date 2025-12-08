@@ -74,7 +74,7 @@ class SparkSourceConfig(OperatorConfig):
 
     # SourceConfig fields for master
     tansu_storage_url: str = "memory://"
-    """Tansu storage URL (s3://, sqlite://, memory://)."""
+    """Tansu storage URL (memory://, s3://)."""
 
 
 class SparkSource(SourceOperator):
