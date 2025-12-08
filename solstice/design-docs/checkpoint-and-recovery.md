@@ -839,7 +839,7 @@ Worker pull model:
 
 ---
 
-## Implementation Progress (December 6, 2025)
+## Implementation Progress (December 6-8, 2025)
 
 ### Completed Work
 
@@ -848,9 +848,10 @@ Worker pull model:
 | File | Description | Status |
 |------|-------------|--------|
 | `backend.py` | `QueueBackend` abstract interface | ✅ Done |
-| `memory.py` | `MemoryBackend` - in-process queue | ✅ Done, 23 tests |
-| `ray_backend.py` | `RayBackend` - shared queue via Ray actor | ✅ Done |
-| `tansu.py` | `TansuBackend` - subprocess broker | ✅ Done (memory mode) |
+| `memory.py` | `MemoryBackend` - in-process queue with GC | ✅ Done |
+| `tansu.py` | `TansuBackend` - subprocess broker | ✅ Done |
+
+**Note**: `RayBackend` has been removed. `MemoryBackend` is sufficient for testing, and `TansuBackend` is used for production.
 
 **Key interfaces:**
 ```python
@@ -859,109 +860,116 @@ class QueueBackend(ABC):
     async def fetch(topic, offset, max_records) -> List[Record]
     async def commit_offset(group, topic, offset)
     async def get_committed_offset(group, topic) -> Optional[int]
+    async def truncate_before(topic, offset)  # GC support
 ```
 
-#### 2. Stage Master V2 (`solstice/core/stage_master_v2.py`)
+#### 2. Stage Master (`solstice/core/stage_master.py`)
 
 | Component | Description | Status |
 |-----------|-------------|--------|
-| `StageMasterV2` | Simplified master, manages output queue only | ✅ Done |
-| `StageWorkerV2` | Self-scheduling worker, pulls from upstream | ✅ Done |
-| `StageConfigV2` | Config with queue_type selection | ✅ Done |
+| `StageMaster` | Simplified master, manages output queue only | ✅ Done |
+| `StageWorker` | Self-scheduling worker, pulls from upstream | ✅ Done |
+| `StageConfig` | Config with queue_type selection | ✅ Done |
 | `QueueEndpoint` | Serializable endpoint for workers | ✅ Done |
 
-**Architecture change:**
+**Architecture:**
 ```
-V1 (Old): Master-to-Master Push
-  [Master1] --push--> [Master2] --push--> [Master3]
-
-V2 (New): Worker Pull
+Worker Pull Model:
   [Queue1] <--pull-- [Workers] --produce--> [Queue2]
 ```
 
-#### 3. Runner V2 (`solstice/runtime/ray_runner_v2.py`)
+#### 3. Split Payload Store (`solstice/core/split_payload_store.py`)
+
+New component for large data transfer:
+- Decouples data transfer from queue messages
+- Supports Ray ObjectRef or direct data
+- Workers can efficiently fetch large payloads
+
+#### 4. Simplified Stage API (`solstice/core/stage.py`)
+
+- Stage only accepts `OperatorConfig` dataclass
+- Removed complex master_config hierarchy
+- Cleaner API
+
+#### 5. Runner (`solstice/runtime/ray_runner.py`)
 
 | Component | Description | Status |
 |-----------|-------------|--------|
-| `RayJobRunnerV2` | Async runner using V2 architecture | ✅ Done |
+| `RayJobRunner` | Async runner | ✅ Done |
 | `run_pipeline()` | Convenience function | ✅ Done |
 | Topological ordering | Stage initialization order | ✅ Done |
 
-#### 4. Legacy Deprecation
+#### 6. Removed Legacy Code
 
-| File | Status | Migration Target |
-|------|--------|------------------|
-| `stage_master.py` | ⚠️ Deprecated | `stage_master_v2.py` |
-| `worker.py` | ⚠️ Deprecated | `StageWorkerV2` |
-| `output_buffer.py` | ⚠️ Deprecated | `solstice.queue` |
+| File | Reason |
+|------|--------|
+| `stage_master_v2.py` | Merged into `stage_master.py` |
+| `ray_runner_v2.py` | Merged into `ray_runner.py` |
+| `worker.py` (old) | Reimplemented |
+| `output_buffer.py` | Replaced by `solstice.queue` |
+| `checkpoint_manager.py` | Replaced by queue offset mechanism |
+| `state/store.py` | No longer needed |
+| `actors/meta_service.py` | Simplified architecture, removed |
 
 ### Test Coverage
 
 | Test File | Tests | Status |
 |-----------|-------|--------|
-| `test_queue_backend.py` | 25 | ✅ All pass |
-| `test_stage_master_v2.py` | 13 | ✅ All pass |
-| `test_pipeline_v2.py` | 7 | ✅ All pass |
-| `test_tansu_s3.py` | 1 memory, 3 S3 skipped | ✅ Memory pass |
+| `test_queue_backend.py` | Queue backend tests | ✅ All pass |
+| `test_stage_master.py` | Stage master tests | ✅ All pass |
+| `test_pipeline.py` | Pipeline integration tests | ✅ All pass |
+| `test_benchmark.py` | Performance benchmark tests | ✅ All pass |
+| `test_crash_recovery.py` | Crash recovery tests | ✅ All pass |
+| `test_gc.py` | GC tests | ✅ All pass |
 
-### Git Commits (feat-backpressure branch)
+### Recent Git Commits (feat-backpressure branch)
 
 ```
-6d93893 Fix TansuBackend and add S3 test infrastructure
-d260ce7 Mark legacy modules as deprecated, add v2 exports
-ff95f12 Add RayJobRunnerV2 and end-to-end pipeline tests
-7c6d0f1 Add stage_master_v2 with worker pull model architecture
-f5ec91b Add queue backend infrastructure for stream-based architecture
+fa2741a fix - Major cleanup: remove meta_service, checkpoint_manager, state store
+a28df63 queue works - Add SplitPayloadStore and Worker implementation
+6d0d4bc Add debug logging for message processing output
+c5a8ebc Fix TansuBackend fetch timeout issue
+6fcbede Remove master_config from video_slice_workflow
+aa6747b Simplify Stage API: only accept OperatorConfig dataclass
+b929b91 Remove RayBackend, keep only MemoryBackend and TansuBackend
+58a4c8e WIP: Debug cross-worker queue communication
+16337f7 WIP: Fix test_video_slice.py to use new async runner API
+909ca47 docs: Mark all remaining work items as complete
+22fe0d6 refactor: Remove V2 suffix and clean up legacy code
+697fb15 feat(queue): Add GC (garbage collection) support
+fc29b94 test: Add performance benchmark tests
 ```
 
 ---
 
 ## Remaining Work
 
-### High Priority
+### ✅ All High Priority Work Complete
 
 1. **Tansu S3 Backend** ✅ RESOLVED
-   - **Root cause**: Volcengine TOS requires virtual-hosted style S3 access, but Tansu's object_store uses path-style
-   - **Solution**: Use MinIO or other path-style compatible S3 services
-   - **Configuration**: Use `TansuBackend(s3_endpoint="http://minio:9000", s3_access_key=..., s3_secret_key=...)`
-   - Tested and working with MinIO Docker container
+   - Use MinIO or other path-style compatible S3 services
 
-2. **Integrate V2 with Existing Workflows** ✅ DONE
-   - Updated `quickstart.py` to use `RayJobRunnerV2`
-   - Updated `workflows/simple_etl.py` to use new Job API
-   - Updated `examples/test_video_slice.py` to use new create_job signature
+2. **Integrate with Existing Workflows** ✅ DONE
+   - Updated `quickstart.py`, `simple_etl.py`, `test_video_slice.py`
 
 3. **Exactly-Once Processing Loop** ✅ DONE
-   - Verified: output is persisted BEFORE input offset is committed
-   - Added `test_crash_recovery.py` with 5 tests for:
-     - Offset tracking, resume from committed offset
-     - Crash before commit causes reprocessing (at-least-once)
-     - Idempotent processing achieves exactly-once
-
-### Medium Priority
+   - Output persisted before input offset commit
+   - Verified by `test_crash_recovery.py`
 
 4. **Multi-Stage Pipeline Integration Test** ✅ DONE
-   - Added `TestMultiStagePipeline` class with 4 tests
-   - Verified DAG structure, queue topology, parallel workers
-   - Total: 11 pipeline tests pass
 
 5. **Performance Benchmarks** ✅ DONE
-   - MemoryBackend: **2M msg/s** produce, 125K batch, 40K fetch
-   - RayBackend: **2K msg/s** produce (remote overhead), **100K msg/s** fetch
-   - Exceeds 10K msg/s target for batch operations
+   - MemoryBackend: **2M msg/s** produce
 
 6. **Topic Cleanup / GC** ✅ DONE
-   - Added `truncate_before(topic, offset)` - delete records before offset
-   - Added `get_min_committed_offset(topic)` - find safe GC point
-   - Implemented in MemoryBackend and RayBackend
+   - `truncate_before(topic, offset)` implemented
 
-7. **Remove V2 Suffix and Replace Legacy Code** ✅ DONE
-   - Deleted legacy files: stage_master.py, worker.py, output_buffer.py, ray_runner.py
-   - Renamed V2 files to standard names
-   - Renamed classes: StageMaster, StageWorker, StageConfig, RayJobRunner
-   - Updated all imports and references (44 tests passing)
+7. **Legacy Code Cleanup** ✅ DONE
+   - Removed V2 suffix
+   - Deleted checkpoint_manager, state store, meta_service
+   - Removed RayBackend (simplified to MemoryBackend + TansuBackend)
 
-### Low Priority
+### Low Priority (Future)
 
 8. **Multi-Partition Support**
    - Current: single partition (partition=0)
@@ -969,7 +977,6 @@ f5ec91b Add queue backend infrastructure for stream-based architecture
 
 9. **Cross-Node Queue Access**
    - TansuBackend: works (network broker)
-   - RayBackend: works (Ray actor serializable)
    - MemoryBackend: single-process only
 
 ---
@@ -1104,4 +1111,4 @@ await worker_backend.start()
 ---
 
 _This document summarizes the design evolution for checkpoint, recovery, and stream-based architecture in Solstice._
-_Last updated: December 7, 2025_
+_Last updated: December 8, 2025_

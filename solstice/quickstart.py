@@ -117,11 +117,8 @@ async def main_async():
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True)
 
-    # Create job with checkpoint store URI
-    job = Job(
-        job_id="quickstart_job",
-        checkpoint_store_uri="/tmp/solstice/quickstart",  # Local filesystem store
-    )
+    # Create job
+    job = Job(job_id="quickstart_job")
 
     print("Creating job pipeline:")
     print("  Source (numbers) -> Square -> Filter (evens) -> Sink (print)")

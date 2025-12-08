@@ -151,9 +151,6 @@ class SparkSourceMaster(SourceMaster):
         self,
         job_id: str,
         stage: "Stage",
-        # Legacy parameters for backward compatibility with tests
-        checkpoint_store=None,
-        upstream_stages=None,
         **kwargs,
     ):
         # Get config from stage.operator_config

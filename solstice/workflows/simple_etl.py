@@ -10,7 +10,7 @@ All configuration is defined here. CLI parameters can override defaults.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from solstice.core.job import Job
 from solstice.core.stage import Stage
@@ -41,7 +41,6 @@ def filter_predicate(record: Dict[str, Any]) -> bool:
 def create_job(
     job_id: str,
     config: Dict[str, Any],
-    checkpoint_store_uri: Optional[str] = None,
 ) -> Job:
     """
     Create a simple ETL job.
@@ -60,7 +59,6 @@ def create_job(
     Args:
         job_id: Unique job identifier
         config: Job configuration dictionary
-        checkpoint_store_uri: URI for checkpoint storage (optional)
     """
     logger = logging.getLogger(__name__)
     logger.info("Creating Simple ETL job")
@@ -72,10 +70,9 @@ def create_job(
     if not input_path:
         raise ValueError("'input' parameter is required (Lance table path)")
 
-    # Create job with new API
+    # Create job
     job = Job(
         job_id=job_id,
-        checkpoint_store_uri=checkpoint_store_uri or f"/tmp/solstice/{job_id}",
         config=config,
     )
 
