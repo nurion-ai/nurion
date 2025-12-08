@@ -55,7 +55,7 @@ def create_job(
         - transform_parallelism: Transform workers, int or (min, max) (default: (2, 8))
         - filter_parallelism: Filter workers (default: 2)
         - output_format: Output format - json/parquet/csv (default: json)
-        
+
     Args:
         job_id: Unique job identifier
         config: Job configuration dictionary

@@ -235,10 +235,11 @@ class SourceMaster(StageMaster):
 
     def _notify_splits_complete(self) -> None:
         """Notify workers that all splits have been produced.
-        
+
         This allows workers to exit once they've consumed all splits.
         """
         import ray
+
         self.logger.info(f"Notifying {len(self._workers)} workers: all splits produced")
         for worker_id, worker in self._workers.items():
             try:

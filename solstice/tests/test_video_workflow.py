@@ -41,13 +41,15 @@ def create_test_lance_table(table_path: str) -> None:
         public_url = f"{PUBLIC_R2_ENDPOINT}/videos/raw/{video}"
         slug = video.rsplit(".", 1)[0]
 
-        records.append({
-            "global_index": i,
-            "video_uid": slug,
-            "source_url": public_url,
-            "video_path": public_url,
-            "subset": "train" if i < 8 else "validation",
-        })
+        records.append(
+            {
+                "global_index": i,
+                "video_uid": slug,
+                "source_url": public_url,
+                "video_path": public_url,
+                "subset": "train" if i < 8 else "validation",
+            }
+        )
 
     table = pa.Table.from_pylist(records)
     lance.write_dataset(table, table_path, mode="overwrite")
@@ -106,7 +108,7 @@ def test_video_slice_workflow_with_ray():
                 "num_cpus": 4,
                 "log_to_driver": True,
                 "logging_level": logging.INFO,
-            }
+            },
         )
 
         try:

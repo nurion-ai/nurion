@@ -102,7 +102,7 @@ async def main_async():
     """Run the quickstart example"""
     from solstice.runtime import RayJobRunner
     from solstice.core.stage_master import QueueType
-    
+
     # Setup logging
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"

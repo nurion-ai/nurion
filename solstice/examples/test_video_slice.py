@@ -203,9 +203,10 @@ async def run_workflow_async(
         logger.info("Starting workflow execution (timeout=1800s)...")
         try:
             import asyncio
+
             status = await asyncio.wait_for(
                 runner.run(timeout=1800),
-                timeout=1820  # Extra buffer for cleanup
+                timeout=1820,  # Extra buffer for cleanup
             )
             logger.info(f"Workflow completed! Status: {status}")
         except asyncio.TimeoutError:
@@ -250,6 +251,7 @@ async def run_workflow_async(
 def run_workflow(input_path: str, output_path: str) -> None:
     """Sync wrapper for run_workflow_async."""
     import asyncio
+
     asyncio.run(run_workflow_async(input_path, output_path))
 
 

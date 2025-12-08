@@ -391,13 +391,13 @@ class StageMaster:
 
     def notify_upstream_finished(self) -> None:
         """Notify this stage that all upstream stages have finished.
-        
+
         This allows workers to stop waiting for more data once
         they've consumed everything from the upstream queue.
         """
         self._upstream_finished = True
         self.logger.info(f"Stage {self.stage_id} notified: upstream finished")
-        
+
         # Notify all workers that upstream is done
         for worker_id, worker in self._workers.items():
             try:
@@ -559,13 +559,13 @@ class StageWorker:
             raise
         finally:
             self._running = False
-            
+
             # Close operator (allows sink to flush buffers, etc.)
             try:
                 self.operator.close()
             except Exception as e:
                 self.logger.warning(f"Error during operator close: {e}")
-            
+
             # Cleanup queue connections
             if self.upstream_queue:
                 await self.upstream_queue.stop()
@@ -579,7 +579,7 @@ class StageWorker:
 
     async def _process_from_upstream(self) -> None:
         """Process messages from upstream queue.
-        
+
         Completion criteria:
         - When upstream is finished AND we've consumed all messages (offset >= latest)
         - Exit immediately when both conditions are met
@@ -621,7 +621,7 @@ class StageWorker:
 
             if not records:
                 consecutive_empty += 1
-                
+
                 # Check if we should stop: upstream finished AND queue exhausted
                 latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
                 if offset >= latest:
@@ -633,8 +633,10 @@ class StageWorker:
                         break
                     elif consecutive_empty >= 50:
                         # Not notified yet but no new data for 5 seconds, check again
-                        self.logger.debug(f"Waiting for upstream completion signal, offset={offset}, latest={latest}")
-                
+                        self.logger.debug(
+                            f"Waiting for upstream completion signal, offset={offset}, latest={latest}"
+                        )
+
                 # Don't wait too long if upstream is finished
                 if self._upstream_finished:
                     await asyncio.sleep(0.05)  # Quick check

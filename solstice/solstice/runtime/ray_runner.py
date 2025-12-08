@@ -216,7 +216,7 @@ class RayJobRunner:
 
     def _notify_downstream_stages(self, finished_stage_id: str, all_finished: set) -> None:
         """Notify downstream stages that an upstream has finished.
-        
+
         A downstream stage is notified when ALL its upstreams have finished.
         """
         # Find all stages that have this stage as an upstream
@@ -284,7 +284,7 @@ class RayJobRunner:
                 for stage_id in done_stages:
                     del self._master_tasks[stage_id]
                     finished_stages.add(stage_id)
-                    
+
                     # Notify downstream stages that this upstream has finished
                     self._notify_downstream_stages(stage_id, finished_stages)
 

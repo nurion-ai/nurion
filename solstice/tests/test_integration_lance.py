@@ -28,7 +28,9 @@ from solstice.operators.sources.lance import LanceSourceMaster
 pytestmark = pytest.mark.integration
 
 
-def build_lance_splits(dataset_uri: str, *, split_size: int, storage_options: dict = None) -> list[Split]:
+def build_lance_splits(
+    dataset_uri: str, *, split_size: int, storage_options: dict = None
+) -> list[Split]:
     """Build splits from a Lance dataset."""
     dataset = lance.dataset(dataset_uri, storage_options=storage_options)
     splits: list[Split] = []
