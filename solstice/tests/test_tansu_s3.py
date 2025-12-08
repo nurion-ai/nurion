@@ -133,6 +133,29 @@ def get_minio_config() -> dict:
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
+async def wait_for_topic_ready(backend, topic: str, timeout: float = 30.0) -> bool:
+    """Wait for a topic to be ready for produce/fetch operations.
+
+    S3 storage backends have slower metadata propagation, so we need to
+    poll until the topic is actually available.
+    """
+    import time
+
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            # Try to fetch from the topic - if it doesn't error, topic is ready
+            await backend.fetch(topic, offset=0, max_records=1)
+            return True
+        except Exception as e:
+            if "UnknownTopicOrPartitionError" in str(e):
+                await asyncio.sleep(1)
+                continue
+            # Other errors might indicate the topic is ready but empty
+            return True
+    return False
+
+
 @pytest.mark.skipif(
     not check_minio_available() and not shutil.which("docker"),
     reason="MinIO not available and Docker not found",
@@ -192,8 +215,10 @@ class TestTansuMinioS3:
             topic = f"test-minio-topic-{uuid.uuid4().hex[:8]}"
             await backend.create_topic(topic)
 
-            # Wait for topic to be ready
-            await asyncio.sleep(2)
+            # Wait for topic to be ready (S3 backend has slower metadata propagation)
+            assert await wait_for_topic_ready(backend, topic, timeout=30.0), (
+                f"Topic {topic} not ready after 30s"
+            )
 
             # Produce messages
             offsets = []
@@ -232,7 +257,11 @@ class TestTansuMinioS3:
             group = "test-consumer-group"
 
             await backend.create_topic(topic)
-            await asyncio.sleep(2)
+
+            # Wait for topic to be ready (S3 backend has slower metadata propagation)
+            assert await wait_for_topic_ready(backend, topic, timeout=30.0), (
+                f"Topic {topic} not ready after 30s"
+            )
 
             # Produce messages
             for i in range(10):
