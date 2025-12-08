@@ -93,15 +93,32 @@ def mock_stage():
     return MockStage()
 
 
+import random
+
 @pytest.fixture
 def stage_config():
     """Provide default stage config using TANSU backend for distributed tests."""
+    # Use random port to avoid conflicts between tests
+    port = 10000 + random.randint(0, 9999)
     return StageConfig(
         queue_type=QueueType.TANSU,
+        tansu_port=port,
         min_workers=1,
         max_workers=2,
         batch_size=10,
     )
+
+
+@pytest.fixture
+def payload_store():
+    """Provide a mock payload store."""
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.store = MagicMock()
+    store.get = MagicMock(return_value=None)
+    store.delete = MagicMock()
+    store.clear = MagicMock()
+    yield store
 
 
 # ============================================================================
@@ -195,12 +212,13 @@ class TestStageMaster:
     """Tests for StageMaster."""
     
     @pytest.mark.asyncio
-    async def test_create_output_queue(self, mock_stage, stage_config, ray_init):
+    async def test_create_output_queue(self, mock_stage, stage_config, payload_store, ray_init):
         """Test that master creates output queue."""
         master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
+            payload_store=payload_store,
         )
         
         await master.start()
@@ -211,12 +229,13 @@ class TestStageMaster:
         await master.stop()
     
     @pytest.mark.asyncio
-    async def test_get_status(self, mock_stage, stage_config, ray_init):
+    async def test_get_status(self, mock_stage, stage_config, payload_store, ray_init):
         """Test getting stage status."""
         master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
+            payload_store=payload_store,
         )
         
         # Before start
@@ -234,12 +253,13 @@ class TestStageMaster:
         await master.stop()
     
     @pytest.mark.asyncio
-    async def test_stop_idempotent(self, mock_stage, stage_config, ray_init):
+    async def test_stop_idempotent(self, mock_stage, stage_config, payload_store, ray_init):
         """Test that stop can be called multiple times."""
         master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
+            payload_store=payload_store,
         )
         
         await master.start()
@@ -247,7 +267,7 @@ class TestStageMaster:
         await master.stop()  # Should not raise
     
     @pytest.mark.asyncio
-    async def test_get_output_queue(self, mock_stage, stage_config, ray_init):
+    async def test_get_output_queue(self, mock_stage, stage_config, payload_store, ray_init):
         """Test getting output queue for downstream."""
         from solstice.queue import TansuBackend
         
@@ -255,6 +275,7 @@ class TestStageMaster:
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
+            payload_store=payload_store,
         )
         
         assert master.get_output_queue() is None
@@ -284,12 +305,13 @@ class TestIntegration:
     """Integration tests requiring Ray."""
     
     @pytest.mark.asyncio
-    async def test_produce_to_output_queue(self, mock_stage, stage_config, ray_context):
+    async def test_produce_to_output_queue(self, mock_stage, stage_config, payload_store, ray_context):
         """Test that messages can be produced to output queue."""
         master = StageMaster(
             job_id="test_job",
             stage=mock_stage,
             config=stage_config,
+            payload_store=payload_store,
         )
         
         await master.start()
@@ -317,7 +339,7 @@ class TestIntegration:
         await master.stop()
     
     @pytest.mark.asyncio
-    async def test_two_stage_pipeline(self, ray_context):
+    async def test_two_stage_pipeline(self, payload_store, ray_context):
         """Test two-stage pipeline with queue communication."""
         stage_config = StageConfig(
             queue_type=QueueType.TANSU,
@@ -331,6 +353,7 @@ class TestIntegration:
             job_id="test_job",
             stage=stage1,
             config=stage_config,
+            payload_store=payload_store,
         )
         
         await master1.start()
@@ -353,6 +376,7 @@ class TestIntegration:
             job_id="test_job",
             stage=stage2,
             config=stage_config,
+            payload_store=payload_store,
             upstream_endpoint=master1._output_endpoint,
             upstream_topic=topic1,
         )

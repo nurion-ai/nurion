@@ -5,29 +5,34 @@ from solstice.operators.sources.iceberg import IcebergSource, IcebergSourceConfi
 from solstice.operators.sources.lance import (
     LanceTableSource,
     LanceTableSourceConfig,
-    LanceSourceStageMaster,
-    LanceSourceStageMasterConfig,
+    LanceSourceMaster,
 )
-from solstice.operators.sources.source import SourceStageMaster
+from solstice.operators.sources.source import (
+    SourceMaster,
+    SourceConfig,
+)
 from solstice.operators.sources.spark import (
     SparkSource,
     SparkSourceConfig,
-    SparkSourceStageMaster,
-    SparkSourceStageMasterConfig,
+    SparkSourceMaster,
 )
 
 __all__ = [
+    # File source
     "FileSource",
     "FileSourceConfig",
+    # Iceberg source
     "IcebergSource",
     "IcebergSourceConfig",
+    # Lance source
     "LanceTableSource",
     "LanceTableSourceConfig",
-    "LanceSourceStageMaster",
-    "LanceSourceStageMasterConfig",
-    "SourceStageMaster",
+    "LanceSourceMaster",
+    # Source base
+    "SourceMaster",
+    "SourceConfig",
+    # Spark source
     "SparkSource",
     "SparkSourceConfig",
-    "SparkSourceStageMaster",
-    "SparkSourceStageMasterConfig",
+    "SparkSourceMaster",
 ]

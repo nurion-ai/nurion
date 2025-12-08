@@ -1,4 +1,4 @@
-"""Lance table source operator."""
+"""Lance table source operator and source master."""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING, Iterable, Iterator, List, Optional
 import lance
 
 from solstice.core.models import Split, SplitPayload
-from solstice.operators.sources.source import SourceStageMaster
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.core.stage_master import StageMasterConfig
+from solstice.operators.sources.source import SourceMaster, SourceConfig
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
@@ -18,7 +17,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class LanceTableSourceConfig(OperatorConfig):
-    """Configuration for LanceTableSource operator."""
+    """Configuration for LanceTableSource operator and LanceSourceMaster.
+    
+    This unified config is used by both the operator (for reading splits)
+    and the master (for planning splits).
+    """
 
     dataset_uri: str
     """URI of the Lance dataset."""
@@ -31,6 +34,10 @@ class LanceTableSourceConfig(OperatorConfig):
 
     split_size: int = 1024
     """Number of rows per split."""
+    
+    # SourceConfig fields for master
+    tansu_storage_url: str = "memory://"
+    """Tansu storage URL (s3://, sqlite://, memory://)."""
 
 
 def _get_lance_storage_options(uri: str) -> Optional[dict]:
@@ -54,12 +61,17 @@ class LanceTableSource(SourceOperator):
         self.storage_options = _get_lance_storage_options(self.dataset_uri)
 
     def read(self, split: Split) -> Optional[SplitPayload]:
+        """Read data for a split from the Lance dataset."""
         dataset = lance.dataset(self.dataset_uri, storage_options=self.storage_options)
-        fragment = dataset.get_fragment(split.data_range.pop("fragment_id"))
+        
+        # Get split metadata from data_range
+        data_range = dict(split.data_range)  # Make a copy to avoid modifying original
+        fragment_id = data_range.pop("fragment_id")
+        
+        fragment = dataset.get_fragment(fragment_id)
         fragment_scanner = fragment.scanner(
-            **split.data_range,
+            **data_range,
             with_row_id=True,
-            # order_by=[ColumnOrdering(column_name="_row_id")],
         )
         table = fragment_scanner.to_table()
         if table.num_rows == 0:
@@ -78,72 +90,73 @@ class LanceTableSource(SourceOperator):
 LanceTableSourceConfig.operator_class = LanceTableSource
 
 
-@dataclass
-class LanceSourceStageMasterConfig(StageMasterConfig):
-    """Configuration for LanceSourceStageMaster."""
-
-    dataset_uri: Optional[str] = None
-    """URI of the Lance dataset (required)."""
-
-    filter: Optional[str] = None
-    """Filter expression to apply when reading."""
-
-    columns: Optional[Iterable[str]] = None
-    """Columns to read from the dataset."""
-
-    split_size: int = 1024
-    """Number of rows per split."""
-
-    def __post_init__(self):
-        if not self.dataset_uri:
-            raise ValueError("dataset_uri is required for LanceSourceStageMasterConfig")
-
-
-class LanceSourceStageMaster(SourceStageMaster):
-    """Planner for Lance tables."""
+class LanceSourceMaster(SourceMaster):
+    """Source master for Lance tables.
+    
+    Generates splits based on Lance dataset fragments and writes
+    split metadata to a persistent TansuBackend queue.
+    
+    Workers consume from the queue and use LanceTableSource operator
+    to read actual data for each split.
+    """
 
     def __init__(
         self,
         job_id: str,
         stage: "Stage",
-        upstream_stages: List[str] | None = None,
+        **kwargs,
     ):
-        super().__init__(job_id, stage, upstream_stages)
-
-        # Get the operator config which contains Lance-specific settings
+        # Get config from stage.operator_config
         operator_cfg = stage.operator_config
         if not isinstance(operator_cfg, LanceTableSourceConfig):
             raise TypeError(
-                f"LanceSourceStageMaster requires LanceTableSourceConfig, got {type(operator_cfg)}"
+                f"LanceSourceMaster requires LanceTableSourceConfig, "
+                f"got {type(operator_cfg)}"
             )
-
+        
+        super().__init__(job_id, stage, **kwargs)
+        
         self.dataset_uri: str = operator_cfg.dataset_uri
-        if not self.dataset_uri:
-            raise ValueError("dataset_uri is required for LanceSourceStageMaster")
         self.filter: Optional[str] = operator_cfg.filter
         self.columns: Optional[Iterable[str]] = operator_cfg.columns
         self.split_size: int = operator_cfg.split_size
         self.storage_options = _get_lance_storage_options(self.dataset_uri)
-
+        
+        # Load dataset for split planning
         self.dataset = lance.dataset(self.dataset_uri, storage_options=self.storage_options)
+        self.logger.info(f"Loaded Lance dataset: {self.dataset_uri}")
 
-    def fetch_splits(self) -> Iterator[Split]:
-        sorted_fragments = sorted(self.dataset.get_fragments(), key=lambda x: x.fragment_id)
+    def plan_splits(self) -> Iterator[Split]:
+        """Plan splits based on Lance dataset fragments.
+        
+        Generates one split per (fragment, offset) pair, ensuring
+        deterministic split ordering based on fragment_id.
+        """
+        # Sort fragments by fragment_id for deterministic ordering
+        sorted_fragments = sorted(
+            self.dataset.get_fragments(),
+            key=lambda x: x.fragment_id
+        )
+        
+        split_idx = 0
         for frag in sorted_fragments:
             row_count = frag.count_rows()
-            for i in range(0, row_count, self.split_size):
+            for offset in range(0, row_count, self.split_size):
                 yield Split(
-                    split_id=f"{self.stage.stage_id}_{i}",
+                    split_id=f"{self.stage.stage_id}_split_{split_idx}",
                     stage_id=self.stage.stage_id,
                     data_range={
                         "filter": self.filter,
-                        "columns": self.columns,
+                        "columns": list(self.columns) if self.columns else None,
                         "fragment_id": frag.fragment_id,
-                        "offset": i,
+                        "offset": offset,
                         "limit": self.split_size,
                     },
                 )
+                split_idx += 1
+        
+        self.logger.info(f"Planned {split_idx} splits from {len(sorted_fragments)} fragments")
 
 
 # Set master_class after class definition
-LanceSourceStageMasterConfig.master_class = LanceSourceStageMaster
+LanceTableSourceConfig.master_class = LanceSourceMaster

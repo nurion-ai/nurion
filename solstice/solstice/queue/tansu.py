@@ -34,15 +34,65 @@ Architecture:
 """
 
 import asyncio
-import subprocess
+import atexit
 import signal
+import socket
+import subprocess
 import os
-from pathlib import Path
-from typing import Dict, List, Optional
 import time
+import weakref
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer, TopicPartition
+from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
 from solstice.queue.backend import QueueBackend, Record
 from solstice.utils.logging import create_ray_logger
+
+
+# Global registry of used ports (to avoid conflicts)
+_used_ports: Set[int] = set()
+
+# Global registry of TansuBackend instances for cleanup
+_instances: weakref.WeakSet = weakref.WeakSet()
+
+
+def _cleanup_all_tansu():
+    """Cleanup all Tansu processes on exit."""
+    for instance in list(_instances):
+        try:
+            if instance._process and instance._process.poll() is None:
+                os.killpg(os.getpgid(instance._process.pid), signal.SIGKILL)
+                instance._process.wait(timeout=1)
+        except Exception:
+            pass
+
+
+# Register cleanup on interpreter exit
+atexit.register(_cleanup_all_tansu)
+
+
+def _find_free_port(start: int = 10000, end: int = 60000) -> int:
+    """Find a free port that is not in use."""
+    import random
+    
+    # Try random ports first
+    for _ in range(100):
+        port = random.randint(start, end)
+        if port in _used_ports:
+            continue
+        
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("localhost", port))
+            sock.close()
+            return port
+        except OSError:
+            continue
+    
+    raise RuntimeError(f"Could not find a free port in range {start}-{end}")
 
 
 class TansuBackend(QueueBackend):
@@ -71,7 +121,7 @@ class TansuBackend(QueueBackend):
     
     Example:
         ```python
-        # For testing (in-memory)
+        # For testing (in-memory, auto-select port)
         backend = TansuBackend(storage_url="memory://")
         
         # For production (MinIO S3)
@@ -96,7 +146,7 @@ class TansuBackend(QueueBackend):
     def __init__(
         self,
         storage_url: str = "memory://",
-        port: int = 9092,
+        port: Optional[int] = None,
         data_dir: Optional[Path] = None,
         tansu_binary: str = "tansu",
         startup_timeout: float = 30.0,
@@ -110,7 +160,7 @@ class TansuBackend(QueueBackend):
         
         Args:
             storage_url: Storage backend URL (memory://, s3://bucket/, sqlite://, postgres://)
-            port: Port for Kafka protocol (default: 9092)
+            port: Port for Kafka protocol. If None, auto-selects a free port.
             data_dir: Directory for Tansu data (optional)
             tansu_binary: Path to tansu binary (default: "tansu")
             startup_timeout: Timeout for Tansu startup in seconds
@@ -121,7 +171,6 @@ class TansuBackend(QueueBackend):
             client_only: If True, only connect to existing Tansu server, don't start one
         """
         self.storage_url = storage_url
-        self.port = port
         self.data_dir = data_dir
         self.tansu_binary = tansu_binary
         self.startup_timeout = startup_timeout
@@ -131,14 +180,44 @@ class TansuBackend(QueueBackend):
         self.s3_secret_key = s3_secret_key
         self.client_only = client_only
         
+        # Auto-select port if not specified
+        if port is None and not client_only:
+            self.port = _find_free_port()
+        else:
+            self.port = port or 9092
+        
+        # Mark port as used
+        _used_ports.add(self.port)
+        
         self._process: Optional[subprocess.Popen] = None
-        self._producer = None  # AIOKafkaProducer
-        self._admin_client = None  # AIOKafkaAdminClient
-        self._consumers: Dict[str, object] = {}  # topic -> AIOKafkaConsumer
-        self._committed_offsets: Dict[tuple, int] = {}  # (group, topic) -> offset
+        self._producer: Optional[AIOKafkaProducer] = None
+        self._admin_client: Optional[AIOKafkaAdminClient] = None
+        self._consumers: Dict[str, AIOKafkaConsumer] = {}
+        self._committed_offsets: Dict[tuple, int] = {}
         self._running = False
         
-        self.logger = create_ray_logger(f"TansuBackend:{port}")
+        self.logger = create_ray_logger(f"TansuBackend:{self.port}")
+        
+        # Register for cleanup
+        _instances.add(self)
+    
+    def __del__(self):
+        """Cleanup on garbage collection."""
+        self._force_cleanup()
+    
+    def _force_cleanup(self):
+        """Force cleanup of Tansu process."""
+        # Release port
+        _used_ports.discard(self.port)
+        
+        # Kill process if still running
+        if self._process and self._process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+                self._process.wait(timeout=1)
+            except Exception:
+                pass
+            self._process = None
     
     async def start(self) -> None:
         """Start the Tansu broker subprocess and connect."""
@@ -202,6 +281,7 @@ class TansuBackend(QueueBackend):
                 preexec_fn=os.setsid,  # Create new process group for clean shutdown
             )
         except FileNotFoundError:
+            _used_ports.discard(self.port)
             raise RuntimeError(
                 f"Tansu binary not found: {self.tansu_binary}. "
                 "Please install Tansu or provide the correct path."
@@ -211,12 +291,11 @@ class TansuBackend(QueueBackend):
         await asyncio.sleep(0.1)
         if self._process.poll() is not None:
             stderr = self._process.stderr.read().decode() if self._process.stderr else ""
+            _used_ports.discard(self.port)
             raise RuntimeError(f"Tansu failed to start: {stderr}")
     
     async def _wait_for_ready(self) -> None:
         """Wait for Tansu broker to be ready."""
-        import socket
-        
         start_time = time.time()
         connected = False
         
@@ -241,23 +320,16 @@ class TansuBackend(QueueBackend):
             # Check if process died
             if self._process and self._process.poll() is not None:
                 stderr = self._process.stderr.read().decode() if self._process.stderr else ""
+                _used_ports.discard(self.port)
                 raise RuntimeError(f"Tansu process died: {stderr}")
             
             await asyncio.sleep(0.5)
         
+        self._force_cleanup()
         raise RuntimeError(f"Tansu failed to start within {self.startup_timeout}s")
     
     async def _init_kafka_clients(self) -> None:
         """Initialize Kafka producer and admin client."""
-        try:
-            from aiokafka import AIOKafkaProducer
-            from aiokafka.admin import AIOKafkaAdminClient
-        except ImportError:
-            raise RuntimeError(
-                "aiokafka is required for TansuBackend. "
-                "Install it with: pip install aiokafka"
-            )
-        
         bootstrap_servers = f"localhost:{self.port}"
         
         # Initialize producer
@@ -279,15 +351,24 @@ class TansuBackend(QueueBackend):
         
         # Stop Kafka clients
         if self._producer:
-            await self._producer.stop()
+            try:
+                await self._producer.stop()
+            except Exception:
+                pass
             self._producer = None
         
         if self._admin_client:
-            await self._admin_client.close()
+            try:
+                await self._admin_client.close()
+            except Exception:
+                pass
             self._admin_client = None
         
         for consumer in self._consumers.values():
-            await consumer.stop()
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
         self._consumers.clear()
         
         # Stop Tansu process
@@ -305,15 +386,18 @@ class TansuBackend(QueueBackend):
                     self._process.wait()
             except ProcessLookupError:
                 pass  # Process already dead
+            except Exception as e:
+                self.logger.warning(f"Error stopping Tansu process: {e}")
             
             self._process = None
+        
+        # Release port
+        _used_ports.discard(self.port)
         
         self.logger.info("TansuBackend stopped")
     
     async def create_topic(self, topic: str, partitions: int = 1) -> None:
         """Create a topic."""
-        from aiokafka.admin import NewTopic
-        
         try:
             new_topic = NewTopic(
                 name=topic,
@@ -375,10 +459,8 @@ class TansuBackend(QueueBackend):
         
         return offsets
     
-    async def _get_consumer(self, topic: str) -> object:
+    async def _get_consumer(self, topic: str) -> AIOKafkaConsumer:
         """Get or create a consumer for the topic."""
-        from aiokafka import AIOKafkaConsumer, TopicPartition
-        
         if topic not in self._consumers:
             # Use manual partition assignment for more control
             consumer = AIOKafkaConsumer(
@@ -412,8 +494,6 @@ class TansuBackend(QueueBackend):
         timeout_ms: int = 1000,
     ) -> List[Record]:
         """Fetch records from the topic starting at the given offset."""
-        from aiokafka import TopicPartition
-        
         consumer = await self._get_consumer(topic)
         tp = TopicPartition(topic, 0)
         
@@ -456,7 +536,6 @@ class TansuBackend(QueueBackend):
         self._committed_offsets[(group, topic)] = offset
         
         # TODO: Use Tansu's native consumer group support when needed
-        # from aiokafka import TopicPartition
         # tp = TopicPartition(topic, 0)
         # await consumer.commit({tp: offset})
     
@@ -470,8 +549,6 @@ class TansuBackend(QueueBackend):
     
     async def get_latest_offset(self, topic: str) -> int:
         """Get the latest offset in the topic."""
-        from aiokafka import TopicPartition
-        
         consumer = await self._get_consumer(topic)
         tp = TopicPartition(topic, 0)
         

@@ -11,17 +11,21 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Iterator
 
 import ray
 
 from solstice.core.job import Job
+
+if TYPE_CHECKING:
+    from solstice.core.stage import Stage
 from solstice.core.stage_master import (
     StageMaster,
     StageConfig,
     QueueEndpoint,
     QueueType,
 )
+from solstice.operators.sources.source import SourceMaster, SourceConfig
 from solstice.core.split_payload_store import RaySplitPayloadStore
 from solstice.utils.logging import create_ray_logger
 
@@ -115,58 +119,80 @@ class RayJobRunner:
         # Build reverse DAG (stage -> its upstreams)
         self._reverse_dag = self.job.build_reverse_dag()
         
-        # Create stage masters in topological order
-        # First, create all masters without upstream connections
-        for stage_id, stage in self.job.stages.items():
-            # Get or create stage config
-            if hasattr(stage, 'config_v2') and stage.config_v2:
-                config = stage.config_v2
-            else:
-                # Create default config with specified queue type
-                config = StageConfig(
-                    queue_type=self.queue_type,
-                    min_workers=stage.min_parallelism,
-                    max_workers=stage.max_parallelism,
-                )
-            
-            master = StageMaster(
-                job_id=self.job.job_id,
-                stage=stage,
-                config=config,
-                payload_store=self._payload_store,
-            )
-            self._masters[stage_id] = master
-        
-        # Connect upstreams in topological order
-        # This ensures upstream masters are started before downstream
+        # Create masters in topological order
         processing_order = self._get_topological_order()
         
         for stage_id in processing_order:
-            master = self._masters[stage_id]
+            stage = self.job.stages[stage_id]
             upstream_ids = self._reverse_dag.get(stage_id, [])
+            is_source = not upstream_ids
             
-            if upstream_ids:
-                # Get first upstream's endpoint and topic
-                # (for multi-input stages, this would need more complex handling)
-                upstream_id = upstream_ids[0]
+            if is_source:
+                # Source stage: use SourceMaster
+                master = self._create_source_master(stage)
+                self._masters[stage_id] = master
+                self.logger.info(f"Created {type(master).__name__} for source stage {stage_id}")
+            else:
+                # Regular stage: use StageMaster
+                if hasattr(stage, 'config_v2') and stage.config_v2:
+                    config = stage.config_v2
+                else:
+                    config = StageConfig(
+                        queue_type=self.queue_type,
+                        min_workers=stage.min_parallelism,
+                        max_workers=stage.max_parallelism,
+                    )
+                
+                # Get upstream endpoint and topic
+                upstream_id = upstream_ids[0]  # TODO: handle multi-input
                 upstream_master = self._masters[upstream_id]
                 
-                # Start upstream to get its endpoint
+                # Start upstream if needed to get its endpoint
                 if not upstream_master._running:
                     await upstream_master.start()
                 
-                # Update master with upstream info
-                master.upstream_endpoint = upstream_master._output_endpoint
-                master.upstream_topic = upstream_master._output_topic
+                master = StageMaster(
+                    job_id=self.job.job_id,
+                    stage=stage,
+                    config=config,
+                    payload_store=self._payload_store,
+                    upstream_endpoint=upstream_master._output_endpoint,
+                    upstream_topic=upstream_master._output_topic,
+                )
+                self._masters[stage_id] = master
+                self.logger.info(f"Created StageMaster for stage {stage_id}")
     
         self._initialized = True
         self.logger.info(f"Initialized {len(self._masters)} stages")
+    
+    def _create_source_master(self, stage: "Stage") -> SourceMaster:
+        """Create appropriate SourceMaster for a source stage.
+        
+        The source operator_config must have a master_class attribute that
+        specifies which SourceMaster class to use.
+        """
+        operator_config = stage.operator_config
+        
+        # Get master_class from operator_config
+        master_class = getattr(operator_config, 'master_class', None)
+        if master_class is None:
+            raise ValueError(
+                f"Source stage '{stage.stage_id}' operator_config {type(operator_config).__name__} "
+                f"does not have a master_class attribute. "
+                f"Source configs must define master_class to specify the SourceMaster to use."
+            )
+        
+        return master_class(
+            job_id=self.job.job_id,
+            stage=stage,
+            payload_store=self._payload_store,
+        )
     
     def _get_topological_order(self) -> List[str]:
         """Get stages in topological order (sources first)."""
         # Simple BFS from sources
         in_degree = {stage_id: len(self._reverse_dag.get(stage_id, []))
-                     for stage_id in self._masters}
+                     for stage_id in self.job.stages}
         
         # Start with sources (no upstreams)
         queue = [s for s, d in in_degree.items() if d == 0]
@@ -348,6 +374,7 @@ class RayJobRunner:
     def is_initialized(self) -> bool:
         return self._initialized
 
+
 # Convenience function for simple pipeline execution
 async def run_pipeline(
     job: Job,
@@ -367,7 +394,6 @@ async def run_pipeline(
     """
     runner = RayJobRunner(job, queue_type=queue_type)
     return await runner.run(timeout=timeout)
-
 
 
 

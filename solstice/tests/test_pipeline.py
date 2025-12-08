@@ -22,6 +22,7 @@ from solstice.core.operator import Operator, OperatorConfig
 from solstice.core.models import Split, SplitPayload
 from solstice.core.stage_master import StageConfig, QueueType
 from solstice.runtime.ray_runner import RayJobRunner, run_pipeline, PipelineStatus
+from solstice.operators.sources.source import SourceMaster
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
@@ -78,6 +79,28 @@ class TestSourceConfig(OperatorConfig):
 
 # Set operator_class after class definition
 TestSourceConfig.operator_class = TestSourceOperator
+
+
+class TestSourceMaster(SourceMaster):
+    """Test source master that generates splits from config."""
+    
+    def plan_splits(self):
+        """Generate splits based on operator config."""
+        config = self.stage.operator_config
+        num_batches = config.num_records // config.batch_size
+        
+        for i in range(num_batches):
+            yield Split(
+                split_id=f"source_split_{i}",
+                stage_id=self.stage_id,
+                data_range={
+                    "start": i * config.batch_size,
+                    "end": (i + 1) * config.batch_size,
+                },
+            )
+
+# Set master_class after class definition
+TestSourceConfig.master_class = TestSourceMaster
 
 
 class TestTransformOperator(Operator):
@@ -469,8 +492,8 @@ class TestMultiStagePipeline:
         source_master = runner._masters["source"]
         transform_master = runner._masters["transform"]
         
-        # Source has output queue but no upstream
-        assert source_master.upstream_endpoint is None
+        # Source master has internal source queue (for workers to pull from)
+        # and output queue (for downstream stages)
         assert source_master._output_endpoint is not None
         
         # Transform has upstream (from source)

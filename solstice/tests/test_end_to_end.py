@@ -13,7 +13,6 @@ from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.runtime.local_runner import LocalJobRunner
-from solstice.state.store import LocalCheckpointStore
 
 
 @dataclass
@@ -81,9 +80,8 @@ class ManualSourceOperator(SourceOperator):
 ManualSourceConfig.operator_class = ManualSourceOperator
 
 
-def make_job(tmp_path, stages: List[Stage]) -> Job:
-    store = LocalCheckpointStore(str(tmp_path / "checkpoints"))
-    job = Job(job_id="local-runner-tests", checkpoint_store=store)
+def make_job(stages: List[Stage]) -> Job:
+    job = Job(job_id="local-runner-tests")
     for stage in stages:
         upstream = []
         if stage.stage_id != stages[0].stage_id:
@@ -93,7 +91,7 @@ def make_job(tmp_path, stages: List[Stage]) -> Job:
     return job
 
 
-def test_local_runner_executes_pipeline(tmp_path):
+def test_local_runner_executes_pipeline():
     source_stage = Stage(
         stage_id="source",
         operator_config=ListSourceConfig(
@@ -117,7 +115,7 @@ def test_local_runner_executes_pipeline(tmp_path):
         ),
     )
 
-    job = make_job(tmp_path, [source_stage, map_stage, filter_stage])
+    job = make_job([source_stage, map_stage, filter_stage])
     runner = LocalJobRunner(job)
     results = runner.run()
 
@@ -128,7 +126,7 @@ def test_local_runner_executes_pipeline(tmp_path):
     assert filtered_records == [6, 8]
 
 
-def test_local_runner_accepts_source_splits_argument(tmp_path):
+def test_local_runner_accepts_source_splits_argument():
     source_stage = Stage(
         stage_id="manual_source",
         operator_config=ManualSourceConfig(),
@@ -139,7 +137,7 @@ def test_local_runner_accepts_source_splits_argument(tmp_path):
             map_fn=lambda val: {"value": val["value"] + 1},
         ),
     )
-    job = make_job(tmp_path, [source_stage, map_stage])
+    job = make_job([source_stage, map_stage])
 
     splits = [
         Split(
@@ -157,7 +155,7 @@ def test_local_runner_accepts_source_splits_argument(tmp_path):
     assert mapped == [11, 21]
 
 
-def test_local_runner_hooks_and_failure_injection(tmp_path):
+def test_local_runner_hooks_and_failure_injection():
     source_stage = Stage(
         stage_id="source",
         operator_config=ListSourceConfig(
@@ -170,7 +168,7 @@ def test_local_runner_hooks_and_failure_injection(tmp_path):
             map_fn=lambda val: {"value": val["value"]},
         ),
     )
-    job = make_job(tmp_path, [source_stage, map_stage])
+    job = make_job([source_stage, map_stage])
     runner = LocalJobRunner(job)
 
     calls: dict[str, list[str]] = {"before_stage": [], "after_stage": [], "before_batch": []}

@@ -229,27 +229,27 @@ class StageMaster:
         """Create the appropriate queue backend."""
         if self.config.queue_type == QueueType.TANSU:
             from solstice.queue import TansuBackend
-            import random
-            # Use a unique port for each stage to avoid conflicts
-            port = self.config.tansu_port + hash(self.stage_id) % 1000
+            # Auto-select port (TansuBackend handles this when port=None)
             queue = TansuBackend(
                 storage_url=self.config.tansu_storage_url,
-                port=port,
+                port=None,  # Auto-select free port
             )
+            await queue.start()
+            # Now we can get the actual port that was selected
             self._output_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                port=port,
+                port=queue.port,
                 storage_url=self.config.tansu_storage_url,
             )
-            self.logger.info(f"Created Tansu backend on port {port}")
+            self.logger.info(f"Created Tansu backend on port {queue.port}")
         else:
             # MEMORY - only for single-process testing
             queue = MemoryBackend()
+            await queue.start()
             self._output_endpoint = QueueEndpoint(
                 queue_type=QueueType.MEMORY,
             )
         
-        await queue.start()
         await queue.create_topic(self._output_topic)
         return queue
     
@@ -494,23 +494,30 @@ class StageWorker:
         return queue
     
     async def run(self) -> Dict[str, Any]:
-        """Main processing loop."""
+        """Main processing loop.
+        
+        Workers always consume from upstream queue. Source stages use
+        SourceMaster which writes splits to a queue before workers consume.
+        """
         self._running = True
         self.logger.info(f"Worker {self.worker_id} starting")
+        
+        if not self.upstream_endpoint or not self.upstream_topic:
+            raise RuntimeError(
+                f"Worker {self.worker_id} requires upstream_endpoint and upstream_topic. "
+                "Source stages should use SourceMaster to generate splits into a queue."
+            )
         
         try:
             # Create queue connections
             self.logger.info(f"Output endpoint received: {self.output_endpoint}")
             self.output_queue = await self._create_queue_from_endpoint(self.output_endpoint)
             
-            if self.upstream_endpoint and self.upstream_topic:
-                self.logger.info(f"Connecting to upstream queue: {self.upstream_endpoint}")
-                self.upstream_queue = await self._create_queue_from_endpoint(self.upstream_endpoint)
-                # Regular worker: pull from upstream
-                await self._process_from_upstream()
-            else:
-                # Source worker: generate data
-                await self._process_as_source()
+            self.logger.info(f"Connecting to upstream queue: {self.upstream_endpoint}")
+            self.upstream_queue = await self._create_queue_from_endpoint(self.upstream_endpoint)
+            
+            # Process from upstream queue
+            await self._process_from_upstream()
             
             return {
                 "worker_id": self.worker_id,
@@ -599,123 +606,43 @@ class StageWorker:
                 self.consumer_group, self.upstream_topic, offset
             )
     
-    async def _process_as_source(self) -> None:
-        """Process as a source stage (no upstream)."""
-        from solstice.core.models import Split
-        
-        # Get splits from operator or generate from config
-        splits = []
-        if hasattr(self.operator, 'generate_splits'):
-            splits = list(self.operator.generate_splits())
-        elif hasattr(self.operator, 'fetch_splits'):
-            splits = list(self.operator.fetch_splits())
-        else:
-            # Try to generate splits from operator config (e.g., LanceTableSourceConfig)
-            splits = self._generate_splits_from_config()
-        
-        self.logger.info(f"Source worker processing {len(splits)} splits, output topic: {self.output_topic}, output_queue actor: {self.output_queue.get_actor_ref() if hasattr(self.output_queue, 'get_actor_ref') else 'N/A'}")
-        
-        for split in splits:
-            if not self._running:
-                break
-            
-            try:
-                # Process split using operator
-                output_payload = self.operator.process_split(split, None)
-                
-                if output_payload:
-                    # Generate unique key for this payload
-                    payload_key = f"{self.worker_id}_{self._processed_count}_{split.split_id}"
-                    
-                    # Store payload in SplitPayloadStore
-                    self.payload_store.store(payload_key, output_payload)
-                    
-                    message = QueueMessage(
-                        message_id=f"{self.worker_id}_{self._processed_count}",
-                        split_id=split.split_id,
-                        payload_key=payload_key,
-                        metadata={"source_stage": self.stage_id},
-                    )
-                    
-                    # Produce to output queue
-                    offset = await self.output_queue.produce(
-                        self.output_topic, message.to_bytes()
-                    )
-                    # Verify write
-                    latest = await self.output_queue.get_latest_offset(self.output_topic)
-                    self.logger.debug(f"Produced message for {split.split_id} at offset {offset} on topic {self.output_topic}, latest now: {latest}")
-                
-                self._processed_count += 1
-                
-            except Exception as e:
-                self.logger.error(f"Error processing split {split.split_id}: {e}")
-                self._error_count += 1
-    
-    def _generate_splits_from_config(self) -> List:
-        """Generate splits from operator config (for Lance/Spark sources)."""
-        from solstice.core.models import Split
-        
-        config = self.stage.operator_config
-        splits = []
-        
-        # Handle LanceTableSourceConfig
-        if hasattr(config, 'dataset_uri'):
-            try:
-                import lance
-                
-                # Get storage options for S3
-                storage_options = None
-                if config.dataset_uri.startswith("s3://"):
-                    from solstice.utils.remote import get_lance_storage_options
-                    bucket = config.dataset_uri[5:].split("/")[0]
-                    storage_options = get_lance_storage_options(bucket)
-                
-                dataset = lance.dataset(config.dataset_uri, storage_options=storage_options)
-                split_size = getattr(config, 'split_size', 1024)
-                filter_expr = getattr(config, 'filter', None)
-                columns = getattr(config, 'columns', None)
-                
-                sorted_fragments = sorted(dataset.get_fragments(), key=lambda x: x.fragment_id)
-                split_idx = 0
-                for frag in sorted_fragments:
-                    row_count = frag.count_rows()
-                    for offset in range(0, row_count, split_size):
-                        splits.append(Split(
-                            split_id=f"{self.stage_id}_split_{split_idx}",
-                            stage_id=self.stage_id,
-                            data_range={
-                                "filter": filter_expr,
-                                "columns": columns,
-                                "fragment_id": frag.fragment_id,
-                                "offset": offset,
-                                "limit": split_size,
-                            },
-                        ))
-                        split_idx += 1
-                
-                self.logger.info(f"Generated {len(splits)} splits from Lance dataset")
-                
-            except Exception as e:
-                self.logger.error(f"Failed to generate splits from Lance config: {e}")
-        
-        return splits
     
     async def _process_message(self, message: QueueMessage) -> None:
-        """Process a single message."""
+        """Process a single message.
+        
+        Handles two types of messages:
+        1. Source messages: payload_key is empty, data_range is in metadata
+           - Create split from metadata and call operator.process_split(split, None)
+        2. Regular messages: payload_key points to SplitPayloadStore
+           - Get payload from store and call operator.process_split(split, payload)
+        """
         from solstice.core.models import Split, SplitPayload
         
-        # Get payload from SplitPayloadStore
-        payload: Optional[SplitPayload] = self.payload_store.get(message.payload_key)
-        if payload is None:
-            raise RuntimeError(f"Payload not found for key: {message.payload_key}")
+        payload: Optional[SplitPayload] = None
+        is_source_message = not message.payload_key
         
-        # Create split for processing
-        split = Split(
-            split_id=message.split_id,
-            stage_id=self.stage_id,
-            data_range={"message_id": message.message_id},
-            parent_split_ids=[message.split_id],
-        )
+        if is_source_message:
+            # Source message: data_range is in metadata
+            data_range = message.metadata.get("data_range", {})
+            split = Split(
+                split_id=message.split_id,
+                stage_id=self.stage_id,
+                data_range=data_range,
+                parent_split_ids=[],
+            )
+            # payload is None for source operators
+        else:
+            # Regular message: get payload from store
+            payload = self.payload_store.get(message.payload_key)
+            if payload is None:
+                raise RuntimeError(f"Payload not found for key: {message.payload_key}")
+            
+            split = Split(
+                split_id=message.split_id,
+                stage_id=self.stage_id,
+                data_range={"message_id": message.message_id},
+                parent_split_ids=[message.split_id],
+            )
         
         # Process with operator
         output_payload = self.operator.process_split(split, payload)
@@ -745,8 +672,9 @@ class StageWorker:
         else:
             self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
         
-        # Delete input payload (no longer needed)
-        self.payload_store.delete(message.payload_key)
+        # Delete input payload if it was from store (not source message)
+        if not is_source_message and message.payload_key:
+            self.payload_store.delete(message.payload_key)
     
     def stop(self) -> None:
         """Stop the worker."""
@@ -769,51 +697,4 @@ class StageWorker:
         }
 
 
-# ============================================================================
-# Legacy compatibility layer (deprecated)
-# These classes are provided for backward compatibility with existing workflows.
-# New code should use StageMaster and StageConfig directly.
-# ============================================================================
-
-import warnings
-
-
-@dataclass
-class StageMasterConfig:
-    """Legacy configuration class for backward compatibility.
-    
-    .. deprecated::
-        Use StageConfig instead. This class is only for compatibility
-        with existing workflows.
-    """
-    pass
-
-
-class DefaultStageMasterConfig(StageMasterConfig):
-    """Default legacy config for backward compatibility.
-    
-    .. deprecated::
-        Use StageConfig instead.
-    """
-    pass
-
-
-class StageMasterActor:
-    """Legacy class for backward compatibility.
-    
-    .. deprecated::
-        Use StageMaster instead. This class is only for compatibility
-        with existing source operators.
-    """
-    
-    def __init__(self, *args, **kwargs):
-        warnings.warn(
-            "StageMasterActor is deprecated. Use StageMaster instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        raise NotImplementedError(
-            "StageMasterActor is deprecated and no longer functional. "
-            "Please migrate to the new StageMaster API."
-        )
 

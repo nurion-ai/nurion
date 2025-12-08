@@ -1,82 +1,303 @@
-"""Operator Master interface for operator-specific control logic."""
+"""Source Master for source stages that generate splits.
 
+SourceMaster is responsible for:
+1. Generating splits via the abstract plan_splits() method
+2. Writing split metadata to a persistent TansuBackend queue
+3. Spawning workers that consume from this queue and process data
+
+Architecture:
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                      SourceMaster                               │
+    │                                                                 │
+    │  ┌─────────────────────────────────────────────────────────┐   │
+    │  │              Source Queue (Tansu, persistent)           │   │
+    │  │  - Split metadata written by plan_splits()              │   │
+    │  │  - Enables exactly-once via offset tracking             │   │
+    │  └─────────────────────────────────────────────────────────┘   │
+    │                           ▲                                     │
+    │                           │ produce splits                      │
+    │  plan_splits() ───────────┘                                    │
+    │                                                                 │
+    │                           │                                     │
+    │                           ▼ workers consume                     │
+    │  ┌────────────┐  ┌────────────┐  ┌────────────┐               │
+    │  │  Worker 1  │  │  Worker 2  │  │  Worker N  │               │
+    │  │ (process)  │  │ (process)  │  │ (process)  │               │
+    │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘               │
+    │        │               │               │                        │
+    │        └───────────────┼───────────────┘                        │
+    │                        │ produce to output                      │
+    │                        ▼                                        │
+    │  ┌─────────────────────────────────────────────────────────┐   │
+    │  │              Output Queue (for downstream)              │   │
+    │  └─────────────────────────────────────────────────────────┘   │
+    └─────────────────────────────────────────────────────────────────┘
+
+Key design decisions:
+- SourceMaster uses TansuBackend for source queue (persistence)
+- Split metadata is written to source queue, workers read actual data
+- Workers consume from source queue, produce to output queue
+- This enables crash recovery and exactly-once semantics
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
 import time
-
+import uuid
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Iterator, List, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
-from solstice.core.models import Split
-from solstice.core.stage_master import StageMasterActor
-from solstice.state.store import CheckpointStore
+import ray
+
+from solstice.core.models import Split, SplitPayload
+from solstice.core.stage_master import (
+    QueueEndpoint,
+    QueueMessage,
+    QueueType,
+    StageConfig,
+    StageStatus,
+    StageWorker,
+    StageMaster,
+)
+from solstice.queue import TansuBackend, MemoryBackend, QueueBackend
+from solstice.utils.logging import create_ray_logger
+from solstice.core.split_payload_store import SplitPayloadStore
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
 
 
-class SourceStageMaster(StageMasterActor):
-    """Master for source operators that handles split planning and generation."""
+@dataclass
+class SourceConfig(StageConfig):
+    """Configuration for SourceMaster.
+    
+    Source stages always use TansuBackend for the source queue (persistence).
+    """
+    # Override queue_type to always be TANSU for source queue
+    queue_type: QueueType = QueueType.TANSU
+    
+    # Tansu storage URL (s3://, sqlite://, memory://)
+    tansu_storage_url: str = "memory://"
+    tansu_port: int = 9092
 
+
+class SourceMaster(StageMaster):
+    """Master for source stages that generates splits and spawns workers.
+    
+    SourceMaster extends StageMaster with split generation capability:
+    1. Generate splits via plan_splits()
+    2. Write split metadata to a persistent source queue
+    3. Spawn workers that consume from source queue
+    4. Workers produce output to output queue (for downstream stages)
+    
+    This design ensures:
+    - Split planning is deterministic and persistent
+    - Crash recovery can resume from last committed offset
+    - Workers only need to consume from queue (no special source logic)
+    
+    Subclasses must implement:
+    - plan_splits() -> Iterator[Split]: Generate splits for this source
+    """
+    
     def __init__(
         self,
         job_id: str,
-        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
-        upstream_stages: List[str] | None = None,
+        config: Optional[SourceConfig] = None,
+        payload_store: Optional[SplitPayloadStore] = None,
+        **kwargs,
     ):
-        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
-
-        self.logger.info(f"Source operator master for stage {self.stage_id}")
-
-    def run(self, poll_interval: float = 0.05) -> bool:
+        # Source stages use their own source queue as "upstream"
+        # We don't pass upstream_endpoint/topic to parent - we'll create our own
+        config = config or SourceConfig()
+        super().__init__(
+            job_id=job_id,
+            stage=stage,
+            config=config,
+            payload_store=payload_store,
+            upstream_endpoint=None,  # Will set after creating source queue
+            upstream_topic=None,
+        )
+        
+        # Source queue (for split metadata, distinct from output queue)
+        self._source_queue: Optional[TansuBackend] = None
+        self._source_topic = f"{job_id}_{self.stage_id}_source"
+        self._source_endpoint: Optional[QueueEndpoint] = None
+        
+        # Metrics
+        self._splits_produced = 0
+        
+        # Override logger
+        self.logger = create_ray_logger(f"SourceMaster-{self.stage_id}")
+    
+    async def _create_source_queue(self) -> TansuBackend:
+        """Create persistent TansuBackend for source queue.
+        
+        Source queue stores split metadata and must be persistent
+        to enable crash recovery.
+        """
+        # Auto-select port (TansuBackend handles this when port=None)
+        queue = TansuBackend(
+            storage_url=self.config.tansu_storage_url,
+            port=None,  # Auto-select free port
+        )
+        await queue.start()
+        
+        # Now we can get the actual port that was selected
+        self._source_endpoint = QueueEndpoint(
+            queue_type=QueueType.TANSU,
+            port=queue.port,
+            storage_url=self.config.tansu_storage_url,
+        )
+        
+        await queue.create_topic(self._source_topic)
+        
+        self.logger.info(
+            f"Created Tansu source queue on port {queue.port} for {self.stage_id}"
+        )
+        return queue
+    
+    async def start(self) -> None:
+        """Start the source master.
+        
+        1. Create source queue for split metadata
+        2. Generate splits and write to source queue
+        3. Create output queue (via parent StageMaster)
+        4. Spawn workers that consume from source queue
+        """
         if self._running:
-            return False
+            return
+        
+        self.logger.info(f"Starting source {self.stage_id}")
+        self._start_time = time.time()
         self._running = True
-        self.logger.info(f"Stage {self.stage_id} run loop started")
-        try:
-            split_iterator = self.fetch_splits()
-            has_more_splits = True
-
-            def need_running() -> bool:
-                return self._running and (
-                    has_more_splits
-                    or len(self._pending_splits) > 0
-                    or len(self._inflight_results) > 0
-                )
-
-            while need_running():
-                self.logger.debug("This is a source stage, requesting splits from source")
-                has_more_splits = self._request_splits_from_source(split_iterator)
-                self._schedule_pending_splits()
-                self._drain_completed_results(timeout=poll_interval * 2)
-                time.sleep(poll_interval)
-            for actor_ref in self.downstream_stage_refs.values():
-                actor_ref.set_upstream_finished.remote(self.stage_id)
-            self._running = False
-            return True
-        finally:
-            self.logger.info(f"Stage {self.stage_id} run loop stopped")
-            self._running = False
-            return False
-
-    def _request_splits_from_source(self, split_iterator: Iterator[Split]) -> bool:
-        available_capacity = self.max_queue_size - len(self._pending_splits)
-        if available_capacity <= 0:
-            return True  # Still has capacity, iterator might have more splits
-
-        try:
-            for split in split_iterator:
-                self.enqueue_split(split)
-                if self.backpressure_active:
-                    self.logger.warning(
-                        f"Backpressure active for stage {self.stage_id}, stop enqueuing splits"
-                    )
-                    return True  # Iterator might still have more splits
-            # Iterator exhausted
-            return False
-        except StopIteration:
-            # Iterator exhausted
-            return False
-
+        
+        # Create source queue (for split metadata)
+        self._source_queue = await self._create_source_queue()
+        
+        # Generate splits and write to source queue
+        await self._produce_splits()
+        
+        # Create output queue (for downstream stages)
+        self._output_queue = await self._create_queue()
+        
+        # Set upstream to our source queue (workers will consume from here)
+        self.upstream_endpoint = self._source_endpoint
+        self.upstream_topic = self._source_topic
+        
+        # Spawn workers
+        for i in range(self.config.min_workers):
+            await self._spawn_worker()
+        
+        self.logger.info(
+            f"Source {self.stage_id} started: {self._splits_produced} splits, "
+            f"{len(self._workers)} workers"
+        )
+    
+    async def _produce_splits(self) -> None:
+        """Generate splits and write to source queue."""
+        self.logger.info(f"Generating splits for source {self.stage_id}")
+        
+        split_iterator = self.plan_splits()
+        
+        for split in split_iterator:
+            if not self._running:
+                break
+            
+            try:
+                await self._produce_split(split)
+                self._splits_produced += 1
+                
+                if self._splits_produced % 100 == 0:
+                    self.logger.info(f"Produced {self._splits_produced} splits")
+                    
+            except Exception as e:
+                self.logger.error(f"Error producing split {split.split_id}: {e}")
+                self._failed = True
+                self._failure_message = str(e)
+                raise
+        
+        self.logger.info(
+            f"Source {self.stage_id} produced {self._splits_produced} splits to queue"
+        )
+    
+    async def _produce_split(self, split: Split) -> None:
+        """Produce a split to the source queue.
+        
+        The split metadata is serialized and written to the queue.
+        Workers will consume this and use the SourceOperator to read actual data.
+        """
+        # Create message with split metadata
+        message = QueueMessage(
+            message_id=f"{self.stage_id}_{self._splits_produced}",
+            split_id=split.split_id,
+            payload_key="",  # No payload for source splits - data will be read by operator
+            metadata={
+                "source_stage": self.stage_id,
+                "data_range": split.data_range,
+                "split_index": self._splits_produced,
+            },
+        )
+        
+        # Produce to source queue
+        offset = await self._source_queue.produce(
+            self._source_topic, message.to_bytes()
+        )
+        self.logger.debug(f"Produced split {split.split_id} at offset {offset}")
+    
     @abstractmethod
-    def fetch_splits(self) -> Iterator[Split]:
-        raise NotImplementedError("fetch_splits must be implemented by subclasses")
+    def plan_splits(self) -> Iterator[Split]:
+        """Plan and generate splits for this source.
+        
+        Subclasses must implement this to define how data is split.
+        
+        Returns:
+            Iterator of Split objects, each containing metadata for one split
+        """
+        raise NotImplementedError("plan_splits must be implemented by subclasses")
+    
+    async def cleanup_queue(self) -> None:
+        """Clean up queues. Called by runner after all consumers are done."""
+        # Clean up source queue
+        if self._source_queue:
+            await self._source_queue.stop()
+            self._source_queue = None
+        
+        # Clean up output queue (parent)
+        await super().cleanup_queue()
+    
+    def get_source_queue(self) -> Optional[QueueBackend]:
+        """Get the source queue (for debugging/testing)."""
+        return self._source_queue
+    
+    def get_source_topic(self) -> str:
+        """Get the source topic name."""
+        return self._source_topic
+    
+    def get_source_endpoint(self) -> Optional[QueueEndpoint]:
+        """Get the source endpoint (for debugging/testing)."""
+        return self._source_endpoint
+    
+    def get_status(self) -> StageStatus:
+        """Get current source status."""
+        status = super().get_status()
+        status.metrics["splits_produced"] = self._splits_produced
+        return status
+    
+    async def get_status_async(self) -> StageStatus:
+        """Get current source status with queue metrics."""
+        status = await super().get_status_async()
+        
+        # Add source queue size
+        if self._source_queue:
+            try:
+                source_size = await self._source_queue.get_latest_offset(self._source_topic)
+                status.metrics["source_queue_size"] = source_size
+            except Exception:
+                pass
+        
+        status.metrics["splits_produced"] = self._splits_produced
+        return status
