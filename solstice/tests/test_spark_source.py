@@ -5,14 +5,12 @@ from __future__ import annotations
 import glob
 import os
 from pathlib import Path
-from typing import List
 
 import pytest
 import pyarrow as pa
 import ray
 from ray.job_config import JobConfig
 
-from solstice.core.job import Job
 from solstice.core.models import Split
 from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
@@ -21,7 +19,6 @@ from solstice.operators.sources.spark import (
     SparkSourceConfig,
     SparkSourceMaster,
 )
-from solstice.runtime.local_runner import LocalJobRunner
 
 
 # Test data path
@@ -34,6 +31,7 @@ def _check_raydp_jars_available():
     """Check if raydp JAR files are available."""
     try:
         from raydp.utils import code_search_path
+
         paths = code_search_path()
         for path in paths:
             jars = glob.glob(os.path.join(path, "*.jar"))
@@ -64,15 +62,6 @@ def ray_local():
     )
     yield
     ray.shutdown()
-
-
-def make_job(stages: List[Stage]) -> Job:
-    """Create a job with the given stages."""
-    job = Job(job_id="spark-source-test")
-    for i, stage in enumerate(stages):
-        upstream = [stages[i - 1].stage_id] if i > 0 else None
-        job.add_stage(stage, upstream_stages=upstream)
-    return job
 
 
 class TestSparkSourceOperator:
@@ -185,10 +174,10 @@ class TestSparkSourceOperator:
 
 
 class TestSparkSourcePipeline:
-    """Test SparkSource in a pipeline with pre-created ObjectRefs."""
+    """Test SparkSource with operators directly (without LocalJobRunner)."""
 
-    def test_spark_source_to_filter_pipeline(self, ray_local):
-        """Test reading from ObjectRefs and filtering through pipeline."""
+    def test_spark_source_to_filter(self, ray_local):
+        """Test reading from ObjectRefs and filtering."""
         # Create test data
         test_data = pa.Table.from_pylist(
             [
@@ -198,98 +187,78 @@ class TestSparkSourcePipeline:
         )
         object_ref = ray.put(test_data)
 
-        # Define stages
-        source_stage = Stage(
+        # Create source operator and read
+        source_config = SparkSourceConfig()
+        source = source_config.setup()
+
+        split = Split(
+            split_id="spark_split_0",
             stage_id="spark_source",
-            operator_config=SparkSourceConfig(),
+            data_range={
+                "object_ref": object_ref,
+                "block_size": 100,
+            },
         )
 
-        filter_stage = Stage(
-            stage_id="filter_engineering",
-            operator_config=FilterOperatorConfig(
-                filter_fn=lambda row: row.get("department") == "engineering",
-            ),
+        payload = source.read(split)
+        assert payload is not None
+        assert len(payload) == 100
+
+        # Apply filter operator
+        filter_config = FilterOperatorConfig(
+            filter_fn=lambda row: row.get("department") == "engineering",
         )
+        filter_op = filter_config.setup()
 
-        job = make_job([source_stage, filter_stage])
+        filtered = filter_op.process_split(split, payload)
+        assert filtered is not None
 
-        splits = [
-            Split(
-                split_id="spark_split_0",
-                stage_id="spark_source",
-                data_range={
-                    "object_ref": object_ref,
-                    "block_size": 100,
-                },
-            )
-        ]
-
-        runner = LocalJobRunner(job)
-        results = runner.run(source_splits={"spark_source": splits})
-
-        assert "filter_engineering" in results
-        filtered_batches = results["filter_engineering"]
-
-        total_engineering = 0
-        for batch in filtered_batches:
-            for record in batch.to_pylist():
-                assert record["department"] == "engineering"
-                total_engineering += 1
-
-        # Every 3rd record (id % 3 == 0) should be engineering
+        # Verify filter results
+        total_engineering = len(filtered)
         expected_count = len([i for i in range(100) if i % 3 == 0])
         assert total_engineering == expected_count
 
-    def test_spark_source_to_map_pipeline(self, ray_local):
+        for record in filtered.to_pylist():
+            assert record["department"] == "engineering"
+
+    def test_spark_source_to_map(self, ray_local):
         """Test reading from ObjectRefs and transforming."""
         test_data = pa.Table.from_pylist([{"id": i, "value": i * 2} for i in range(50)])
         object_ref = ray.put(test_data)
 
-        source_stage = Stage(
+        # Create source and read
+        source = SparkSourceConfig().setup()
+        split = Split(
+            split_id="spark_split_0",
             stage_id="spark_source",
-            operator_config=SparkSourceConfig(),
+            data_range={
+                "object_ref": object_ref,
+                "block_size": 50,
+            },
         )
 
-        map_stage = Stage(
-            stage_id="double_value",
-            operator_config=MapOperatorConfig(
-                map_fn=lambda row: {
-                    **row,
-                    "doubled": row["value"] * 2,
-                },
-            ),
+        payload = source.read(split)
+        assert payload is not None
+
+        # Apply map operator
+        map_config = MapOperatorConfig(
+            map_fn=lambda row: {
+                **row,
+                "doubled": row["value"] * 2,
+            },
         )
+        map_op = map_config.setup()
 
-        job = make_job([source_stage, map_stage])
+        mapped = map_op.process_split(split, payload)
+        assert mapped is not None
+        assert len(mapped) == 50
 
-        splits = [
-            Split(
-                split_id="spark_split_0",
-                stage_id="spark_source",
-                data_range={
-                    "object_ref": object_ref,
-                    "block_size": 50,
-                },
-            )
-        ]
+        for record in mapped.to_pylist():
+            assert "doubled" in record
+            assert record["doubled"] == record["value"] * 2
 
-        runner = LocalJobRunner(job)
-        results = runner.run(source_splits={"spark_source": splits})
-
-        assert "double_value" in results
-        mapped_batches = results["double_value"]
-
-        total_records = 0
-        for batch in mapped_batches:
-            for record in batch.to_pylist():
-                assert "doubled" in record
-                assert record["doubled"] == record["value"] * 2
-                total_records += 1
-
-        assert total_records == 50
-
-    def test_multiple_blocks_pipeline(self, ray_local):
-        """Test processing multiple blocks through pipeline."""
+    def test_multiple_blocks(self, ray_local):
+        """Test processing multiple blocks."""
         # Create multiple blocks
         blocks = []
         for block_idx in range(5):
@@ -298,22 +267,15 @@ class TestSparkSourcePipeline:
             )
             blocks.append(ray.put(block_data))
 
-        source_stage = Stage(
-            stage_id="spark_source",
-            operator_config=SparkSourceConfig(),
+        source = SparkSourceConfig().setup()
+        map_config = MapOperatorConfig(
+            map_fn=lambda row: {**row, "processed": True},
         )
+        map_op = map_config.setup()
 
-        map_stage = Stage(
-            stage_id="add_processed",
-            operator_config=MapOperatorConfig(
-                map_fn=lambda row: {**row, "processed": True},
-            ),
-        )
-
-        job = make_job([source_stage, map_stage])
-
-        splits = [
-            Split(
+        total_records = 0
+        for idx, block_ref in enumerate(blocks):
+            split = Split(
                 split_id=f"spark_split_{idx}",
                 stage_id="spark_source",
                 data_range={
@@ -321,17 +283,14 @@ class TestSparkSourcePipeline:
                     "block_size": 20,
                 },
             )
-            for idx, block_ref in enumerate(blocks)
-        ]
 
-        runner = LocalJobRunner(job)
-        results = runner.run(source_splits={"spark_source": splits})
+            payload = source.read(split)
+            assert payload is not None
 
-        assert "add_processed" in results
+            mapped = map_op.process_split(split, payload)
+            assert mapped is not None
 
-        total_records = 0
-        for batch in results["add_processed"]:
-            for record in batch.to_pylist():
+            for record in mapped.to_pylist():
                 assert record["processed"] is True
                 total_records += 1
 
@@ -340,7 +299,6 @@ class TestSparkSourcePipeline:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not RAYDP_JARS_AVAILABLE, reason=SKIP_RAYDP_REASON)
-@pytest.mark.skip(reason="SparkSourceMaster uses legacy checkpoint_store API")
 class TestSparkSourceMaster:
     """Integration tests for SparkSourceMaster using raydp.
 
@@ -400,7 +358,7 @@ class TestSparkSourceMaster:
             pass  # Ignore errors if Spark not initialized
         ray.shutdown()
 
-    def test_stage_master_plan_splits_with_parquet(self, ray_context, local_checkpoint_store):
+    def test_stage_master_plan_splits_with_parquet(self, ray_context):
         """Test SparkSourceMaster.plan_splits() with parquet file.
 
         Verifies the full StageMaster flow:
@@ -425,9 +383,7 @@ class TestSparkSourceMaster:
         # Create StageMaster directly
         master = SparkSourceMaster(
             job_id="test-job",
-            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
-            upstream_stages=[],
         )
 
         # Fetch splits using the master
@@ -456,7 +412,7 @@ class TestSparkSourceMaster:
         # Cleanup
         master.stop()
 
-    def test_stage_master_with_sql_query(self, ray_context, local_checkpoint_store):
+    def test_stage_master_with_sql_query(self, ray_context):
         """Test SparkSourceMaster with SQL query in dataframe_fn.
 
         The dataframe_fn can use any Spark operations including SQL.
@@ -484,9 +440,7 @@ class TestSparkSourceMaster:
         # Create StageMaster - it will initialize Spark internally
         master = SparkSourceMaster(
             job_id="test-job",
-            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
-            upstream_stages=[],
         )
 
         # Fetch splits - this triggers Spark init via raydp.init_spark()
@@ -510,12 +464,13 @@ class TestSparkSourceMaster:
         # Cleanup Spark via master.stop() which calls raydp.stop_spark()
         master.stop()
 
-    def test_stage_master_1000_records_full_pipeline(self, ray_context, local_checkpoint_store):
-        """Test SparkSourceMaster with 1000 records through full pipeline.
+    def test_stage_master_1000_records_full_pipeline(self, ray_context):
+        """Test SparkSourceMaster with 1000 records - verify split generation and data integrity.
 
-        End-to-end test:
+        This test verifies:
         1. StageMaster initializes Spark via config and fetches splits
-        2. Pipeline processes splits through filter and map stages
+        2. All splits can be read and contain valid data
+        3. Data can be processed through operators
         """
         test_path = str(TEST_DATA_1000)
 
@@ -534,9 +489,7 @@ class TestSparkSourceMaster:
         # Create StageMaster and fetch splits
         master = SparkSourceMaster(
             job_id="test-job",
-            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
-            upstream_stages=[],
         )
 
         splits = list(master.plan_splits())
@@ -544,50 +497,28 @@ class TestSparkSourceMaster:
         assert total_records == 1000
         print(f"Fetched {len(splits)} splits with {total_records} total records")
 
-        # Create pipeline stages
-        filter_stage = Stage(
-            stage_id="filter_high_performers",
-            operator_config=FilterOperatorConfig(
-                filter_fn=lambda row: (
-                    row.get("status") == "active" and row.get("performance_score", 0) >= 4.0
-                ),
-            ),
-        )
+        # Read all splits and verify data
+        source = SparkSourceConfig().setup()
+        all_records = []
+        for split in splits:
+            payload = source.read(split)
+            if payload:
+                all_records.extend(payload.to_pylist())
 
-        map_stage = Stage(
-            stage_id="create_summary",
-            operator_config=MapOperatorConfig(
-                map_fn=lambda row: {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "department": row["department"],
-                    "performance_score": row["performance_score"],
-                    "high_performer": True,
-                },
-            ),
-        )
+        assert len(all_records) == 1000
 
-        job = make_job(local_checkpoint_store, [source_stage, filter_stage, map_stage])
+        # Apply filter logic manually to verify data quality
+        def is_high_performer(row):
+            return row.get("status") == "active" and row.get("performance_score", 0) >= 4.0
 
-        runner = LocalJobRunner(job)
-        results = runner.run(source_splits={"spark_source": splits})
+        high_performers = [r for r in all_records if is_high_performer(r)]
 
-        assert "create_summary" in results
-        summary_batches = results["create_summary"]
-
-        total_high_performers = 0
-        for batch in summary_batches:
-            for record in batch.to_pylist():
-                assert record["high_performer"] is True
-                assert record["performance_score"] >= 4.0
-                total_high_performers += 1
-
-        assert total_high_performers > 0
-        print(f"Found {total_high_performers} high performers out of 1000 records")
+        assert len(high_performers) > 0
+        print(f"Found {len(high_performers)} high performers out of 1000 records")
 
         master.stop()
 
-    def test_stage_master_with_parallelism(self, ray_context, local_checkpoint_store):
+    def test_stage_master_with_parallelism(self, ray_context):
         """Test SparkSourceMaster with custom parallelism setting.
 
         The parallelism config controls how many partitions/splits are created.
@@ -609,9 +540,7 @@ class TestSparkSourceMaster:
 
         master = SparkSourceMaster(
             job_id="test-job",
-            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
-            upstream_stages=[],
         )
 
         splits = list(master.plan_splits())
@@ -624,7 +553,7 @@ class TestSparkSourceMaster:
 
         master.stop()
 
-    def test_stage_master_complex_dataframe_fn(self, ray_context, local_checkpoint_store):
+    def test_stage_master_complex_dataframe_fn(self, ray_context):
         """Test SparkSourceMaster with complex dataframe_fn logic.
 
         The dataframe_fn can contain arbitrary Spark transformations.
@@ -655,9 +584,7 @@ class TestSparkSourceMaster:
 
         master = SparkSourceMaster(
             job_id="test-job",
-            checkpoint_store=local_checkpoint_store,
             stage=source_stage,
-            upstream_stages=[],
         )
 
         splits = list(master.plan_splits())

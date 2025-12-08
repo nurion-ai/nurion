@@ -18,12 +18,13 @@ Examples:
 """
 
 import hashlib
-from typing import Any, Dict, List
+from typing import List
 
 
 def _content_hash(content: str, length: int = 12) -> str:
     """Generate deterministic hash from content string."""
     return hashlib.sha256(content.encode()).hexdigest()[:length]
+
 
 def generate_derived_split_id(
     stage_id: str,

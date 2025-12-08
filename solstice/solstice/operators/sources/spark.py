@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
 
 import pyarrow as pa
 import ray
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.operators.sources.source import SourceMaster, SourceConfig
+from solstice.operators.sources.source import SourceMaster
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession, DataFrame
@@ -71,7 +71,7 @@ class SparkSourceConfig(OperatorConfig):
 
     # Output configuration
     parallelism: Optional[int] = None
-    
+
     # SourceConfig fields for master
     tansu_storage_url: str = "memory://"
     """Tansu storage URL (s3://, sqlite://, memory://)."""
@@ -157,12 +157,11 @@ class SparkSourceMaster(SourceMaster):
         operator_cfg = stage.operator_config
         if not isinstance(operator_cfg, SparkSourceConfig):
             raise TypeError(
-                f"SparkSourceMaster requires SparkSourceConfig, "
-                f"got {type(operator_cfg)}"
+                f"SparkSourceMaster requires SparkSourceConfig, got {type(operator_cfg)}"
             )
-        
+
         super().__init__(job_id, stage, **kwargs)
-        
+
         self._config = operator_cfg
         self._spark = None
         self._spark_initialized = False
@@ -250,17 +249,17 @@ class SparkSourceMaster(SourceMaster):
 
     def stop(self) -> None:
         """Stop the source master and cleanup Spark.
-        
+
         This is a synchronous method for compatibility with tests.
         For async usage, call stop_async().
         """
         self._stop_spark()
-    
+
     async def stop_async(self) -> None:
         """Stop the source master and cleanup Spark (async version)."""
         await super().stop()
         self._stop_spark()
-    
+
     def _stop_spark(self) -> None:
         """Internal method to stop Spark session."""
         if self._spark_initialized:

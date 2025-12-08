@@ -75,6 +75,7 @@ def test_video_slice_workflow_with_ray():
     )
     try:
         import asyncio
+
         asyncio.get_event_loop().run_until_complete(runner.run(timeout=1000))
     finally:
         asyncio.get_event_loop().run_until_complete(runner.stop())

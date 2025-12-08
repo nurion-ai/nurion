@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable, Iterator, List, Optional
+from typing import TYPE_CHECKING, Iterable, Iterator, Optional
 
 import lance
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.operators.sources.source import SourceMaster, SourceConfig
+from solstice.operators.sources.source import SourceMaster
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 @dataclass
 class LanceTableSourceConfig(OperatorConfig):
     """Configuration for LanceTableSource operator and LanceSourceMaster.
-    
+
     This unified config is used by both the operator (for reading splits)
     and the master (for planning splits).
     """
@@ -34,7 +34,7 @@ class LanceTableSourceConfig(OperatorConfig):
 
     split_size: int = 1024
     """Number of rows per split."""
-    
+
     # SourceConfig fields for master
     tansu_storage_url: str = "memory://"
     """Tansu storage URL (s3://, sqlite://, memory://)."""
@@ -63,11 +63,11 @@ class LanceTableSource(SourceOperator):
     def read(self, split: Split) -> Optional[SplitPayload]:
         """Read data for a split from the Lance dataset."""
         dataset = lance.dataset(self.dataset_uri, storage_options=self.storage_options)
-        
+
         # Get split metadata from data_range
         data_range = dict(split.data_range)  # Make a copy to avoid modifying original
         fragment_id = data_range.pop("fragment_id")
-        
+
         fragment = dataset.get_fragment(fragment_id)
         fragment_scanner = fragment.scanner(
             **data_range,
@@ -92,10 +92,10 @@ LanceTableSourceConfig.operator_class = LanceTableSource
 
 class LanceSourceMaster(SourceMaster):
     """Source master for Lance tables.
-    
+
     Generates splits based on Lance dataset fragments and writes
     split metadata to a persistent TansuBackend queue.
-    
+
     Workers consume from the queue and use LanceTableSource operator
     to read actual data for each split.
     """
@@ -110,34 +110,30 @@ class LanceSourceMaster(SourceMaster):
         operator_cfg = stage.operator_config
         if not isinstance(operator_cfg, LanceTableSourceConfig):
             raise TypeError(
-                f"LanceSourceMaster requires LanceTableSourceConfig, "
-                f"got {type(operator_cfg)}"
+                f"LanceSourceMaster requires LanceTableSourceConfig, got {type(operator_cfg)}"
             )
-        
+
         super().__init__(job_id, stage, **kwargs)
-        
+
         self.dataset_uri: str = operator_cfg.dataset_uri
         self.filter: Optional[str] = operator_cfg.filter
         self.columns: Optional[Iterable[str]] = operator_cfg.columns
         self.split_size: int = operator_cfg.split_size
         self.storage_options = _get_lance_storage_options(self.dataset_uri)
-        
+
         # Load dataset for split planning
         self.dataset = lance.dataset(self.dataset_uri, storage_options=self.storage_options)
         self.logger.info(f"Loaded Lance dataset: {self.dataset_uri}")
 
     def plan_splits(self) -> Iterator[Split]:
         """Plan splits based on Lance dataset fragments.
-        
+
         Generates one split per (fragment, offset) pair, ensuring
         deterministic split ordering based on fragment_id.
         """
         # Sort fragments by fragment_id for deterministic ordering
-        sorted_fragments = sorted(
-            self.dataset.get_fragments(),
-            key=lambda x: x.fragment_id
-        )
-        
+        sorted_fragments = sorted(self.dataset.get_fragments(), key=lambda x: x.fragment_id)
+
         split_idx = 0
         for frag in sorted_fragments:
             row_count = frag.count_rows()
@@ -154,7 +150,7 @@ class LanceSourceMaster(SourceMaster):
                     },
                 )
                 split_idx += 1
-        
+
         self.logger.info(f"Planned {split_idx} splits from {len(sorted_fragments)} fragments")
 
 

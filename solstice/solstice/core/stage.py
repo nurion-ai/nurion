@@ -6,7 +6,7 @@ import logging
 from solstice.core.operator import OperatorConfig
 
 if TYPE_CHECKING:
-    from solstice.core.stage_master import StageConfig
+    pass
 
 
 class Stage:

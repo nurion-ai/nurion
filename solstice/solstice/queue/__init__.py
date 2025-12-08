@@ -11,21 +11,21 @@ Available backends:
 Example:
     ```python
     from solstice.queue import MemoryBackend, TansuBackend
-    
+
     # For lightweight stages (no persistence)
     backend = MemoryBackend()
     await backend.start()
-    
+
     # For expensive stages (with persistence)
     backend = TansuBackend(storage_url="s3://bucket/")
     await backend.start()
-    
+
     # Produce messages
     offset = await backend.produce("my-topic", b"message data")
-    
+
     # Consume messages
     records = await backend.fetch("my-topic", offset=0, max_records=100)
-    
+
     # Commit offset (for exactly-once semantics)
     await backend.commit_offset("my-group", "my-topic", records[-1].offset + 1)
     ```
