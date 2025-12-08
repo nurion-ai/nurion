@@ -176,6 +176,26 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ffmpeg
     
+    - name: Install Rust
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache Tansu binary
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      id: cache-tansu
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/tansu
+        key: tansu-${{ runner.os }}-v0.5.6
+    
+    - name: Install Tansu
+      if: (steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push') && steps.cache-tansu.outputs.cache-hit != 'true'
+      run: cargo install tansu --all-features --version 0.5.6
+    
+    - name: Add Cargo bin to PATH
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    
     - name: Install uv
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: astral-sh/setup-uv@v4
