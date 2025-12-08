@@ -139,9 +139,9 @@ class StageMetrics:
     total_processing_time: float  # seconds
     pending_splits: int
     inflight_results: int
-    output_buffer_size: int
-    backpressure_active: bool
-    uptime_secs: float
+    output_buffer_size: int = 0  # Size of output buffer (Pull model)
+    backpressure_active: bool = False
+    uptime_secs: float = 0.0
     timestamp: float = field(default_factory=time.time)
 
     def to_dict(self) -> Dict[str, Any]:

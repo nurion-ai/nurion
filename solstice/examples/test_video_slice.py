@@ -147,7 +147,7 @@ def create_s3_lance_table(
         logger.info(f"  video_path: {r['video_path']}")
 
 
-def run_workflow(
+async def run_workflow_async(
     input_path: str,
     output_path: str,
 ) -> None:
@@ -158,24 +158,10 @@ def run_workflow(
         output_path: Output path (local or S3)
     """
     import ray
-    import signal
-    from contextlib import contextmanager
+    from solstice.runtime import RayJobRunner
+    from solstice.core.stage_master import QueueType
 
-    from solstice.state.backend import LocalStateBackend
     from workflows.video_slice_workflow import create_job
-
-    @contextmanager
-    def timeout_context(seconds: int, message: str = "Operation timed out"):
-        def timeout_handler(signum, frame):
-            raise TimeoutError(message)
-
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(seconds)
-        try:
-            yield
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
 
     logger.info("Initializing Ray with num_cpus=10...")
     ray.init(
@@ -186,8 +172,6 @@ def run_workflow(
 
     try:
         logger.info(f"Creating job with input={input_path}, output={output_path}")
-
-        state_backend = LocalStateBackend("/tmp/solstice_test")
 
         config = {
             "input": input_path,
@@ -204,25 +188,29 @@ def run_workflow(
             "checkpoint_interval_secs": 300,
         }
 
+        # Create job with new API
         job = create_job(
             job_id="test_video_slice_s3",
             config=config,
-            state_backend=state_backend,
         )
 
         logger.info(f"Job created with {len(job.stages)} stages")
 
-        runner = job.create_ray_runner()
-        runner.initialize()
+        # Use new async RayJobRunner API with Tansu queue
+        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
+        await runner.initialize()
 
-        logger.info("Starting workflow execution (timeout=300s)...")
+        logger.info("Starting workflow execution (timeout=1800s)...")
         try:
-            with timeout_context(300, "Workflow execution timed out after 300 seconds"):
-                runner.run()
-            logger.info("Workflow completed!")
-        except TimeoutError as e:
-            logger.error(f"Workflow timed out: {e}")
-            runner.stop()
+            import asyncio
+            status = await asyncio.wait_for(
+                runner.run(timeout=1800),
+                timeout=1820  # Extra buffer for cleanup
+            )
+            logger.info(f"Workflow completed! Status: {status}")
+        except asyncio.TimeoutError:
+            logger.error("Workflow execution timed out after 300 seconds")
+            await runner.stop()
             raise
 
         # Check results
@@ -259,6 +247,12 @@ def run_workflow(
         ray.shutdown()
 
 
+def run_workflow(input_path: str, output_path: str) -> None:
+    """Sync wrapper for run_workflow_async."""
+    import asyncio
+    asyncio.run(run_workflow_async(input_path, output_path))
+
+
 def main():
     import argparse
 
@@ -270,7 +264,7 @@ def main():
     )
     parser.add_argument(
         "--input",
-        default="s3://nurion/lance/test_videos_input/",
+        default="s3://nurion/lance/videos_input",
         help="Input Lance table path (s3:// or local)",
     )
     parser.add_argument(
@@ -284,30 +278,40 @@ def main():
         default=2,
         help="Maximum number of videos to test with",
     )
+    parser.add_argument(
+        "--skip-create",
+        action="store_true",
+        help="Skip creating input table (use existing)",
+    )
     args = parser.parse_args()
 
     # Setup S3 credentials
     setup_s3_credentials()
 
-    # Step 1: List videos (no download!)
-    logger.info("=" * 60)
-    logger.info("Step 1: Listing videos from S3 (no download)...")
-    logger.info("=" * 60)
-    videos = list_videos_from_s3(args.source, max_videos=args.max_videos)
+    if not args.skip_create:
+        # Step 1: List videos (no download!)
+        logger.info("=" * 60)
+        logger.info("Step 1: Listing videos from S3 (no download)...")
+        logger.info("=" * 60)
+        videos = list_videos_from_s3(args.source, max_videos=args.max_videos)
 
-    if not videos:
-        logger.error("No videos found!")
-        sys.exit(1)
+        if not videos:
+            logger.error("No videos found!")
+            sys.exit(1)
 
-    # Step 2: Create Lance table with S3 paths (directly to S3)
-    logger.info("=" * 60)
-    logger.info(f"Step 2: Creating input Lance table -> {args.input}")
-    logger.info("=" * 60)
-    create_s3_lance_table(videos, args.source, args.input)
+        # Step 2: Create Lance table with S3 paths (directly to S3)
+        logger.info("=" * 60)
+        logger.info(f"Step 2: Creating input Lance table -> {args.input}")
+        logger.info("=" * 60)
+        create_s3_lance_table(videos, args.source, args.input)
+    else:
+        logger.info("=" * 60)
+        logger.info("Skipping input table creation (using existing)")
+        logger.info("=" * 60)
 
     # Step 3: Run workflow (videos downloaded on-demand, output directly to S3)
     logger.info("=" * 60)
-    logger.info(f"Step 3: Running video slice workflow -> {args.output}")
+    logger.info(f"Running video slice workflow: {args.input} -> {args.output}")
     logger.info("=" * 60)
     run_workflow(args.input, args.output)
 

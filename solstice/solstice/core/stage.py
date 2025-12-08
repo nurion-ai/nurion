@@ -6,7 +6,7 @@ import logging
 from solstice.core.operator import OperatorConfig
 
 if TYPE_CHECKING:
-    from solstice.core.stage_master import StageMasterConfig
+    pass
 
 
 class Stage:
@@ -16,7 +16,6 @@ class Stage:
         self,
         stage_id: str,
         operator_config: OperatorConfig,
-        master_config: Optional["StageMasterConfig"] = None,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
         skip_checkpoint: bool = False,
@@ -26,8 +25,9 @@ class Stage:
 
         Args:
             stage_id: Unique identifier for the stage
-            operator_config: Configuration for the operator (OperatorConfig subclass)
-            master_config: Configuration for the stage master (StageMasterConfig subclass)
+            operator_config: Configuration for the operator (OperatorConfig subclass).
+                For source stages, the config should have a master_class attribute
+                that specifies which SourceMaster class to use.
             parallelism: Number of workers. Can be:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
@@ -49,9 +49,9 @@ class Stage:
         self.operator_config = operator_config
         self.skip_checkpoint = skip_checkpoint
 
-        from solstice.core.stage_master import StageMasterConfig, DefaultStageMasterConfig
+        from solstice.core.stage_master import StageConfig
 
-        self.master_config: StageMasterConfig = master_config or DefaultStageMasterConfig()
+        self.config_v2: Optional[StageConfig] = None
 
         # Parse parallelism parameter
         if isinstance(parallelism, int):
@@ -86,12 +86,14 @@ class Stage:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert stage to dictionary representation"""
-        return {
+        result = {
             "stage_id": self.stage_id,
             "operator_config": self.operator_config.to_dict(),
-            "master_config": self.master_config.to_dict(),
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,
             "skip_checkpoint": self.skip_checkpoint,
         }
+        if self.config_v2:
+            result["config_v2"] = self.config_v2.to_dict()
+        return result

@@ -18,55 +18,12 @@ Examples:
 """
 
 import hashlib
-from typing import Any, Dict, List
+from typing import List
 
 
 def _content_hash(content: str, length: int = 12) -> str:
     """Generate deterministic hash from content string."""
     return hashlib.sha256(content.encode()).hexdigest()[:length]
-
-
-def _normalize_dict(data: Dict[str, Any]) -> str:
-    """Convert dict to deterministic string for hashing.
-
-    Handles nested dicts and sorts keys for consistency.
-    """
-
-    def _serialize(obj: Any) -> str:
-        if isinstance(obj, dict):
-            # Sort keys and recursively serialize
-            items = sorted((k, _serialize(v)) for k, v in obj.items())
-            return "{" + ",".join(f"{k}:{v}" for k, v in items) + "}"
-        elif isinstance(obj, (list, tuple)):
-            return "[" + ",".join(_serialize(x) for x in obj) + "]"
-        else:
-            return str(obj)
-
-    return _serialize(data)
-
-
-def generate_source_split_id(stage_id: str, data_range: Dict[str, Any]) -> str:
-    """Generate split ID for source stage.
-
-    The ID is purely based on the data_range content, so:
-    - Same file + offset always produces same split ID
-    - Any worker can generate the same ID for same input
-    - Checkpoint recovery can match by ID
-
-    Args:
-        stage_id: The source stage ID
-        data_range: Data range info (file path, offset, partition, etc.)
-
-    Returns:
-        Deterministic split ID: "{stage_id}:{hash}"
-
-    Example:
-        >>> generate_source_split_id("source", {"file": "data.json", "offset": 0})
-        "source:a1b2c3d4e5f6"
-    """
-    content = _normalize_dict(data_range)
-    content_hash = _content_hash(content)
-    return f"{stage_id}:{content_hash}"
 
 
 def generate_derived_split_id(
@@ -98,57 +55,3 @@ def generate_derived_split_id(
     content = f"{parents_str}|{sequence_in_parent}"
     content_hash = _content_hash(content)
     return f"{stage_id}:{content_hash}"
-
-
-def generate_split_id_with_key(
-    stage_id: str,
-    key: Any,
-    parent_split_ids: List[str],
-) -> str:
-    """Generate split ID for keyed/partitioned output.
-
-    Used when an operator partitions output by key (e.g., group by).
-
-    Args:
-        stage_id: The stage producing this split
-        key: The partition key
-        parent_split_ids: IDs of parent splits
-
-    Returns:
-        Deterministic split ID including key hash
-    """
-    parents_str = ",".join(sorted(parent_split_ids))
-    content = f"{parents_str}|key={key}"
-    content_hash = _content_hash(content)
-    return f"{stage_id}:{content_hash}"
-
-
-def parse_split_id(split_id: str) -> Dict[str, str]:
-    """Parse a split ID into components.
-
-    Format: {stage_id}:{content_hash}
-
-    Returns:
-        Dict with keys: stage_id, hash, full_id
-    """
-    parts = split_id.split(":")
-    if len(parts) >= 2:
-        return {
-            "stage_id": parts[0],
-            "hash": parts[1],
-            "full_id": split_id,
-        }
-    return {"full_id": split_id, "stage_id": split_id}
-
-
-def get_stage_from_split_id(split_id: str) -> str:
-    """Extract stage ID from split ID."""
-    return split_id.split(":")[0]
-
-
-def splits_from_same_source(split_id1: str, split_id2: str) -> bool:
-    """Check if two splits are from the same source data.
-
-    Since split IDs are content-based, same ID means same source.
-    """
-    return split_id1 == split_id2

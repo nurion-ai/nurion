@@ -1,18 +1,16 @@
-"""Spark source operator for reading data via raydp."""
+"""Spark source operator and source master for reading data via raydp."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
 
 import pyarrow as pa
 import ray
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.core.stage_master import StageMasterConfig
-from solstice.operators.sources.source import SourceStageMaster
-from solstice.state.store import CheckpointStore
+from solstice.operators.sources.source import SourceMaster
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession, DataFrame
@@ -25,21 +23,65 @@ DataFrameFactory = Callable[["SparkSession"], "DataFrame"]
 
 @dataclass
 class SparkSourceConfig(OperatorConfig):
-    """Configuration for SparkSource operator.
+    """Unified configuration for Spark source (both operator and master).
 
-    This is a minimal config - SparkSource only reads Arrow data from
-    Ray object store. All Spark-related configuration is in the
-    SparkSourceStageMasterConfig.
+    Contains raydp init_spark parameters and a DataFrame factory function.
+    The operator reads Arrow data from Ray object store (ObjectRefs),
+    while the master uses the Spark config to initialize Spark and create splits.
+
+    Attributes:
+        app_name: Spark application name
+        num_executors: Number of Spark executors
+        executor_cores: Number of cores per executor
+        executor_memory: Memory per executor (e.g., "1g", "2g")
+        spark_configs: Additional Spark configurations
+        dataframe_fn: Function that takes SparkSession and returns DataFrame.
+                      This is the main way to define your data source.
+        parallelism: Number of partitions for the output data
+
+    Example:
+        >>> config = SparkSourceConfig(
+        ...     app_name="my-app",
+        ...     num_executors=2,
+        ...     dataframe_fn=lambda spark: spark.read.json("/data/events.json"),
+        ... )
+
+        >>> # Or with SQL:
+        >>> config = SparkSourceConfig(
+        ...     dataframe_fn=lambda spark: spark.sql("SELECT * FROM my_table"),
+        ... )
+
+        >>> # Or with complex logic:
+        >>> def load_data(spark):
+        ...     df1 = spark.read.parquet("/data/users")
+        ...     df2 = spark.read.parquet("/data/orders")
+        ...     return df1.join(df2, "user_id")
+        >>> config = SparkSourceConfig(dataframe_fn=load_data)
     """
 
-    pass  # No config needed - operator just reads Arrow from ObjectRefs
+    # raydp init_spark parameters
+    app_name: str = "solstice-spark-source"
+    num_executors: int = 1
+    executor_cores: int = 2
+    executor_memory: str = "1g"
+    spark_configs: Dict[str, str] = field(default_factory=dict)
+
+    # DataFrame factory function: (SparkSession) -> DataFrame
+    dataframe_fn: Optional[DataFrameFactory] = None
+
+    # Output configuration
+    parallelism: Optional[int] = None
+
+    # SourceConfig fields for master
+    tansu_storage_url: str = "memory://"
+    """Tansu storage URL (s3://, sqlite://, memory://)."""
 
 
 class SparkSource(SourceOperator):
     """Source operator for reading Arrow data from Ray object store.
 
     This operator reads Arrow data from ObjectRefs that were persisted
-    by SparkSourceStageMaster using raydp.
+    by SparkSourceMaster using raydp.
     """
 
     def __init__(
@@ -98,58 +140,8 @@ class SparkSource(SourceOperator):
 SparkSourceConfig.operator_class = SparkSource
 
 
-@dataclass
-class SparkSourceStageMasterConfig(StageMasterConfig):
-    """Configuration for SparkSourceStageMaster.
-
-    Contains raydp init_spark parameters and a DataFrame factory function.
-
-    Attributes:
-        app_name: Spark application name
-        num_executors: Number of Spark executors
-        executor_cores: Number of cores per executor
-        executor_memory: Memory per executor (e.g., "1g", "2g")
-        spark_configs: Additional Spark configurations
-        dataframe_fn: Function that takes SparkSession and returns DataFrame.
-                      This is the main way to define your data source.
-        parallelism: Number of partitions for the output data
-
-    Example:
-        >>> config = SparkSourceStageMasterConfig(
-        ...     app_name="my-app",
-        ...     num_executors=2,
-        ...     dataframe_fn=lambda spark: spark.read.json("/data/events.json"),
-        ... )
-
-        >>> # Or with SQL:
-        >>> config = SparkSourceStageMasterConfig(
-        ...     dataframe_fn=lambda spark: spark.sql("SELECT * FROM my_table"),
-        ... )
-
-        >>> # Or with complex logic:
-        >>> def load_data(spark):
-        ...     df1 = spark.read.parquet("/data/users")
-        ...     df2 = spark.read.parquet("/data/orders")
-        ...     return df1.join(df2, "user_id")
-        >>> config = SparkSourceStageMasterConfig(dataframe_fn=load_data)
-    """
-
-    # raydp init_spark parameters
-    app_name: str = "solstice-spark-source"
-    num_executors: int = 1
-    executor_cores: int = 2
-    executor_memory: str = "1g"
-    spark_configs: Dict[str, str] = field(default_factory=dict)
-
-    # DataFrame factory function: (SparkSession) -> DataFrame
-    dataframe_fn: Optional[DataFrameFactory] = None
-
-    # Output configuration
-    parallelism: Optional[int] = None
-
-
-class SparkSourceStageMaster(SourceStageMaster):
-    """Stage master for Spark source that handles split planning.
+class SparkSourceMaster(SourceMaster):
+    """Source master for Spark that handles split planning.
 
     Initializes Spark via raydp, loads data using the dataframe_fn,
     persists to Ray object store, then yields splits containing ObjectRefs.
@@ -158,16 +150,19 @@ class SparkSourceStageMaster(SourceStageMaster):
     def __init__(
         self,
         job_id: str,
-        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
-        upstream_stages: Optional[List[str]] = None,
+        **kwargs,
     ):
-        super().__init__(job_id, checkpoint_store, stage, upstream_stages)
-        config = stage.master_config
-        if not isinstance(config, SparkSourceStageMasterConfig):
-            raise TypeError(f"Expected SparkSourceStageMasterConfig, got {type(config)}")
+        # Get config from stage.operator_config
+        operator_cfg = stage.operator_config
+        if not isinstance(operator_cfg, SparkSourceConfig):
+            raise TypeError(
+                f"SparkSourceMaster requires SparkSourceConfig, got {type(operator_cfg)}"
+            )
 
-        self._config = config
+        super().__init__(job_id, stage, **kwargs)
+
+        self._config = operator_cfg
         self._spark = None
         self._spark_initialized = False
 
@@ -198,14 +193,14 @@ class SparkSourceStageMaster(SourceStageMaster):
         """Get DataFrame by calling the dataframe_fn with SparkSession."""
         if self._config.dataframe_fn is None:
             raise ValueError(
-                "dataframe_fn must be provided in SparkSourceStageMasterConfig. "
+                "dataframe_fn must be provided in SparkSourceConfig. "
                 "Example: dataframe_fn=lambda spark: spark.read.json('/path/to/data')"
             )
 
         self.logger.info("Calling dataframe_fn to load data")
         return self._config.dataframe_fn(self._spark)
 
-    def fetch_splits(self) -> Iterator[Split]:
+    def plan_splits(self) -> Iterator[Split]:
         """Initialize Spark, load data, persist to object store, and yield splits.
 
         Uses raydp's _save_spark_df_to_object_store to efficiently transfer
@@ -252,9 +247,21 @@ class SparkSourceStageMaster(SourceStageMaster):
                 },
             )
 
-    def stop(self):
-        """Stop the stage master and cleanup Spark."""
-        super().stop()
+    def stop(self) -> None:
+        """Stop the source master and cleanup Spark.
+
+        This is a synchronous method for compatibility with tests.
+        For async usage, call stop_async().
+        """
+        self._stop_spark()
+
+    async def stop_async(self) -> None:
+        """Stop the source master and cleanup Spark (async version)."""
+        await super().stop()
+        self._stop_spark()
+
+    def _stop_spark(self) -> None:
+        """Internal method to stop Spark session."""
         if self._spark_initialized:
             import raydp
 
@@ -265,4 +272,4 @@ class SparkSourceStageMaster(SourceStageMaster):
 
 
 # Set master_class after class definition
-SparkSourceStageMasterConfig.master_class = SparkSourceStageMaster
+SparkSourceConfig.master_class = SparkSourceMaster

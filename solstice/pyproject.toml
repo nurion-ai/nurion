@@ -20,6 +20,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "py-spy>=0.4.1",
     "pyspark==3.5.6",
+    "aiokafka>=0.12.0",
 ]
 
 [project.scripts]
@@ -60,9 +61,12 @@ target-version = "py313"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
+asyncio_mode = "auto"
+addopts = "-m 'not benchmark'"
 filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince212",
 ]
 markers = [
     "integration: marks integration tests",
+    "benchmark: marks performance benchmark tests (skipped by default in CI)",
 ]

@@ -1,570 +1,715 @@
-"""Stage Master actor orchestrating pipelined split execution."""
+"""Stage Master v2 - Simplified queue-based architecture.
+
+Key differences from v1:
+- Master only manages its output queue
+- Workers pull directly from upstream queue (not master-to-master)
+- Uses QueueBackend abstraction for flexibility
+- Cleaner separation of concerns
+
+Architecture:
+    ┌─────────────────────────────────────────────────────────────┐
+    │                     Stage Master                            │
+    │                                                             │
+    │  ┌─────────────────────────────────────────────────────┐   │
+    │  │              Output Queue (QueueBackend)            │   │
+    │  │  - Persistent (Tansu) or in-memory                  │   │
+    │  │  - Offset tracking for exactly-once                 │   │
+    │  └─────────────────────────────────────────────────────┘   │
+    │                           ▲                                 │
+    │                           │ produce                         │
+    │  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
+    │  │  Worker 1  │  │  Worker 2  │  │  Worker N  │            │
+    │  │            │  │            │  │            │            │
+    │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘            │
+    │        │               │               │                    │
+    │        │ fetch         │ fetch         │ fetch              │
+    │        ▼               ▼               ▼                    │
+    └────────────────────────────────────────────────────────────┘
+                             │
+                             │ fetch from upstream queue
+                             ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                  Upstream Stage Master                      │
+    │  ┌─────────────────────────────────────────────────────┐   │
+    │  │              Output Queue (QueueBackend)            │   │
+    │  └─────────────────────────────────────────────────────┘   │
+    └─────────────────────────────────────────────────────────────┘
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+import asyncio
+import json
 import time
 import uuid
-from collections import deque
-from collections import defaultdict
-from typing import TYPE_CHECKING, Any, ClassVar, Deque, Dict, List, Optional, Type, TypeVar
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import ray
-import ray.actor
 
-from solstice.core.models import (
-    BackpressureSignal,
-    Split,
-    WorkerMetrics,
-    StageMetrics,
-)
-from solstice.state.store import CheckpointStore
-from solstice.state.checkpoint_manager import StageCheckpointTracker
+from solstice.queue import QueueBackend, MemoryBackend
 from solstice.utils.logging import create_ray_logger
-from solstice.core.worker import ProcessResult
+from solstice.core.split_payload_store import SplitPayloadStore
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
 
-BACKPRESSURE_QUEUE_RATIO_THRESHOLD = 0.7
 
+class QueueType(str, Enum):
+    """Type of queue backend to use."""
 
-T = TypeVar("T", bound="StageMasterActor")
+    MEMORY = "memory"  # In-process only (for single-worker testing)
+    TANSU = "tansu"  # Persistent broker (for production)
 
 
 @dataclass
-class StageMasterConfig:
-    """Base configuration class for stage masters.
+class StageConfig:
+    """Configuration for Stage Master v2.
 
-    Subclasses should define their configuration fields as dataclass fields,
-    and set the `master_class` class variable to the corresponding master class.
-
-    Example:
-        @dataclass
-        class MyMasterConfig(StageMasterConfig):
-            master_class = MyStageMasterActor
-
-            custom_param: str = "default"
-
-        # Usage:
-        config = MyMasterConfig(custom_param="value")
-        master = config.setup(job_id, state_backend, stage, upstream_stages)
+    Attributes:
+        queue_type: Type of queue backend:
+            - MEMORY: In-process only (single-worker testing)
+            - RAY: Shared via Ray actor (distributed testing)
+            - TANSU: Persistent broker (production)
+        tansu_storage_url: Storage URL for Tansu backend (s3://, sqlite://, etc.)
+        tansu_port: Port for Tansu broker
+        max_workers: Maximum number of workers
+        min_workers: Minimum number of workers
+        batch_size: Number of messages to fetch per batch
+        commit_interval_ms: Interval between offset commits (ms)
+        processing_timeout_s: Timeout for processing a single message
     """
 
-    master_class: ClassVar[Type["StageMasterActor"]]
+    queue_type: QueueType = QueueType.TANSU  # Default to Tansu for persistence
+    tansu_storage_url: str = "memory://"
+    tansu_port: int = 9092
 
-    # Common config fields with defaults
-    max_split_attempts: int = 3
-    max_active_splits_per_worker: int = 100
-    max_queue_size: int = 1000
-    fail_fast: bool = True  # Stop immediately on exception instead of retrying
+    max_workers: int = 4
+    min_workers: int = 1
 
-    def setup(
-        self,
-        job_id: str,
-        checkpoint_store: Optional[CheckpointStore],
-        stage: "Stage",
-        upstream_stages: List[str] | None,
-    ) -> "StageMasterActor":
-        """Create and return a stage master instance with this configuration.
+    batch_size: int = 100
+    commit_interval_ms: int = 5000
+    processing_timeout_s: float = 300.0
 
-        Args:
-            job_id: The job ID
-            checkpoint_store: Store for checkpoint persistence (optional)
-            stage: The stage this master will manage
-            upstream_stages: List of upstream stage IDs
-
-        Returns:
-            Configured stage master instance
-        """
-        return self.master_class(
-            job_id=job_id,
-            checkpoint_store=checkpoint_store,
-            stage=stage,
-            upstream_stages=upstream_stages,
-        )
+    # Worker resources
+    num_cpus: float = 1.0
+    num_gpus: float = 0.0
+    memory_mb: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary representation."""
-        result = {}
-        for f in fields(self):
-            value = getattr(self, f.name)
-            if isinstance(value, StageMasterConfig):
-                result[f.name] = value.to_dict()
-            else:
-                result[f.name] = value
-        return result
+        return {
+            "queue_type": self.queue_type.value,
+            "tansu_storage_url": self.tansu_storage_url,
+            "tansu_port": self.tansu_port,
+            "max_workers": self.max_workers,
+            "min_workers": self.min_workers,
+            "batch_size": self.batch_size,
+            "commit_interval_ms": self.commit_interval_ms,
+            "processing_timeout_s": self.processing_timeout_s,
+        }
 
 
 @dataclass
-class DefaultStageMasterConfig(StageMasterConfig):
-    """Default stage master configuration using the standard StageMasterActor."""
+class QueueMessage:
+    """Message format for inter-stage communication.
 
-    # master_class will be set after StageMasterActor is defined
-    pass
+    The actual data payload is stored in SplitPayloadStore,
+    only the reference key is passed through the queue.
+    """
+
+    message_id: str
+    split_id: str
+    payload_key: str  # Key to lookup SplitPayload in SplitPayloadStore
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: float = field(default_factory=time.time)
+
+    def to_bytes(self) -> bytes:
+        return json.dumps(
+            {
+                "message_id": self.message_id,
+                "split_id": self.split_id,
+                "payload_key": self.payload_key,
+                "metadata": self.metadata,
+                "timestamp": self.timestamp,
+            }
+        ).encode()
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "QueueMessage":
+        d = json.loads(data.decode())
+        return cls(**d)
 
 
 @dataclass
 class StageStatus:
-    pending_splits: int
-    active_splits: int
-    inflight_results: int
-    backpressure_active: bool
-    upstream_finished: dict[str, bool]
+    """Status of a stage."""
+
+    stage_id: str
+    worker_count: int
+    output_queue_size: int
+    is_running: bool
+    is_finished: bool
     failed: bool = False
     failure_message: Optional[str] = None
+    metrics: Dict[str, Any] = field(default_factory=dict)
 
 
-class StageMasterActor:
+@dataclass
+class QueueEndpoint:
+    """Queue connection info that can be serialized to workers.
+
+    Workers use this to create their own queue connections.
+    """
+
+    queue_type: QueueType
+    host: str = "localhost"
+    port: int = 9092
+    storage_url: str = "memory://"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "queue_type": self.queue_type.value,
+            "host": self.host,
+            "port": self.port,
+            "storage_url": self.storage_url,
+        }
+
+
+class StageMaster:
+    """Simplified stage master that only manages output queue.
+
+    Responsibilities:
+    1. Manage output queue (create, provide access)
+    2. Spawn and monitor workers
+    3. Track stage completion
+
+    NOT responsible for:
+    - Pulling from upstream (workers do this)
+    - Scheduling splits to workers (workers self-schedule)
+    - Complex backpressure (queue handles this)
+    """
+
     def __init__(
         self,
         job_id: str,
-        checkpoint_store: Optional[CheckpointStore],
         stage: "Stage",
-        upstream_stages: List[str] | None,
+        config: StageConfig,
+        payload_store: SplitPayloadStore,
+        upstream_endpoint: Optional[QueueEndpoint] = None,
+        upstream_topic: Optional[str] = None,
     ):
         self.job_id = job_id
         self.stage_id = stage.stage_id
         self.stage = stage
-        self.checkpoint_store = checkpoint_store
-        self.upstream_stages = upstream_stages
+        self.config = config
+        self.upstream_endpoint = upstream_endpoint
+        self.upstream_topic = upstream_topic
 
-        self.logger = create_ray_logger(f"StageMaster-{self.stage_id}")
+        self.logger = create_ray_logger(f"MasterV2-{self.stage_id}")
 
-        # Get master config from stage
-        master_config = stage.master_config
+        # SplitPayloadStore - shared across all stages
+        self.payload_store = payload_store
 
-        # Checkpoint tracking - tracks completed/inflight splits
-        self.checkpoint_tracker = StageCheckpointTracker(stage_id=self.stage_id)
+        # Output queue (managed by master)
+        self._output_queue: Optional[QueueBackend] = None
+        self._output_topic = f"{job_id}_{self.stage_id}_output"
 
-        self._pending_splits: Deque[Split] = deque()
-        self.max_split_attempts = master_config.max_split_attempts
-        self.downstream_stage_refs: Dict[str, ray.actor.ActorHandle] = {}
-        self.downstream_split_counters: Dict[str, int] = {}
-        self.upstream_finished: dict[str, bool] = {stage_id: False for stage_id in upstream_stages}
+        # Output endpoint info for workers/downstream
+        self._output_endpoint: Optional[QueueEndpoint] = None
 
-        # Worker management
-        self.workers: Dict[str, ray.actor.ActorHandle] = {}
-        self.worker_active_splits = defaultdict(int)
-        self.worker_metrics: Dict[str, WorkerMetrics] = {}
-        self.max_active_splits_per_worker = master_config.max_active_splits_per_worker
+        # Workers
+        self._workers: Dict[str, ray.actor.ActorHandle] = {}
+        self._worker_tasks: Dict[str, ray.ObjectRef] = {}
 
-        # Assignment tracking
-        self._inflight_results: Dict[ray.ObjectRef, Split] = {}
-        self._split_to_worker: Dict[str, str] = {}
-
-        # Runtime bookkeeping
-        self.backpressure_active = False
-        self.start_time = time.time()
+        # State
         self._running = False
-        self.current_checkpoint_id: Optional[str] = None
-        self.max_queue_size = master_config.max_queue_size
-        self.fail_fast = master_config.fail_fast
-
-        # Failure tracking for fail-fast mode
+        self._finished = False
         self._failed = False
-        self._failure_exception: Optional[Exception] = None
-        self._failure_split_id: Optional[str] = None
+        self._failure_message: Optional[str] = None
+        self._start_time: Optional[float] = None
 
-        # Spawn initial workers
-        for _ in range(self.stage.min_parallelism):
-            self._create_worker()
+        # Consumer group for offset tracking
+        self._consumer_group = f"{job_id}_{self.stage_id}"
 
-        self.logger.info(
-            f"Stage {self.stage_id} initialised with {len(self.workers)} workers (job={self.job_id})",
-        )
+    async def _create_queue(self) -> QueueBackend:
+        """Create the appropriate queue backend."""
+        if self.config.queue_type == QueueType.TANSU:
+            from solstice.queue import TansuBackend
 
-    # ------------------------------------------------------------------
-    # Worker management
-    # ------------------------------------------------------------------
-    def _create_worker(self) -> str:
-        worker_id = f"{self.stage_id}_worker_{len(self.workers)}_{uuid.uuid4().hex[:6]}"
-        from solstice.core.worker import StageWorker
+            # Auto-select port (TansuBackend handles this when port=None)
+            queue = TansuBackend(
+                storage_url=self.config.tansu_storage_url,
+                port=None,  # Auto-select free port
+            )
+            await queue.start()
+            # Now we can get the actual port that was selected
+            self._output_endpoint = QueueEndpoint(
+                queue_type=QueueType.TANSU,
+                port=queue.port,
+                storage_url=self.config.tansu_storage_url,
+            )
+            self.logger.info(f"Created Tansu backend on port {queue.port}")
+        else:
+            # MEMORY - only for single-process testing
+            queue = MemoryBackend()
+            await queue.start()
+            self._output_endpoint = QueueEndpoint(
+                queue_type=QueueType.MEMORY,
+            )
 
-        worker_name = f"{self.stage_id}:{worker_id}"
-        worker_ref = StageWorker.options(name=worker_name, **self.stage.worker_resources).remote(
+        await queue.create_topic(self._output_topic)
+        return queue
+
+    async def start(self) -> None:
+        """Start the stage master."""
+        if self._running:
+            return
+
+        self.logger.info(f"Starting stage {self.stage_id}")
+        self._start_time = time.time()
+        self._running = True
+
+        # Create output queue
+        self._output_queue = await self._create_queue()
+
+        # Spawn workers
+        for i in range(self.config.min_workers):
+            await self._spawn_worker()
+
+        self.logger.info(f"Stage {self.stage_id} started with {len(self._workers)} workers")
+
+    async def _spawn_worker(self) -> str:
+        """Spawn a new worker."""
+        worker_id = f"{self.stage_id}_w{len(self._workers)}_{uuid.uuid4().hex[:6]}"
+
+        # Create worker actor
+        resources = {}
+        if self.config.num_cpus > 0:
+            resources["num_cpus"] = self.config.num_cpus
+        if self.config.num_gpus > 0:
+            resources["num_gpus"] = self.config.num_gpus
+        if self.config.memory_mb > 0:
+            resources["memory"] = self.config.memory_mb * 1024 * 1024
+
+        worker = StageWorker.options(
+            name=f"{self.stage_id}:{worker_id}",
+            **resources,
+        ).remote(
             worker_id=worker_id,
             stage=self.stage,
+            upstream_endpoint=self.upstream_endpoint,
+            upstream_topic=self.upstream_topic,
+            output_endpoint=self._output_endpoint,
+            output_topic=self._output_topic,
+            consumer_group=self._consumer_group,
+            config=self.config,
+            payload_store=self.payload_store,
         )
 
-        self.workers[worker_id] = worker_ref
-        self.logger.debug("Created StageWorker %s for stage %s", worker_id, self.stage_id)
+        self._workers[worker_id] = worker
+
+        # Start worker run loop
+        task = worker.run.remote()
+        self._worker_tasks[worker_id] = task
+
+        self.logger.info(f"Spawned worker {worker_id}")
         return worker_id
 
-    def _remove_worker(self, worker_id: str) -> None:
-        worker_ref = self.workers.pop(worker_id, None)
-        if not worker_ref:
-            return
-        self.worker_active_splits[worker_id] = 0
-        self.worker_metrics.pop(worker_id, None)
+    async def run(self) -> bool:
+        """Run the stage until completion."""
+        if not self._running:
+            await self.start()
+
         try:
-            ray.get(worker_ref.shutdown.remote(), timeout=10)
-        except Exception as exc:  # pragma: no cover - defensive
-            self.logger.warning("Failed to shutdown worker %s cleanly: %s", worker_id, exc)
-        else:
-            self.logger.info(
-                f"Removed worker {worker_id} from stage {self.stage_id} (workers={len(self.workers)})",
-            )
+            # Wait for all workers to complete
+            while self._running and not self._finished:
+                # Check worker status
+                done_tasks = []
+                for worker_id, task in list(self._worker_tasks.items()):
+                    try:
+                        ready, _ = ray.wait([task], timeout=0.1)
+                        if ready:
+                            try:
+                                result = ray.get(ready[0])
+                                self.logger.info(f"Worker {worker_id} completed: {result}")
+                            except Exception as e:
+                                self.logger.error(f"Worker {worker_id} failed: {e}")
+                                self._failed = True
+                                self._failure_message = str(e)
+                            done_tasks.append(worker_id)
+                    except Exception as e:
+                        self.logger.error(f"Error checking worker {worker_id}: {e}")
 
-    def scale_workers(self, target_count: int) -> None:
-        target_count = max(
-            self.stage.min_parallelism, min(target_count, self.stage.max_parallelism)
-        )
-        current = len(self.workers)
-        if target_count == current:
-            return
-        if target_count > current:
-            for _ in range(target_count - current):
-                self._create_worker()
-            self.logger.info("Scaled stage %s out to %d workers", self.stage_id, target_count)
-            return
-        removable = max(0, current - target_count)
-        for worker_id in list(self.workers.keys()):
-            if removable <= 0:
-                break
-            if self.worker_active_counts.get(worker_id, 0) == 0:
-                self._remove_worker(worker_id)
-                removable -= 1
-        if removable > 0:
-            self.logger.debug(
-                "Unable to remove %d workers for stage %s because they are busy",
-                removable,
-                self.stage_id,
-            )
-        self.logger.info("Scaled stage %s in to %d workers", self.stage_id, len(self.workers))
+                # Remove completed workers
+                for worker_id in done_tasks:
+                    self._workers.pop(worker_id, None)
+                    self._worker_tasks.pop(worker_id, None)
 
-    # ------------------------------------------------------------------
-    # Downstream management, called by upstream stages or runner
-    # ------------------------------------------------------------------
-    def configure_downstream(self, downstream: Dict[str, ray.actor.ActorHandle]) -> None:
-        self.downstream_stage_refs = dict(downstream)
-        for stage_id in downstream:
-            self.downstream_split_counters.setdefault(stage_id, 0)
-        self.logger.info(
-            f"Stage {self.stage_id} connected to downstream stages: {', '.join(sorted(downstream.keys())) or '<none>'}"
-        )
+                # Check if all workers done
+                if not self._workers:
+                    self._finished = True
+                    break
 
-    def enqueue_split(
-        self,
-        split: Split,
-    ) -> None:
-        """Receive a new split from upstream (or create one for source stages)."""
-        # Skip if this split was already completed (from checkpoint restore)
-        if self.checkpoint_tracker.is_split_completed(split.split_id):
-            self.logger.debug(f"Skipping already-completed split {split.split_id}")
-            return
+                await asyncio.sleep(0.1)
 
-        self._pending_splits.append(split)
-        obj_ref = split.data_range.get("object_ref")
-        self.logger.debug(
-            f"Enqueued split {split.split_id} (object_ref={obj_ref}) "
-            f"(pending={len(self._pending_splits)})"
-        )
+            if self._failed:
+                raise RuntimeError(self._failure_message)
 
-        if len(self._pending_splits) >= self.max_queue_size and not self.backpressure_active:
-            self.backpressure_active = True
-            self.logger.warning(
-                f"Backpressure activated for stage {self.stage_id} (queue={len(self._pending_splits)})",
-            )
-
-    def set_upstream_finished(self, upstream_stage_id: str) -> None:
-        self.upstream_finished[upstream_stage_id] = True
-
-    # ------------------------------------------------------------------
-    # Run loop
-    # ------------------------------------------------------------------
-    def run(self, poll_interval: float = 0.05) -> bool:
-        if self._running:
-            return False
-        self._running = True
-        self.logger.info("Stage %s run loop started", self.stage_id)
-        try:
-
-            def need_running() -> bool:
-                # Stop if failed in fail-fast mode
-                if self._failed:
-                    return False
-                return self._running and (
-                    not all(self.upstream_finished.values())
-                    or len(self._pending_splits) > 0
-                    or len(self._inflight_results) > 0
-                )
-
-            while need_running():
-                self._schedule_pending_splits()
-                self._drain_completed_results(timeout=poll_interval * 2)
-                time.sleep(poll_interval)
-
-            # If we failed, re-raise the exception to propagate to runner
-            if self._failed and self._failure_exception is not None:
-                self.logger.error(
-                    f"Stage {self.stage_id} failed on split {self._failure_split_id}: {self._failure_exception}"
-                )
-                raise self._failure_exception
-
-            for actor_ref in self.downstream_stage_refs.values():
-                actor_ref.set_upstream_finished.remote(self.stage_id)
-            self._running = False
-            self.logger.info("Stage %s run loop stopped", self.stage_id)
             return True
+
         finally:
-            self.logger.info("Stage %s run loop stopped", self.stage_id)
-            return False
+            await self.stop()
 
-    def _schedule_pending_splits(self) -> None:
-        while self._pending_splits:
-            worker_id = self._select_worker()
-            if worker_id is None:
-                self.logger.debug(f"No worker available for stage {self.stage_id}")
-                break
-            split = self._pending_splits.popleft()
-
-            # Mark split as started for checkpoint tracking
-            self.checkpoint_tracker.mark_split_started(split.split_id)
-
-            self.worker_active_splits[worker_id] = self.worker_active_splits[worker_id] + 1
-            worker_ref = self.workers[worker_id]
-            self.logger.debug(
-                f"Worker {worker_id} selected for split {split.split_id}, "
-                f"pending={len(self._pending_splits)}, inflight={len(self._inflight_results)}"
-            )
-            process_result_ref = worker_ref.process_split.remote(split)
-            self._inflight_results[process_result_ref] = split
-            self._split_to_worker[split.split_id] = worker_id
-        if len(self._pending_splits) < self.max_queue_size * BACKPRESSURE_QUEUE_RATIO_THRESHOLD:
-            self.backpressure_active = False
-
-    def _select_worker(self) -> Optional[str]:
-        candidates = [
-            (worker_id, self.worker_active_splits[worker_id]) for worker_id in self.workers.keys()
-        ]
-        candidates = [item for item in candidates if item[1] < self.max_active_splits_per_worker]
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item[1])
-        return candidates[0][0]
-
-    def _drain_completed_results(self, timeout: float) -> None:
-        if not self._inflight_results:
-            return
-
-        pending_refs = list(self._inflight_results.keys())
-        ready_refs, _ = ray.wait(
-            pending_refs,
-            num_returns=len(pending_refs),
-            timeout=timeout,
-        )
-
-        if ready_refs:
-            self.logger.debug(f"Stage {self.stage_id} draining {len(ready_refs)} completed results")
-        for ref in ready_refs:
-            split = self._inflight_results.pop(ref, None)
-            if split is None:
-                self.logger.error(f"Result {ref} not found in inflight results")
-                continue
-            split_id = split.split_id
-            worker_id = self._split_to_worker.pop(split_id, None)
-            self.worker_active_splits[worker_id] = self.worker_active_splits[worker_id] - 1
-            try:
-                process_result = ray.get(ref, timeout=5)
-            except Exception as exc:
-                self.logger.error(
-                    f"Stage {self.stage_id} failed to fetch result for split {split_id} from worker {worker_id}: {exc}",
-                )
-
-                # Fail-fast mode: stop immediately on exception
-                if self.fail_fast:
-                    self._failed = True
-                    self._failure_exception = exc
-                    self._failure_split_id = split_id
-                    self.logger.error(
-                        f"Stage {self.stage_id} entering fail-fast mode due to exception on split {split_id}"
-                    )
-                    return  # Stop processing, will exit run loop
-
-                # Retry mode: attempt to requeue
-                if not self._requeue_split(split):
-                    raise
-                continue
-            self.logger.debug(
-                f"Stage {self.stage_id} received result for split {split_id} from worker {worker_id}"
-            )
-            self._handle_worker_result(process_result)
-
-    def _requeue_split(self, split: Split) -> bool:
-        split.attempt += 1
-        split_id = split.split_id
-
-        # Mark split as failed for checkpoint tracking (will be retried)
-        self.checkpoint_tracker.mark_split_failed(split_id)
-
-        if split.attempt > self.max_split_attempts:
-            self.logger.error(
-                f"Split {split_id} has exceeded the maximum number of attempts ({self.max_split_attempts}), giving up"
-            )
-            return False
-        self._pending_splits.append(split)
-        self.logger.info(
-            f"Requeued split {split_id} for stage {self.stage_id} (pending={len(self._pending_splits)})"
-        )
-        return True
-
-    def _handle_worker_result(self, process_result: ProcessResult) -> None:
-        input_split_id = process_result.input_split_id
-
-        # Mark split as completed for checkpoint tracking
-        self.checkpoint_tracker.mark_split_completed(input_split_id)
-
-        self.logger.debug(
-            f"Stage {self.stage_id} handling result for input split {input_split_id} "
-            f"and output split {process_result.output_split.split_id}, "
-            f"output_records={process_result.output_records}, "
-            f"downstreams are {list(self.downstream_stage_refs.keys())}"
-        )
-        if process_result.output_split and self.downstream_stage_refs:
-            object_ref = process_result.output_split.data_range.get("object_ref")
-            if object_ref:
-                self.logger.debug(
-                    f"Stage {self.stage_id} forwarding split {process_result.output_split.split_id} "
-                    f"with object_ref={object_ref} to downstream stages"
-                )
-            self._fan_out_downstream(process_result.output_split)
-        worker_metrics = process_result.worker_metrics
-        self.worker_active_splits[worker_metrics.worker_id] = (
-            self.worker_active_splits[worker_metrics.worker_id] - 1
-        )
-        self.logger.debug(
-            f"Completed split {input_split_id} on worker {worker_metrics.worker_id} (input={worker_metrics.input_records}, output={worker_metrics.output_records})",
-        )
-        self.worker_metrics[worker_metrics.worker_id] = worker_metrics
-
-    def _fan_out_downstream(self, split: Split) -> None:
-        for downstream_id, actor_ref in self.downstream_stage_refs.items():
-            actor_ref.enqueue_split.remote(split)
-            self.logger.debug(
-                f"Forwarded split {split.split_id} to downstream {downstream_id}",
-            )
-
-    # ------------------------------------------------------------------
-    # Checkpointing
-    # ------------------------------------------------------------------
-    def trigger_checkpoint(self, checkpoint_id: str) -> None:
-        """Prepare stage for checkpoint."""
-        self.current_checkpoint_id = checkpoint_id
-        self.logger.info("Stage %s preparing checkpoint %s", self.stage_id, checkpoint_id)
-
-    def get_checkpoint_data(self) -> Dict[str, Any]:
-        """Get checkpoint data for this stage.
-
-        Returns checkpoint data containing completed splits and stage offset.
-        """
-        if not self.current_checkpoint_id:
-            return {}
-
-        data = self.checkpoint_tracker.prepare_checkpoint(self.current_checkpoint_id)
-        result = data.to_dict()
-
-        self.logger.info(
-            "Stage %s checkpoint data: %d completed, %d inflight splits",
-            self.stage_id,
-            len(data.completed_splits),
-            len(data.inflight_splits),
-        )
-        return result
-
-    def restore_from_checkpoint(self, checkpoint_data: Optional[Dict[str, Any]] = None) -> None:
-        """Restore stage state from checkpoint data.
-
-        Args:
-            checkpoint_data: Stage checkpoint data dict
-        """
-        if not checkpoint_data:
-            self.logger.warning("Stage %s restore requested without data", self.stage_id)
-            return
-
-        from solstice.state.store import StageCheckpointData
-
-        data = StageCheckpointData.from_dict(checkpoint_data)
-        self.checkpoint_tracker.restore_from_checkpoint(data)
-
-        self.logger.info(
-            "Stage %s restored: %d completed splits",
-            self.stage_id,
-            len(data.completed_splits),
-        )
-
-    # ------------------------------------------------------------------
-    # Metrics & status
-    # ------------------------------------------------------------------
-    def get_stage_status(self) -> StageStatus:
-        return StageStatus(
-            pending_splits=len(self._pending_splits),
-            active_splits=len(self._split_to_worker),
-            inflight_results=len(self._inflight_results),
-            backpressure_active=self.backpressure_active,
-            upstream_finished=self.upstream_finished,
-            failed=self._failed,
-            failure_message=str(self._failure_exception) if self._failure_exception else None,
-        )
-
-    def collect_metrics(self) -> StageMetrics:
-        metric_refs = []
-        for worker_id, worker_ref in self.workers.items():
-            metric_refs.append((worker_id, worker_ref.get_metrics.remote()))
-
-        for worker_id, ref in metric_refs:
-            try:
-                metrics = ray.get(ref, timeout=5)
-                self.worker_metrics[worker_id] = metrics
-            except Exception:
-                continue
-
-        return StageMetrics(
-            stage_id=self.stage_id,
-            worker_count=len(self.workers),
-            input_records=sum(metric.input_records for metric in self.worker_metrics.values()),
-            output_records=sum(metric.output_records for metric in self.worker_metrics.values()),
-            total_processing_time=sum(
-                metric.processing_time for metric in self.worker_metrics.values()
-            ),
-            pending_splits=len(self._pending_splits),
-            inflight_results=len(self._inflight_results),
-            backpressure_active=self.backpressure_active,
-            uptime_secs=time.time() - self.start_time,
-        )
-
-    def get_backpressure_signal(self) -> Optional[BackpressureSignal]:
-        if not self.backpressure_active:
-            return None
-        queue_ratio = len(self._pending_splits) / float(self.max_queue_size)
-        slow_down = max(0.0, min(1.0, 1.0 - queue_ratio))
-        return BackpressureSignal(
-            from_stage=self.stage_id,
-            to_stage="",
-            slow_down_factor=slow_down,
-            reason=f"pending_splits={len(self._pending_splits)}",
-        )
-
-    def health_check(self) -> bool:
-        return True
-
-    # ------------------------------------------------------------------
-    # Shutdown
-    # ------------------------------------------------------------------
-    def shutdown(self) -> None:
-        self.logger.info("Shutting down stage %s", self.stage_id)
+    async def stop(self) -> None:
+        """Stop the stage master."""
         self._running = False
 
-        for worker_id in list(self.workers.keys()):
-            self._remove_worker(worker_id)
-        self._pending_splits.clear()
-        self._inflight_results.clear()
-        self._split_to_worker.clear()
-        self.logger.info("Stage %s shutdown complete", self.stage_id)
+        # Stop all workers
+        for worker_id, worker in list(self._workers.items()):
+            try:
+                ray.get(worker.stop.remote(), timeout=5)
+            except Exception as e:
+                self.logger.warning(f"Error stopping worker {worker_id}: {e}")
+
+        self._workers.clear()
+        self._worker_tasks.clear()
+
+        # Note: Don't stop output queue here - downstream stages may still need it
+        # The queue will be cleaned up by the runner after all stages are done
+
+        self.logger.info(f"Stage {self.stage_id} stopped")
+
+    async def cleanup_queue(self) -> None:
+        """Clean up the output queue. Called by runner after all consumers are done."""
+        if self._output_queue:
+            await self._output_queue.stop()
+            self._output_queue = None
+
+    def get_output_queue(self) -> Optional[QueueBackend]:
+        """Get the output queue for downstream stages."""
+        return self._output_queue
+
+    def get_output_topic(self) -> str:
+        """Get the output topic name."""
+        return self._output_topic
+
+    def get_status(self) -> StageStatus:
+        """Get current stage status."""
+        return StageStatus(
+            stage_id=self.stage_id,
+            worker_count=len(self._workers),
+            output_queue_size=0,  # Use async get_status_async for queue size
+            is_running=self._running,
+            is_finished=self._finished,
+            failed=self._failed,
+            failure_message=self._failure_message,
+        )
+
+    async def get_status_async(self) -> StageStatus:
+        """Get current stage status with queue metrics."""
+        output_size = 0
+        if self._output_queue:
+            try:
+                output_size = await self._output_queue.get_latest_offset(self._output_topic)
+            except Exception:
+                pass
+
+        return StageStatus(
+            stage_id=self.stage_id,
+            worker_count=len(self._workers),
+            output_queue_size=output_size,
+            is_running=self._running,
+            is_finished=self._finished,
+            failed=self._failed,
+            failure_message=self._failure_message,
+        )
+
+
+@ray.remote
+class StageWorker:
+    """Worker that pulls from upstream queue and produces to output queue.
+
+    This worker is self-scheduling: it pulls messages from upstream,
+    processes them, and produces results to the output queue.
+
+    Exactly-once semantics:
+    1. Fetch batch from upstream
+    2. Process each message
+    3. Produce output to output queue
+    4. Commit upstream offset (only after output is durably stored)
+
+    Note: Workers create their own queue connections from endpoints,
+    since QueueBackend instances contain locks and cannot be serialized.
+    """
+
+    def __init__(
+        self,
+        worker_id: str,
+        stage: "Stage",
+        upstream_endpoint: Optional[QueueEndpoint],
+        upstream_topic: Optional[str],
+        output_endpoint: QueueEndpoint,
+        output_topic: str,
+        consumer_group: str,
+        config: StageConfig,
+        payload_store: SplitPayloadStore,
+    ):
+        self.worker_id = worker_id
+        self.stage_id = stage.stage_id
+        self.stage = stage
+        self.config = config
+
+        # SplitPayloadStore for storing SplitPayload data across workers
+        self.payload_store = payload_store
+
+        # Store endpoints (will create connections in run())
+        self.upstream_endpoint = upstream_endpoint
+        self.upstream_topic = upstream_topic
+        self.output_endpoint = output_endpoint
+        self.output_topic = output_topic
+        self.consumer_group = consumer_group
+
+        # Queue connections (created lazily)
+        self.upstream_queue: Optional[QueueBackend] = None
+        self.output_queue: Optional[QueueBackend] = None
+
+        self.logger = create_ray_logger(f"Worker-{self.stage_id}-{worker_id}")
+
+        # Initialize operator using OperatorConfig.setup()
+        self.operator = stage.operator_config.setup(worker_id=worker_id)
+
+        # State
+        self._running = False
+        self._processed_count = 0
+        self._error_count = 0
+        self._last_commit_time = time.time()
+
+    async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> QueueBackend:
+        """Create a queue connection from endpoint info."""
+        if endpoint.queue_type == QueueType.TANSU:
+            from solstice.queue import TansuBackend
+
+            # Client-only mode: connect to existing Tansu server
+            queue = TansuBackend(
+                storage_url=endpoint.storage_url,
+                port=endpoint.port,
+                client_only=True,  # Don't start a new Tansu process
+            )
+        else:
+            queue = MemoryBackend()
+
+        await queue.start()
+        return queue
+
+    async def run(self) -> Dict[str, Any]:
+        """Main processing loop.
+
+        Workers always consume from upstream queue. Source stages use
+        SourceMaster which writes splits to a queue before workers consume.
+        """
+        self._running = True
+        self.logger.info(f"Worker {self.worker_id} starting")
+
+        if not self.upstream_endpoint or not self.upstream_topic:
+            raise RuntimeError(
+                f"Worker {self.worker_id} requires upstream_endpoint and upstream_topic. "
+                "Source stages should use SourceMaster to generate splits into a queue."
+            )
+
+        try:
+            # Create queue connections
+            self.logger.info(f"Output endpoint received: {self.output_endpoint}")
+            self.output_queue = await self._create_queue_from_endpoint(self.output_endpoint)
+
+            self.logger.info(f"Connecting to upstream queue: {self.upstream_endpoint}")
+            self.upstream_queue = await self._create_queue_from_endpoint(self.upstream_endpoint)
+
+            # Process from upstream queue
+            await self._process_from_upstream()
+
+            return {
+                "worker_id": self.worker_id,
+                "processed_count": self._processed_count,
+                "error_count": self._error_count,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Worker {self.worker_id} failed: {e}")
+            raise
+        finally:
+            self._running = False
+            # Cleanup queue connections
+            if self.upstream_queue:
+                await self.upstream_queue.stop()
+            if self.output_queue:
+                await self.output_queue.stop()
+
+    async def _process_from_upstream(self) -> None:
+        """Process messages from upstream queue."""
+        # Get starting offset
+        offset = (
+            await self.upstream_queue.get_committed_offset(self.consumer_group, self.upstream_topic)
+            or 0
+        )
+
+        # Check topic exists
+        actual_actor = (
+            self.upstream_queue.get_actor_ref()
+            if hasattr(self.upstream_queue, "get_actor_ref")
+            else None
+        )
+        latest_check = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+        self.logger.info(
+            f"Starting from offset {offset} on topic {self.upstream_topic}, current latest: {latest_check}, actual actor: {actual_actor}"
+        )
+
+        consecutive_empty = 0
+        max_empty_polls = 300  # Give up after 300 empty polls (~30 seconds)
+
+        while self._running:
+            # Fetch batch from upstream
+            records = await self.upstream_queue.fetch(
+                self.upstream_topic,
+                offset=offset,
+                max_records=self.config.batch_size,
+                timeout_ms=2000,  # Longer timeout for Tansu consumer
+            )
+
+            # Debug: Check queue status periodically
+            if consecutive_empty == 0 or consecutive_empty % 50 == 0:
+                latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+                self.logger.debug(
+                    f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}, empty polls: {consecutive_empty}"
+                )
+
+            if not records:
+                consecutive_empty += 1
+                if consecutive_empty >= max_empty_polls:
+                    # Check if upstream is done
+                    latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+                    if offset >= latest:
+                        self.logger.info(f"Upstream exhausted at offset {offset}")
+                        break
+                await asyncio.sleep(0.1)
+                continue
+
+            consecutive_empty = 0
+
+            # Process each record
+            for record in records:
+                try:
+                    message = QueueMessage.from_bytes(record.value)
+                    await self._process_message(message)
+                    self._processed_count += 1
+                except Exception as e:
+                    import traceback
+
+                    self.logger.error(
+                        f"Error processing message at offset {record.offset}: {type(e).__name__}: {e}"
+                    )
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                    self._error_count += 1
+                    # Continue processing - don't block on single errors
+
+                offset = record.offset + 1
+
+            # Commit offset periodically
+            if time.time() - self._last_commit_time > self.config.commit_interval_ms / 1000:
+                await self.upstream_queue.commit_offset(
+                    self.consumer_group, self.upstream_topic, offset
+                )
+                self._last_commit_time = time.time()
+
+        # Final commit
+        if self.upstream_queue:
+            await self.upstream_queue.commit_offset(
+                self.consumer_group, self.upstream_topic, offset
+            )
+
+    async def _process_message(self, message: QueueMessage) -> None:
+        """Process a single message.
+
+        Handles two types of messages:
+        1. Source messages: payload_key is empty, data_range is in metadata
+           - Create split from metadata and call operator.process_split(split, None)
+        2. Regular messages: payload_key points to SplitPayloadStore
+           - Get payload from store and call operator.process_split(split, payload)
+        """
+        from solstice.core.models import Split, SplitPayload
+
+        payload: Optional[SplitPayload] = None
+        is_source_message = not message.payload_key
+
+        if is_source_message:
+            # Source message: data_range is in metadata
+            data_range = message.metadata.get("data_range", {})
+            split = Split(
+                split_id=message.split_id,
+                stage_id=self.stage_id,
+                data_range=data_range,
+                parent_split_ids=[],
+            )
+            # payload is None for source operators
+        else:
+            # Regular message: get payload from store
+            payload = self.payload_store.get(message.payload_key)
+            if payload is None:
+                raise RuntimeError(f"Payload not found for key: {message.payload_key}")
+
+            split = Split(
+                split_id=message.split_id,
+                stage_id=self.stage_id,
+                data_range={"message_id": message.message_id},
+                parent_split_ids=[message.split_id],
+            )
+
+        # Process with operator
+        output_payload = self.operator.process_split(split, payload)
+
+        if output_payload:
+            # Generate unique key for this payload
+            payload_key = f"{self.worker_id}_{self._processed_count}_{split.split_id}"
+
+            # Store in SplitPayloadStore
+            self.payload_store.store(payload_key, output_payload)
+
+            output_message = QueueMessage(
+                message_id=f"{self.worker_id}_{self._processed_count}",
+                split_id=f"{self.stage_id}_{message.split_id}",
+                payload_key=payload_key,
+                metadata={
+                    "source_stage": self.stage_id,
+                    "parent_message_id": message.message_id,
+                },
+            )
+
+            # Produce to output queue
+            offset = await self.output_queue.produce(self.output_topic, output_message.to_bytes())
+            self.logger.debug(f"Produced output for {message.split_id} at offset {offset}")
+        else:
+            self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
+
+        # Delete input payload if it was from store (not source message)
+        if not is_source_message and message.payload_key:
+            self.payload_store.delete(message.payload_key)
 
     def stop(self) -> None:
+        """Stop the worker."""
         self._running = False
+        self.logger.info(f"Worker {self.worker_id} stopping")
 
+        try:
+            self.operator.close()
+        except Exception as e:
+            self.logger.error(f"Error closing operator: {e}")
 
-# Set the master_class on DefaultStageMasterConfig after class definition
-DefaultStageMasterConfig.master_class = StageMasterActor
+    def get_stats(self) -> Dict[str, Any]:
+        """Get worker statistics."""
+        return {
+            "worker_id": self.worker_id,
+            "stage_id": self.stage_id,
+            "running": self._running,
+            "processed_count": self._processed_count,
+            "error_count": self._error_count,
+        }

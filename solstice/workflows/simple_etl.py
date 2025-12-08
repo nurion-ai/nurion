@@ -18,7 +18,6 @@ from solstice.operators.sources import LanceTableSourceConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.sinks import FileSinkConfig, PrintSinkConfig
-from solstice.state.backend import StateBackend
 
 
 def transform_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -42,7 +41,6 @@ def filter_predicate(record: Dict[str, Any]) -> bool:
 def create_job(
     job_id: str,
     config: Dict[str, Any],
-    state_backend: StateBackend,
 ) -> Job:
     """
     Create a simple ETL job.
@@ -57,6 +55,10 @@ def create_job(
         - transform_parallelism: Transform workers, int or (min, max) (default: (2, 8))
         - filter_parallelism: Filter workers (default: 2)
         - output_format: Output format - json/parquet/csv (default: json)
+        
+    Args:
+        job_id: Unique job identifier
+        config: Job configuration dictionary
     """
     logger = logging.getLogger(__name__)
     logger.info("Creating Simple ETL job")
@@ -71,9 +73,6 @@ def create_job(
     # Create job
     job = Job(
         job_id=job_id,
-        state_backend=state_backend,
-        checkpoint_interval_secs=config.get("checkpoint_interval_secs", 300),
-        checkpoint_interval_records=config.get("checkpoint_interval_records"),
         config=config,
     )
 

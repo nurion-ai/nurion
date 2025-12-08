@@ -10,6 +10,7 @@ Example usage:
         --output /data/output
 """
 
+import asyncio
 import logging
 import sys
 from typing import Optional
@@ -19,12 +20,6 @@ import signal
 import click
 import ray
 
-from solstice.state.store import (
-    CheckpointStore,
-    LocalCheckpointStore,
-    S3CheckpointStore,
-    SlateDBCheckpointStore,
-)
 from solstice.core.job import Job
 
 
@@ -35,31 +30,6 @@ def setup_logging(level: str = "INFO"):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-
-
-def create_checkpoint_store_from_params(backend_type: str, **kwargs) -> CheckpointStore:
-    """Create checkpoint store from parameters"""
-    if backend_type == "local":
-        local_path = kwargs.get("local_path", "/tmp/solstice")
-        return LocalCheckpointStore(local_path)
-
-    elif backend_type == "s3":
-        s3_path = kwargs.get("s3_path")
-        if not s3_path:
-            raise ValueError("s3_path is required for S3 checkpoint store")
-        parts = s3_path.replace("s3://", "").split("/", 1)
-        bucket = parts[0]
-        prefix = parts[1] if len(parts) > 1 else ""
-        return S3CheckpointStore(bucket, prefix)
-
-    elif backend_type == "slatedb":
-        # SlateDB with configurable object store
-        path = kwargs.get("local_path", "/tmp/solstice")
-        object_store = kwargs.get("object_store", "local")
-        return SlateDBCheckpointStore(path, object_store)
-
-    else:
-        raise ValueError(f"Unknown backend type: {backend_type}")
 
 
 def load_workflow(workflow_module: str):
@@ -99,28 +69,12 @@ def parse_kwargs(ctx, param, value):
 )
 @click.option("--job-id", required=False, type=str, help="Job ID (auto-generated if not provided)")
 @click.option("--log-level", default="INFO", type=str, help="Logging level")
-@click.option("--checkpoint-interval", default=300, type=int, help="Checkpoint interval in seconds")
-@click.option(
-    "--checkpoint-store",
-    default="local",
-    type=click.Choice(["local", "s3", "slatedb"]),
-    help="Checkpoint store type",
-)
-@click.option(
-    "--checkpoint-path",
-    default="/tmp/solstice",
-    type=str,
-    help="Checkpoint store path (local) or bucket (s3)",
-)
 @click.pass_context
 def main(
     ctx,
     workflow: str,
     job_id: Optional[str],
     log_level: str,
-    checkpoint_interval: int,
-    checkpoint_store: str,
-    checkpoint_path: str,
 ):
     """
     Main entry point for running Solstice Streaming jobs
@@ -182,13 +136,8 @@ def main(
 
     logger.info(f"Job ID: {job_id}")
 
+    runner = None
     try:
-        # Create checkpoint store
-        store = create_checkpoint_store_from_params(
-            checkpoint_store, local_path=checkpoint_path, s3_path=checkpoint_path
-        )
-        logger.info(f"Created checkpoint store: {type(store).__name__}")
-
         # Load workflow
         logger.info(f"Loading workflow: {workflow}")
         workflow_module = load_workflow(workflow)
@@ -199,33 +148,21 @@ def main(
 
         # Merge workflow config with extra kwargs
         workflow_config = {
-            "checkpoint_interval_secs": checkpoint_interval,
             **extra_kwargs,
         }
 
         job: Job = workflow_module.create_job(
             job_id=job_id,
             config=workflow_config,
-            checkpoint_store=store,
         )
 
         runner = job.create_ray_runner()
-        runner.initialize()
-
-        logger.info("Ray cluster info: %s", ray.cluster_resources())
-
-        available_checkpoints = runner.list_checkpoints()
-        if available_checkpoints:
-            latest_checkpoint = available_checkpoints[-1]
-            logger.info("Restoring from latest checkpoint: %s", latest_checkpoint)
-            restored = runner.restore_from_checkpoint(latest_checkpoint)
-            if not restored:
-                logger.warning("Checkpoint restore failed; continuing with fresh state.")
 
         # Setup signal handler for graceful shutdown
         def signal_handler(signum, frame):
             logger.info("\nReceived interrupt signal. Shutting down...")
-            runner.stop()
+            if runner:
+                asyncio.get_event_loop().run_until_complete(runner.stop())
             logger.info("Job stopped successfully")
             sys.exit(0)
 
@@ -236,24 +173,19 @@ def main(
         logger.info("Job is running. Press Ctrl+C to stop.")
         logger.info("=" * 80)
 
-        runner.run()
+        # Run the pipeline
+        status = asyncio.get_event_loop().run_until_complete(runner.run())
 
         logger.info("Job completed successfully")
-
-        status = runner.get_status()
         logger.info("Final job status: %s", status)
-
-        metrics = runner.get_metrics()
-        if metrics:
-            logger.info("Final job metrics: %s", metrics)
 
     except Exception as e:
         logger.error(f"Job failed with error: {e}", exc_info=True)
         sys.exit(1)
 
     finally:
-        if "runner" in locals():
-            runner.shutdown()
+        if runner:
+            asyncio.get_event_loop().run_until_complete(runner.stop())
         logger.info("Shutting down Ray")
         ray.shutdown()
 

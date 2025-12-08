@@ -4,23 +4,20 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from solstice.core.job import Job
 from solstice.core.stage import Stage
-from solstice.core.models import JobCheckpointConfig
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.operators.sinks import FileSinkConfig, LanceSinkConfig
 from solstice.operators.sources import LanceTableSourceConfig
-from solstice.operators.sources.lance import LanceSourceStageMasterConfig
 from solstice.operators.video import (
     FFmpegSceneDetectConfig,
     FFmpegSliceConfig,
     attach_slice_hash,
     keep_every_n,
 )
-from solstice.state.store import CheckpointStore
 
 DEFAULT_FILTER_MODULO = 10
 DEFAULT_MIN_SLICE_DURATION = 0.5
@@ -30,7 +27,6 @@ DEFAULT_SCENE_THRESHOLD = 0.35
 def create_job(
     job_id: str,
     config: Dict[str, Any],
-    checkpoint_store: Optional[CheckpointStore] = None,
 ) -> Job:
     """Create the ffmpeg-driven video slicing workflow."""
 
@@ -49,35 +45,22 @@ def create_job(
     min_slice_duration = float(config.get("min_slice_duration", DEFAULT_MIN_SLICE_DURATION))
     scene_threshold = float(config.get("scene_threshold", DEFAULT_SCENE_THRESHOLD))
 
-    # Checkpoint config
-    checkpoint_config = JobCheckpointConfig(
-        enabled=config.get("checkpoint_enabled", True),
-        interval_secs=config.get("checkpoint_interval_secs", 60),
-    )
-
     job = Job(
         job_id=job_id,
-        checkpoint_store=checkpoint_store,
-        checkpoint_config=checkpoint_config,
         config=config,
     )
 
-    # Source stage - skip checkpoint (stateless read)
+    # Source stage
     source_stage = Stage(
         stage_id="source",
         operator_config=LanceTableSourceConfig(
             dataset_uri=input_path,
             split_size=10,
         ),
-        master_config=LanceSourceStageMasterConfig(
-            dataset_uri=input_path,
-            split_size=10,
-        ),
         parallelism=1,
-        skip_checkpoint=True,  # Stateless read, no need to checkpoint
     )
 
-    # Detect stage - NEEDS checkpoint (expensive computation)
+    # Detect stage
     scene_stage = Stage(
         stage_id="detect",
         operator_config=FFmpegSceneDetectConfig(
@@ -85,37 +68,33 @@ def create_job(
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("scene_parallelism", (2, 6)),
-        skip_checkpoint=False,  # Expensive FFmpeg scene detection
     )
 
-    # Slice stage - NEEDS checkpoint (expensive computation)
+    # Slice stage
     slice_stage = Stage(
         stage_id="slice",
         operator_config=FFmpegSliceConfig(
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("slice_parallelism", (2, 4)),
-        skip_checkpoint=False,  # Expensive FFmpeg slicing
     )
 
-    # Filter stage - skip checkpoint (cheap CPU operation)
+    # Filter stage
     filter_stage = Stage(
         stage_id="filter",
         operator_config=FilterOperatorConfig(
             filter_fn=functools.partial(keep_every_n, modulo=filter_modulo),
         ),
         parallelism=config.get("filter_parallelism", 2),
-        skip_checkpoint=True,  # Cheap filter, skip checkpoint
     )
 
-    # Hash stage - skip checkpoint (cheap CPU operation)
+    # Hash stage
     hash_stage = Stage(
         stage_id="hash",
         operator_config=MapOperatorConfig(
             map_fn=attach_slice_hash,
         ),
         parallelism=config.get("hash_parallelism", 2),
-        skip_checkpoint=True,  # Cheap hash, skip checkpoint
     )
 
     output_format = config.get("output_format", "json")
@@ -133,12 +112,11 @@ def create_job(
             buffer_size=config.get("sink_buffer_size", 256),
         )
 
-    # Sink stage - skip checkpoint (idempotent write)
+    # Sink stage
     sink_stage = Stage(
         stage_id="sink",
         operator_config=sink_config,
         parallelism=1,
-        skip_checkpoint=True,  # Sink handles its own state
     )
 
     job.add_stage(source_stage)
