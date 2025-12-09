@@ -488,9 +488,13 @@ class TestSparkSourceMaster:
             ),
         )
 
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-parallelism_store")
         master = SparkSourceMaster(
             job_id="test-parallelism",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         splits = list(master.plan_splits())
@@ -532,9 +536,13 @@ class TestSparkSourceMaster:
             ),
         )
 
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-complex-df_store")
         master = SparkSourceMaster(
             job_id="test-complex-df",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         splits = list(master.plan_splits())
@@ -576,9 +584,13 @@ class TestSparkSourceMaster:
             ),
         )
 
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-full-pipeline_store")
         master = SparkSourceMaster(
             job_id="test-full-pipeline",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         # Start the full pipeline (creates queues, spawns workers)
