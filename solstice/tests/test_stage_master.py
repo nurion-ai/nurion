@@ -24,7 +24,7 @@ from solstice.core.stage_master import (
 )
 from solstice.core.operator import OperatorConfig, Operator
 
-pytestmark = pytest.mark.asyncio(loop_scope="function")
+# Note: Only async test classes/functions should use @pytest.mark.asyncio decorator
 
 
 # ============================================================================

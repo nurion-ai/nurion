@@ -78,8 +78,10 @@ asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
 filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince212",
+    "ignore:lance is not fork-safe:UserWarning",
 ]
 markers = [
     "integration: marks integration tests",
     "benchmark: marks performance benchmark tests (skipped by default in CI)",
+    "timeout: marks tests with timeout (requires pytest-timeout)",
 ]

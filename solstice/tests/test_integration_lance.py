@@ -188,9 +188,13 @@ class TestLancePipeline:
             ),
         )
 
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-lance-pipeline_store")
         master = LanceSourceMaster(
             job_id="test-lance-pipeline",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         # Start the full pipeline (creates queues, spawns workers)
@@ -263,9 +267,13 @@ class TestLancePipeline:
             ),
         )
 
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-lance-s3-pipeline_store")
         master = LanceSourceMaster(
             job_id="test-lance-s3-pipeline",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         await master.start()

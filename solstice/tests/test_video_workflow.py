@@ -110,10 +110,13 @@ def test_video_slice_workflow_with_ray(ray_cluster):
             tansu_storage_url="memory://",
         )
 
-        try:
-            asyncio.get_event_loop().run_until_complete(runner.run(timeout=600))
-        finally:
-            asyncio.get_event_loop().run_until_complete(runner.stop())
+        async def run_pipeline():
+            try:
+                await runner.run(timeout=600)
+            finally:
+                await runner.stop()
+
+        asyncio.run(run_pipeline())
 
         assert output_path.exists(), f"Output path {output_path} does not exist"
         result_ds = lance.dataset(str(output_path))
