@@ -1,6 +1,6 @@
 """Test TansuBackend with S3 storage configuration.
 
-This test uses MinIO (Docker) for S3-compatible storage to test:
+This test uses MinIO (via testcontainers) for S3-compatible storage to test:
 1. Starting Tansu with S3 storage backend
 2. Producing and fetching messages
 3. Offset tracking for exactly-once semantics
@@ -11,7 +11,6 @@ Use MinIO, Ceph, or AWS S3 with path-style enabled.
 """
 
 import asyncio
-import subprocess
 import pytest
 
 # Skip if tansu not available
@@ -23,113 +22,6 @@ if not shutil.which("tansu"):
 from solstice.queue import TansuBackend
 
 
-def check_minio_available() -> bool:
-    """Check if MinIO is running on localhost:9000."""
-    import socket
-
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        result = sock.connect_ex(("localhost", 9000))
-        sock.close()
-        return result == 0
-    except Exception:
-        return False
-
-
-def start_minio_docker() -> bool:
-    """Start MinIO using Docker if available."""
-    try:
-        # Check if docker is available
-        if not shutil.which("docker"):
-            return False
-
-        # Remove existing container
-        subprocess.run(["docker", "rm", "-f", "minio-test"], capture_output=True, timeout=10)
-
-        # Start MinIO
-        result = subprocess.run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                "minio-test",
-                "-p",
-                "9000:9000",
-                "-p",
-                "9001:9001",
-                "-e",
-                "MINIO_ROOT_USER=minioadmin",
-                "-e",
-                "MINIO_ROOT_PASSWORD=minioadmin",
-                "minio/minio",
-                "server",
-                "/data",
-                "--console-address",
-                ":9001",
-            ],
-            capture_output=True,
-            timeout=60,
-        )
-
-        if result.returncode != 0:
-            return False
-
-        # Wait for MinIO to be ready
-        import time
-
-        for _ in range(30):
-            if check_minio_available():
-                # Create test bucket
-                subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        "minio-test",
-                        "mc",
-                        "alias",
-                        "set",
-                        "local",
-                        "http://localhost:9000",
-                        "minioadmin",
-                        "minioadmin",
-                    ],
-                    capture_output=True,
-                    timeout=10,
-                )
-                subprocess.run(
-                    ["docker", "exec", "minio-test", "mc", "mb", "local/tansu-test"],
-                    capture_output=True,
-                    timeout=10,
-                )
-                return True
-            time.sleep(1)
-
-        return False
-    except Exception:
-        return False
-
-
-def stop_minio_docker():
-    """Stop MinIO Docker container."""
-    try:
-        subprocess.run(["docker", "rm", "-f", "minio-test"], capture_output=True, timeout=10)
-    except Exception:
-        pass
-
-
-def get_minio_config() -> dict:
-    """Get MinIO S3 configuration for Tansu."""
-    return {
-        "storage_url": "s3://tansu-test/",
-        "s3_endpoint": "http://localhost:9000",
-        "s3_region": "us-east-1",
-        "s3_access_key": "minioadmin",
-        "s3_secret_key": "minioadmin",
-    }
-
-
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
@@ -137,49 +29,76 @@ async def wait_for_topic_ready(backend, topic: str, timeout: float = 30.0) -> bo
     """Wait for a topic to be ready for produce/fetch operations.
 
     S3 storage backends have slower metadata propagation, so we need to
-    poll until the topic is actually available.
+    poll until the topic is actually available for BOTH consumer and producer.
     """
     import time
 
     start = time.time()
     while time.time() - start < timeout:
+        consumer_ready = False
+        producer_ready = False
+
+        # Check consumer can see the topic
         try:
-            # Try to fetch from the topic - if it doesn't error, topic is ready
             await backend.fetch(topic, offset=0, max_records=1)
-            return True
+            consumer_ready = True
         except Exception as e:
-            if "UnknownTopicOrPartitionError" in str(e):
-                await asyncio.sleep(1)
-                continue
-            # Other errors might indicate the topic is ready but empty
+            if "UnknownTopicOrPartitionError" not in str(e):
+                # Other errors might indicate the topic is ready but empty
+                consumer_ready = True
+
+        # Check producer can see the topic
+        try:
+            if backend._producer:
+                await backend._producer.client._wait_on_metadata(topic)
+            producer_ready = True
+        except Exception as e:
+            if "UnknownTopicOrPartitionError" not in str(e):
+                producer_ready = True
+
+        if consumer_ready and producer_ready:
             return True
+
+        await asyncio.sleep(1)
+
     return False
 
 
-@pytest.mark.skipif(
-    not check_minio_available() and not shutil.which("docker"),
-    reason="MinIO not available and Docker not found",
-)
 class TestTansuMinioS3:
-    """Tests for TansuBackend with MinIO S3 storage.
+    """Tests for TansuBackend with MinIO S3 storage via testcontainers."""
 
-    These tests require MinIO running on localhost:9000.
-    If MinIO is not available, it will try to start it via Docker.
-    """
+    @pytest.fixture(scope="class")
+    def minio_for_tansu(self):
+        """Start MinIO container and create tansu-test bucket."""
+        from testcontainers.minio import MinioContainer
+        from minio import Minio
 
-    @pytest.fixture(scope="class", autouse=True)
-    def setup_minio(self):
-        """Ensure MinIO is running."""
-        if not check_minio_available():
-            if not start_minio_docker():
-                pytest.skip("Could not start MinIO")
-        yield
-        # Note: Don't stop MinIO here to allow reuse across test runs
+        with MinioContainer() as minio:
+            host_ip = minio.get_container_host_ip()
+            exposed_port = minio.get_exposed_port(9000)
+            minio_client = Minio(
+                endpoint=f"{host_ip}:{exposed_port}",
+                access_key=minio.access_key,
+                secret_key=minio.secret_key,
+                secure=False,
+            )
+            bucket_name = "tansu-test"
+            if not minio_client.bucket_exists(bucket_name=bucket_name):
+                minio_client.make_bucket(bucket_name=bucket_name)
+            yield minio
 
     @pytest.fixture
-    def minio_config(self):
-        """Get MinIO S3 configuration."""
-        return get_minio_config()
+    def minio_config(self, minio_for_tansu):
+        """Get MinIO S3 configuration for Tansu."""
+        host = minio_for_tansu.get_container_host_ip()
+        port = minio_for_tansu.get_exposed_port(9000)
+        return {
+            "storage_url": "s3://tansu-test/",
+            "s3_endpoint": f"http://{host}:{port}",
+            "s3_region": "us-east-1",
+            "s3_access_key": minio_for_tansu.access_key,
+            "s3_secret_key": minio_for_tansu.secret_key,
+        }
 
     @pytest.mark.asyncio
     async def test_tansu_start_with_minio(self, minio_config):
@@ -319,54 +238,3 @@ class TestTansuMemory:
 
         finally:
             await backend.stop()
-
-
-if __name__ == "__main__":
-    # Run a quick manual test
-    async def main():
-        print("Testing TansuBackend with MinIO S3...")
-
-        if check_minio_available():
-            config = get_minio_config()
-            print(f"MinIO S3 config: {config}")
-        else:
-            print("MinIO not available, using memory backend...")
-            config = {"storage_url": "memory://"}
-
-        backend = TansuBackend(
-            port=19096,
-            startup_timeout=60.0,
-            **config,
-        )
-
-        try:
-            print("Starting Tansu...")
-            await backend.start()
-            print("Tansu started!")
-
-            topic = "test-topic"
-            await backend.create_topic(topic)
-            await asyncio.sleep(2)
-
-            print("Producing messages...")
-            for i in range(3):
-                offset = await backend.produce(topic, f"test-{i}".encode())
-                print(f"  Produced at offset {offset}")
-
-            print("Fetching messages...")
-            records = await backend.fetch(topic, offset=0)
-            for r in records:
-                print(f"  offset={r.offset}, value={r.value}")
-
-            print("Test completed successfully!")
-
-        except Exception as e:
-            print(f"Test failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-        finally:
-            await backend.stop()
-            print("Tansu stopped.")
-
-    asyncio.run(main())
