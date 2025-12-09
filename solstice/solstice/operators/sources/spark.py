@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
 
@@ -95,12 +96,15 @@ class SparkSource(SourceOperator):
         """Read Arrow data from Ray object store.
 
         The split contains:
-            - object_ref: ObjectRef to the Arrow data in object store
+            - object_ref: Base64-encoded cloudpickle of ObjectRef
             - block_size: Number of records in this block
         """
-        object_ref = split.data_range.get("object_ref")
-        if object_ref is None:
+        object_ref_b64 = split.data_range.get("object_ref")
+        if object_ref_b64 is None:
             raise ValueError("Split missing 'object_ref' for SparkSource")
+
+        # Deserialize ObjectRef from base64-encoded cloudpickle
+        object_ref = ray.cloudpickle.loads(base64.b64decode(object_ref_b64))
 
         # Get Arrow data from object store
         arrow_data = ray.get(object_ref)
@@ -235,28 +239,22 @@ class SparkSourceMaster(SourceMaster):
             f"{len(blocks)} blocks, {sum(block_sizes)} total records"
         )
 
-        # Yield splits containing ObjectRefs
+        # Yield splits containing ObjectRef serialized via cloudpickle (for JSON)
         for idx, (block_ref, block_size) in enumerate(zip(blocks, block_sizes)):
+            # Serialize ObjectRef using cloudpickle and base64 encode for JSON
+            object_ref_b64 = base64.b64encode(ray.cloudpickle.dumps(block_ref)).decode("ascii")
             yield Split(
                 split_id=f"{self.stage.stage_id}_split_{idx}",
                 stage_id=self.stage.stage_id,
                 data_range={
-                    "object_ref": block_ref,
+                    "object_ref": object_ref_b64,
                     "block_size": block_size,
                     "block_index": idx,
                 },
             )
 
-    def stop(self) -> None:
-        """Stop the source master and cleanup Spark.
-
-        This is a synchronous method for compatibility with tests.
-        For async usage, call stop_async().
-        """
-        self._stop_spark()
-
-    async def stop_async(self) -> None:
-        """Stop the source master and cleanup Spark (async version)."""
+    async def stop(self) -> None:
+        """Stop the source master and cleanup Spark."""
         await super().stop()
         self._stop_spark()
 

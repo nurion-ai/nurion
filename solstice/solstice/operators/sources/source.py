@@ -59,7 +59,6 @@ from solstice.core.stage_master import (
 )
 from solstice.queue import TansuBackend, QueueBackend, MemoryBackend
 from solstice.utils.logging import create_ray_logger
-from solstice.core.split_payload_store import SplitPayloadStore
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
@@ -103,12 +102,17 @@ class SourceMaster(StageMaster):
         job_id: str,
         stage: "Stage",
         config: Optional[SourceConfig] = None,
-        payload_store: Optional[SplitPayloadStore] = None,
         **kwargs,
     ):
         # Source stages use their own source queue as "upstream"
         # We don't pass upstream_endpoint/topic to parent - we'll create our own
         config = config or SourceConfig()
+
+        # SourceMaster always creates its own payload store
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name=f"{job_id}_{stage.stage_id}_store")
+
         super().__init__(
             job_id=job_id,
             stage=stage,

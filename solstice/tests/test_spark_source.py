@@ -331,25 +331,20 @@ class TestSparkSourceMaster:
         print(f"[DEBUG] raydp JAR paths: {jars_paths}")
 
         # Initialize Ray with job config for cross-language support
-        # Exclude large files and build artifacts from being uploaded
+        # Exclude large files from being uploaded
         ray.init(
             job_config=JobConfig(
                 code_search_path=jars_paths,
-                runtime_env={
-                    "excludes": [
-                        "java/",
-                        "raydp/jars/",
-                        "tests/testdata/resources/videos/",
-                        "tests/testdata/resources/tmp/",
-                        "*.jar",
-                        "*.mp4",
-                        "*.tar.gz",
-                        "*.lance",
-                        "__pycache__/",
-                        ".git/",
-                    ],
-                },
             ),
+            runtime_env={
+                "excludes": [
+                    "tests/testdata/resources/videos/",
+                    "tests/testdata/resources/tmp/",
+                    "*.mp4",
+                    "*.tar.gz",
+                    "*.lance",
+                ],
+            },
             log_to_driver=True,
             logging_level="info",
         )
@@ -646,8 +641,9 @@ class TestSparkSourceMaster:
 
         # Check splits were produced to source queue
         status = await master.get_status_async()
-        assert status.splits_produced > 0
-        print(f"Produced {status.splits_produced} splits to source queue")
+        splits_produced = status.metrics.get("splits_produced", 0)
+        assert splits_produced > 0
+        print(f"Produced {splits_produced} splits to source queue")
 
         # Verify output queue was created
         output_queue = master.get_output_queue()
@@ -669,5 +665,6 @@ class TestSparkSourceMaster:
         await master.stop()
 
         # Verify processing completed
-        assert status.splits_produced > 0
-        print(f"Pipeline completed: {status.splits_produced} splits processed")
+        splits_produced = status.metrics.get("splits_produced", 0)
+        assert splits_produced > 0
+        print(f"Pipeline completed: {splits_produced} splits processed")
