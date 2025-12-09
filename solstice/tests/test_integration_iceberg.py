@@ -31,30 +31,6 @@ def iceberg_catalog(iceberg_catalog_uri: str) -> RestCatalog:
     return RestCatalog(name="aether_catalog", uri=iceberg_catalog_uri)
 
 
-@pytest.fixture(scope="module")
-def ray_context():
-    """Initialize Ray for integration tests."""
-    if not ray.is_initialized():
-        ray.init(
-            num_cpus=2,
-            ignore_reinit_error=True,
-            runtime_env={
-                "excludes": [
-                    "java/",
-                    "raydp/jars/",
-                    "tests/testdata/resources/videos/",
-                    "tests/testdata/resources/tmp/",
-                    "*.jar",
-                    "*.mp4",
-                    "*.tar.gz",
-                    "*.lance",
-                ],
-            },
-        )
-    yield
-    ray.shutdown()
-
-
 @pytest.fixture
 def iceberg_test_table(iceberg_catalog: RestCatalog, iceberg_catalog_uri: str):
     """Create a test Iceberg table with sample data."""
@@ -162,7 +138,7 @@ class TestIcebergPipeline:
     """Integration tests for full Iceberg pipeline with TansuBackend."""
 
     @pytest.mark.asyncio
-    async def test_full_pipeline_with_queue(self, iceberg_test_table, ray_context):
+    async def test_full_pipeline_with_queue(self, iceberg_test_table, ray_cluster):
         """Test complete IcebergSource pipeline with TansuBackend queue.
 
         This test verifies the full flow:

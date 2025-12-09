@@ -99,12 +99,13 @@ class SparkSource(SourceOperator):
             - object_ref: Base64-encoded cloudpickle of ObjectRef
             - block_size: Number of records in this block
         """
-        object_ref_b64 = split.data_range.get("object_ref")
-        if object_ref_b64 is None:
+        object_ref = split.data_range.get("object_ref")
+        if object_ref is None:
             raise ValueError("Split missing 'object_ref' for SparkSource")
 
-        # Deserialize ObjectRef from base64-encoded cloudpickle
-        object_ref = ray.cloudpickle.loads(base64.b64decode(object_ref_b64))
+        # Handle both raw ObjectRef (tests) and serialized string (production)
+        if isinstance(object_ref, str):
+            object_ref = ray.cloudpickle.loads(base64.b64decode(object_ref))
 
         # Get Arrow data from object store
         arrow_data = ray.get(object_ref)

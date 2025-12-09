@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 import pyarrow as pa
 import ray
-from ray.job_config import JobConfig
 
 from solstice.core.models import Split
 from solstice.core.stage import Stage
@@ -48,26 +47,10 @@ RAYDP_JARS_AVAILABLE = _check_raydp_jars_available()
 SKIP_RAYDP_REASON = "raydp JAR files not available (need to build java components)"
 
 
-@pytest.fixture
-def ray_local():
-    """Initialize Ray for simple tests with minimal configuration."""
-    if ray.is_initialized():
-        ray.shutdown()
-    # Initialize Ray with minimal config to avoid CI issues
-    # Setting runtime_env with working_dir=None prevents automatic code upload
-    ray.init(
-        num_cpus=2,
-        include_dashboard=False,
-        ignore_reinit_error=True,
-    )
-    yield
-    ray.shutdown()
-
-
 class TestSparkSourceOperator:
     """Tests for SparkSource operator reading from ObjectRefs."""
 
-    def test_spark_source_read_arrow_table(self, ray_local):
+    def test_spark_source_read_arrow_table(self, ray_cluster):
         """Test reading Arrow table from object store."""
         # Create test data and put in object store
         test_data = pa.Table.from_pylist(
@@ -106,7 +89,7 @@ class TestSparkSourceOperator:
         assert records[1]["name"] == "Bob"
         assert records[2]["name"] == "Charlie"
 
-    def test_spark_source_read_record_batch(self, ray_local):
+    def test_spark_source_read_record_batch(self, ray_cluster):
         """Test reading Arrow RecordBatch from object store."""
         # Create test data as RecordBatch
         test_batch = pa.RecordBatch.from_pydict(
@@ -137,7 +120,7 @@ class TestSparkSourceOperator:
         assert "value" in payload.column_names
         assert "label" in payload.column_names
 
-    def test_spark_source_empty_table(self, ray_local):
+    def test_spark_source_empty_table(self, ray_cluster):
         """Test reading empty Arrow table returns None."""
         empty_table = pa.Table.from_pylist([])
 
@@ -176,7 +159,7 @@ class TestSparkSourceOperator:
 class TestSparkSourcePipeline:
     """Test SparkSource with operators directly (without LocalJobRunner)."""
 
-    def test_spark_source_to_filter(self, ray_local):
+    def test_spark_source_to_filter(self, ray_cluster):
         """Test reading from ObjectRefs and filtering."""
         # Create test data
         test_data = pa.Table.from_pylist(
@@ -221,7 +204,7 @@ class TestSparkSourcePipeline:
         for record in filtered.to_pylist():
             assert record["department"] == "engineering"
 
-    def test_spark_source_to_map(self, ray_local):
+    def test_spark_source_to_map(self, ray_cluster):
         """Test reading from ObjectRefs and transforming."""
         test_data = pa.Table.from_pylist([{"id": i, "value": i * 2} for i in range(50)])
         object_ref = ray.put(test_data)
@@ -257,7 +240,7 @@ class TestSparkSourcePipeline:
             assert "doubled" in record
             assert record["doubled"] == record["value"] * 2
 
-    def test_multiple_blocks(self, ray_local):
+    def test_multiple_blocks(self, ray_cluster):
         """Test processing multiple blocks."""
         # Create multiple blocks
         blocks = []
@@ -313,52 +296,7 @@ class TestSparkSourceMaster:
     - raydp JAR files (built from raydp java sources)
     """
 
-    @pytest.fixture(scope="function")
-    def ray_context(self):
-        """Initialize Ray with raydp jars for each test.
-
-        Uses function scope to ensure clean state between tests.
-        """
-        import raydp
-        from raydp.utils import code_search_path
-
-        # Make sure Ray is not running
-        if ray.is_initialized():
-            ray.shutdown()
-
-        # Get raydp jars path
-        jars_paths = code_search_path()
-        print(f"[DEBUG] raydp JAR paths: {jars_paths}")
-
-        # Initialize Ray with job config for cross-language support
-        # Exclude large files from being uploaded
-        ray.init(
-            job_config=JobConfig(
-                code_search_path=jars_paths,
-            ),
-            runtime_env={
-                "excludes": [
-                    "tests/testdata/resources/videos/",
-                    "tests/testdata/resources/tmp/",
-                    "*.mp4",
-                    "*.tar.gz",
-                    "*.lance",
-                ],
-            },
-            log_to_driver=True,
-            logging_level="info",
-        )
-
-        yield
-
-        # Cleanup: stop Spark first, then Ray
-        try:
-            raydp.stop_spark()
-        except Exception:
-            pass  # Ignore errors if Spark not initialized
-        ray.shutdown()
-
-    def test_stage_master_plan_splits_with_parquet(self, ray_context):
+    def test_stage_master_plan_splits_with_parquet(self, ray_cluster):
         """Test SparkSourceMaster.plan_splits() with parquet file.
 
         Verifies the full StageMaster flow:
@@ -381,9 +319,13 @@ class TestSparkSourceMaster:
         )
 
         # Create StageMaster directly
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-plan-splits_store")
         master = SparkSourceMaster(
-            job_id="test-job",
+            job_id="test-plan-splits",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         # Fetch splits using the master
@@ -409,10 +351,10 @@ class TestSparkSourceMaster:
 
         assert len(all_records) == 100
 
-        # Cleanup
-        master.stop()
+        # Cleanup - _stop_spark is sync, stop() is async
+        master._stop_spark()
 
-    def test_stage_master_with_sql_query(self, ray_context):
+    def test_stage_master_with_sql_query(self, ray_cluster):
         """Test SparkSourceMaster with SQL query in dataframe_fn.
 
         The dataframe_fn can use any Spark operations including SQL.
@@ -438,9 +380,13 @@ class TestSparkSourceMaster:
         )
 
         # Create StageMaster - it will initialize Spark internally
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-sql-query_store")
         master = SparkSourceMaster(
-            job_id="test-job",
+            job_id="test-sql-query",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         # Fetch splits - this triggers Spark init via raydp.init_spark()
@@ -461,10 +407,10 @@ class TestSparkSourceMaster:
         assert len(all_records) == total_records
         assert len(all_records) > 0
 
-        # Cleanup Spark via master.stop() which calls raydp.stop_spark()
-        master.stop()
+        # Cleanup Spark
+        master._stop_spark()
 
-    def test_stage_master_1000_records_full_pipeline(self, ray_context):
+    def test_stage_master_1000_records_full_pipeline(self, ray_cluster):
         """Test SparkSourceMaster with 1000 records - verify split generation and data integrity.
 
         This test verifies:
@@ -487,9 +433,13 @@ class TestSparkSourceMaster:
         )
 
         # Create StageMaster and fetch splits
+        from solstice.core.split_payload_store import RaySplitPayloadStore
+
+        payload_store = RaySplitPayloadStore(name="test-1000-records_store")
         master = SparkSourceMaster(
-            job_id="test-job",
+            job_id="test-1000-records",
             stage=source_stage,
+            payload_store=payload_store,
         )
 
         splits = list(master.plan_splits())
@@ -516,9 +466,9 @@ class TestSparkSourceMaster:
         assert len(high_performers) > 0
         print(f"Found {len(high_performers)} high performers out of 1000 records")
 
-        master.stop()
+        master._stop_spark()
 
-    def test_stage_master_with_parallelism(self, ray_context):
+    def test_stage_master_with_parallelism(self, ray_cluster):
         """Test SparkSourceMaster with custom parallelism setting.
 
         The parallelism config controls how many partitions/splits are created.
@@ -539,7 +489,7 @@ class TestSparkSourceMaster:
         )
 
         master = SparkSourceMaster(
-            job_id="test-job",
+            job_id="test-parallelism",
             stage=source_stage,
         )
 
@@ -551,9 +501,9 @@ class TestSparkSourceMaster:
         total_records = sum(s.data_range["block_size"] for s in splits)
         assert total_records == 100
 
-        master.stop()
+        master._stop_spark()
 
-    def test_stage_master_complex_dataframe_fn(self, ray_context):
+    def test_stage_master_complex_dataframe_fn(self, ray_cluster):
         """Test SparkSourceMaster with complex dataframe_fn logic.
 
         The dataframe_fn can contain arbitrary Spark transformations.
@@ -583,7 +533,7 @@ class TestSparkSourceMaster:
         )
 
         master = SparkSourceMaster(
-            job_id="test-job",
+            job_id="test-complex-df",
             stage=source_stage,
         )
 
@@ -601,10 +551,10 @@ class TestSparkSourceMaster:
                 for record in payload.to_pylist():
                     assert record["age"] > 30
 
-        master.stop()
+        master._stop_spark()
 
     @pytest.mark.asyncio
-    async def test_full_pipeline_with_queue(self, ray_context):
+    async def test_full_pipeline_with_queue(self, ray_cluster):
         """Test complete SparkSource pipeline with TansuBackend queue.
 
         This test verifies the full flow:
@@ -627,7 +577,7 @@ class TestSparkSourceMaster:
         )
 
         master = SparkSourceMaster(
-            job_id="test-job",
+            job_id="test-full-pipeline",
             stage=source_stage,
         )
 

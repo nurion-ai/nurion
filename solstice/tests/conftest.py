@@ -4,6 +4,7 @@ Provides testcontainer-based fixtures for integration tests:
 - PostgreSQL database
 - MinIO object storage
 - Aether REST catalog server
+- Ray cluster fixtures
 """
 
 from __future__ import annotations
@@ -19,9 +20,42 @@ from contextlib import closing
 from typing import TYPE_CHECKING
 
 import pytest
+import ray
 
 if TYPE_CHECKING:
     pass
+
+
+# ============================================================================
+# Common excludes for Ray runtime environment
+# ============================================================================
+
+RAY_RUNTIME_EXCLUDES = [
+    # Exclude virtual environments to prevent Python version conflicts
+    "**/.venv/**",
+    ".venv/**",
+    # Exclude uv/pip config to prevent auto-creating venvs on workers
+    # .python-version specifies 3.12 but we run 3.13, causing version mismatch
+    "**/.python-version",
+    "**/pyproject.toml",
+    "**/uv.lock",
+    "**/poetry.lock",
+    "**/requirements.txt",
+    # Cache and build directories
+    "**/__pycache__/**",
+    "**/.git/**",
+    "**/.pytest_cache/**",
+    # Large files
+    "**/java/**",
+    "**/raydp/jars/**",
+    "**/tests/testdata/resources/videos/**",
+    "**/tests/testdata/resources/tmp/**",
+    "**/*.jar",
+    "**/*.mp4",
+    "**/*.tar.gz",
+    "**/*.lance",
+    "**/*.pyc",
+]
 
 
 def _find_free_port() -> int:
@@ -302,3 +336,49 @@ def s3_storage_options(minio_endpoint: str, minio_credentials: dict) -> dict:
         "aws_region": "us-east-1",
         "allow_http": "true",
     }
+
+
+# ============================================================================
+# Ray cluster fixture
+# ============================================================================
+
+
+@pytest.fixture(scope="module")
+def ray_cluster():
+    """Initialize Ray cluster with unified configuration.
+
+    - num_cpus=4
+    - Includes raydp JARs if available
+    - Excludes large files from runtime environment
+    """
+    from ray.job_config import JobConfig
+
+    if ray.is_initialized():
+        ray.shutdown()
+
+    # Try to get raydp jars if available
+    jars_paths = []
+    try:
+        from raydp.utils import code_search_path
+        jars_paths = code_search_path()
+    except ImportError:
+        pass
+
+    job_config = JobConfig(code_search_path=jars_paths) if jars_paths else None
+
+    ray.init(
+        num_cpus=4,
+        job_config=job_config,
+        runtime_env={"excludes": RAY_RUNTIME_EXCLUDES},
+        ignore_reinit_error=True,
+    )
+
+    yield
+
+    # Cleanup Spark if running
+    try:
+        import raydp
+        raydp.stop_spark()
+    except Exception:
+        pass
+    ray.shutdown()

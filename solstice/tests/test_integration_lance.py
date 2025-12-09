@@ -72,30 +72,6 @@ def lance_dataset_local():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-@pytest.fixture(scope="module")
-def ray_context():
-    """Initialize Ray for integration tests."""
-    if not ray.is_initialized():
-        ray.init(
-            num_cpus=2,
-            ignore_reinit_error=True,
-            runtime_env={
-                "excludes": [
-                    "java/",
-                    "raydp/jars/",
-                    "tests/testdata/resources/videos/",
-                    "tests/testdata/resources/tmp/",
-                    "*.jar",
-                    "*.mp4",
-                    "*.tar.gz",
-                    "*.lance",
-                ],
-            },
-        )
-    yield
-    ray.shutdown()
-
-
 # ============================================================================
 # Basic Lance Source Tests (local filesystem)
 # ============================================================================
@@ -195,7 +171,7 @@ class TestLancePipeline:
     """Integration tests for full Lance pipeline with TansuBackend."""
 
     @pytest.mark.asyncio
-    async def test_full_pipeline_with_queue(self, lance_dataset_local, ray_context):
+    async def test_full_pipeline_with_queue(self, lance_dataset_local, ray_cluster):
         """Test complete LanceSource pipeline with TansuBackend queue.
 
         This test verifies the full flow:
@@ -256,7 +232,7 @@ class TestLancePipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_with_s3_dataset(
-        self, minio_endpoint, minio_credentials, s3_storage_options, ray_context
+        self, minio_endpoint, minio_credentials, s3_storage_options, ray_cluster
     ):
         """Test Lance pipeline with S3 dataset using testcontainers MinIO."""
         unique_id = str(uuid.uuid4())[:8]

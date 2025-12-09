@@ -58,10 +58,13 @@ def create_test_lance_table(table_path: str) -> None:
 
 @pytest.mark.integration
 @pytest.mark.timeout(900)  # 15 minutes for video processing
-def test_video_slice_workflow_with_ray():
+def test_video_slice_workflow_with_ray(ray_cluster):
     """Verify scene detection, slicing, filtering, and hashing on public videos.
 
     Creates a local Lance table with 10 public video URLs, split_size=2 for 5 splits.
+
+    Uses ray_cluster fixture to ensure Ray is initialized with correct Python version
+    and runtime_env excludes.
     """
     # Create temp directory for test data
     tmp_dir = tempfile.mkdtemp(prefix="video_workflow_test_")
@@ -101,14 +104,10 @@ def test_video_slice_workflow_with_ray():
 
         from solstice.core.stage_master import QueueType
 
+        # Ray already initialized by ray_cluster fixture with correct excludes
         runner = job.create_ray_runner(
             queue_type=QueueType.TANSU,
-            tansu_storage_url="memory://",  # Use memory for Tansu
-            ray_init_kwargs={
-                "num_cpus": 4,
-                "log_to_driver": True,
-                "logging_level": logging.INFO,
-            },
+            tansu_storage_url="memory://",
         )
 
         try:

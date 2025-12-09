@@ -203,14 +203,6 @@ TestSinkConfig.operator_class = TestSinkOperator
 # ============================================================================
 
 
-@pytest.fixture(scope="module")
-def ray_cluster():
-    """Initialize Ray cluster for tests."""
-    ray.init(num_cpus=4, ignore_reinit_error=True)
-    yield
-    ray.shutdown()
-
-
 @pytest.fixture
 def simple_job():
     """Create a simple single-stage job."""
