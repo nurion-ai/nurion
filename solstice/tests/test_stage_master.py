@@ -24,7 +24,7 @@ from solstice.core.stage_master import (
 )
 from solstice.core.operator import OperatorConfig, Operator
 
-pytestmark = pytest.mark.asyncio(loop_scope="function")
+# Note: Only async test classes/functions should use @pytest.mark.asyncio decorator
 
 
 # ============================================================================
@@ -205,19 +205,11 @@ class TestStageConfig:
 # ============================================================================
 
 
-@pytest.fixture(scope="class")
-def ray_init():
-    """Initialize Ray for master tests."""
-    ray.init(num_cpus=2, ignore_reinit_error=True)
-    yield
-    ray.shutdown()
-
-
 class TestStageMaster:
     """Tests for StageMaster."""
 
     @pytest.mark.asyncio
-    async def test_create_output_queue(self, mock_stage, stage_config, payload_store, ray_init):
+    async def test_create_output_queue(self, mock_stage, stage_config, payload_store, ray_cluster):
         """Test that master creates output queue."""
         master = StageMaster(
             job_id="test_job",
@@ -234,7 +226,7 @@ class TestStageMaster:
         await master.stop()
 
     @pytest.mark.asyncio
-    async def test_get_status(self, mock_stage, stage_config, payload_store, ray_init):
+    async def test_get_status(self, mock_stage, stage_config, payload_store, ray_cluster):
         """Test getting stage status."""
         master = StageMaster(
             job_id="test_job",
@@ -258,7 +250,7 @@ class TestStageMaster:
         await master.stop()
 
     @pytest.mark.asyncio
-    async def test_stop_idempotent(self, mock_stage, stage_config, payload_store, ray_init):
+    async def test_stop_idempotent(self, mock_stage, stage_config, payload_store, ray_cluster):
         """Test that stop can be called multiple times."""
         master = StageMaster(
             job_id="test_job",
@@ -272,7 +264,7 @@ class TestStageMaster:
         await master.stop()  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_get_output_queue(self, mock_stage, stage_config, payload_store, ray_init):
+    async def test_get_output_queue(self, mock_stage, stage_config, payload_store, ray_cluster):
         """Test getting output queue for downstream."""
         from solstice.queue import TansuBackend
 
@@ -299,20 +291,12 @@ class TestStageMaster:
 # ============================================================================
 
 
-@pytest.fixture(scope="module")
-def ray_context():
-    """Initialize Ray for integration tests."""
-    ray.init(num_cpus=2, ignore_reinit_error=True)
-    yield
-    ray.shutdown()
-
-
 class TestIntegration:
     """Integration tests requiring Ray."""
 
     @pytest.mark.asyncio
     async def test_produce_to_output_queue(
-        self, mock_stage, stage_config, payload_store, ray_context
+        self, mock_stage, stage_config, payload_store, ray_cluster
     ):
         """Test that messages can be produced to output queue."""
         master = StageMaster(
@@ -347,7 +331,7 @@ class TestIntegration:
         await master.stop()
 
     @pytest.mark.asyncio
-    async def test_two_stage_pipeline(self, payload_store, ray_context):
+    async def test_two_stage_pipeline(self, payload_store, ray_cluster):
         """Test two-stage pipeline with queue communication."""
         stage_config = StageConfig(
             queue_type=QueueType.TANSU,

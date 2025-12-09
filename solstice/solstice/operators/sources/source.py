@@ -57,12 +57,12 @@ from solstice.core.stage_master import (
     StageStatus,
     StageMaster,
 )
-from solstice.queue import TansuBackend, QueueBackend
+from solstice.queue import TansuBackend, QueueBackend, MemoryBackend
 from solstice.utils.logging import create_ray_logger
-from solstice.core.split_payload_store import SplitPayloadStore
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
+    from solstice.core.split_payload_store import SplitPayloadStore
 
 
 @dataclass
@@ -75,7 +75,7 @@ class SourceConfig(StageConfig):
     # Override queue_type to always be TANSU for source queue
     queue_type: QueueType = QueueType.TANSU
 
-    # Tansu storage URL (s3://, sqlite://, memory://)
+    # Tansu storage URL (memory://, s3://)
     tansu_storage_url: str = "memory://"
     tansu_port: int = 9092
 
@@ -102,13 +102,14 @@ class SourceMaster(StageMaster):
         self,
         job_id: str,
         stage: "Stage",
+        payload_store: "SplitPayloadStore",
         config: Optional[SourceConfig] = None,
-        payload_store: Optional[SplitPayloadStore] = None,
         **kwargs,
     ):
         # Source stages use their own source queue as "upstream"
         # We don't pass upstream_endpoint/topic to parent - we'll create our own
         config = config or SourceConfig()
+
         super().__init__(
             job_id=job_id,
             stage=stage,
@@ -119,7 +120,7 @@ class SourceMaster(StageMaster):
         )
 
         # Source queue (for split metadata, distinct from output queue)
-        self._source_queue: Optional[TansuBackend] = None
+        self._source_queue: Optional[QueueBackend] = None
         self._source_topic = f"{job_id}_{self.stage_id}_source"
         self._source_endpoint: Optional[QueueEndpoint] = None
 
@@ -129,30 +130,43 @@ class SourceMaster(StageMaster):
         # Override logger
         self.logger = create_ray_logger(f"SourceMaster-{self.stage_id}")
 
-    async def _create_source_queue(self) -> TansuBackend:
-        """Create persistent TansuBackend for source queue.
+    async def _create_source_queue(self) -> QueueBackend:
+        """Create queue backend for source queue.
 
-        Source queue stores split metadata and must be persistent
-        to enable crash recovery.
+        For production (TANSU): Uses persistent TansuBackend.
+        For testing (MEMORY): Uses in-memory MemoryBackend.
         """
-        # Auto-select port (TansuBackend handles this when port=None)
-        queue = TansuBackend(
-            storage_url=self.config.tansu_storage_url,
-            port=None,  # Auto-select free port
-        )
-        await queue.start()
+        if self.config.queue_type == QueueType.MEMORY:
+            # Use Memory for testing
+            queue = MemoryBackend()
+            await queue.start()
+            self._source_endpoint = QueueEndpoint(
+                queue_type=QueueType.MEMORY,
+                port=0,
+                storage_url="memory://",
+            )
+            await queue.create_topic(self._source_topic)
+            self.logger.info(f"Created Memory source queue for {self.stage_id}")
+            return queue
+        else:
+            # Use Tansu for production (persistent)
+            queue = TansuBackend(
+                storage_url=self.config.tansu_storage_url,
+                port=None,  # Auto-select free port
+            )
+            await queue.start()
 
-        # Now we can get the actual port that was selected
-        self._source_endpoint = QueueEndpoint(
-            queue_type=QueueType.TANSU,
-            port=queue.port,
-            storage_url=self.config.tansu_storage_url,
-        )
+            # Now we can get the actual port that was selected
+            self._source_endpoint = QueueEndpoint(
+                queue_type=QueueType.TANSU,
+                port=queue.port,
+                storage_url=self.config.tansu_storage_url,
+            )
 
-        await queue.create_topic(self._source_topic)
+            await queue.create_topic(self._source_topic)
 
-        self.logger.info(f"Created Tansu source queue on port {queue.port} for {self.stage_id}")
-        return queue
+            self.logger.info(f"Created Tansu source queue on port {queue.port} for {self.stage_id}")
+            return queue
 
     async def start(self) -> None:
         """Start the source master.
@@ -191,6 +205,10 @@ class SourceMaster(StageMaster):
             f"{len(self._workers)} workers"
         )
 
+        # Notify workers that all splits have been produced (source queue is complete)
+        # Workers can exit once they've consumed all splits from the source queue
+        self._notify_splits_complete()
+
     async def _produce_splits(self) -> None:
         """Generate splits and write to source queue."""
         self.logger.info(f"Generating splits for source {self.stage_id}")
@@ -215,6 +233,20 @@ class SourceMaster(StageMaster):
                 raise
 
         self.logger.info(f"Source {self.stage_id} produced {self._splits_produced} splits to queue")
+
+    def _notify_splits_complete(self) -> None:
+        """Notify workers that all splits have been produced.
+
+        This allows workers to exit once they've consumed all splits.
+        """
+        import ray
+
+        self.logger.info(f"Notifying {len(self._workers)} workers: all splits produced")
+        for worker_id, worker in self._workers.items():
+            try:
+                ray.get(worker.notify_upstream_finished.remote(), timeout=5)
+            except Exception as e:
+                self.logger.warning(f"Failed to notify worker {worker_id}: {e}")
 
     async def _produce_split(self, split: Split) -> None:
         """Produce a split to the source queue.

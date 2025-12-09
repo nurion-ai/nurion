@@ -9,7 +9,8 @@ import lance
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.operators.sources.source import SourceMaster
+from solstice.core.stage_master import QueueType
+from solstice.operators.sources.source import SourceMaster, SourceConfig
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
@@ -36,8 +37,11 @@ class LanceTableSourceConfig(OperatorConfig):
     """Number of rows per split."""
 
     # SourceConfig fields for master
+    queue_type: QueueType = QueueType.TANSU
+    """Queue type for source queue (TANSU for production, MEMORY for testing)."""
+
     tansu_storage_url: str = "memory://"
-    """Tansu storage URL (s3://, sqlite://, memory://)."""
+    """Tansu storage URL (memory://, s3://)."""
 
 
 def _get_lance_storage_options(uri: str) -> Optional[dict]:
@@ -113,7 +117,12 @@ class LanceSourceMaster(SourceMaster):
                 f"LanceSourceMaster requires LanceTableSourceConfig, got {type(operator_cfg)}"
             )
 
-        super().__init__(job_id, stage, **kwargs)
+        # Create SourceConfig from operator config fields
+        source_config = SourceConfig(
+            queue_type=operator_cfg.queue_type,
+            tansu_storage_url=operator_cfg.tansu_storage_url,
+        )
+        super().__init__(job_id, stage, config=source_config, **kwargs)
 
         self.dataset_uri: str = operator_cfg.dataset_uri
         self.filter: Optional[str] = operator_cfg.filter

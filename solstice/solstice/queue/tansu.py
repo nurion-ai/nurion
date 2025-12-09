@@ -104,8 +104,6 @@ class TansuBackend(QueueBackend):
     The backend supports multiple storage backends:
     - memory:// - In-memory storage (for testing)
     - s3://bucket?endpoint=...&region=... - S3 storage (durable)
-    - sqlite://path - SQLite storage (local durable)
-    - postgres://... - PostgreSQL storage (durable)
 
     S3 Configuration:
         S3 backends require path-style access. Use MinIO, Ceph, or AWS S3
@@ -159,7 +157,7 @@ class TansuBackend(QueueBackend):
         """Initialize Tansu backend.
 
         Args:
-            storage_url: Storage backend URL (memory://, s3://bucket/, sqlite://, postgres://)
+            storage_url: Storage backend URL (memory://, s3://bucket/)
             port: Port for Kafka protocol. If None, auto-selects a free port.
             data_dir: Directory for Tansu data (optional)
             tansu_binary: Path to tansu binary (default: "tansu")
@@ -565,7 +563,7 @@ class TansuBackend(QueueBackend):
     @property
     def is_persistent(self) -> bool:
         """Tansu backend persists data (depends on storage URL)."""
-        # memory:// is not persistent, but s3://, sqlite://, postgres:// are
+        # memory:// is not persistent, but s3:// is persistent
         return not self.storage_url.startswith("memory://")
 
     async def health_check(self) -> bool:

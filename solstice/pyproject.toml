@@ -31,6 +31,19 @@ dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.14.0",
+    "testcontainers[minio,postgres]>=4.10.0",
+    "minio>=7.2.0",
+    "requests>=2.32.0",
+    "uvicorn>=0.34.0",
+    "psycopg[binary]>=3.2.0",
+    "fastapi>=0.115.0",
+    "pydantic-settings>=2.11.0",
+    "alembic>=1.17.0",
+    "asyncpg>=0.30.0",
+    "lance-namespace>=0.0.19",
+    "boto3>=1.35.0",
+    "s3fs>=2024.6.0",
+    "kubernetes>=32.0.0",
 ]
 
 [build-system]
@@ -65,8 +78,10 @@ asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
 filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince212",
+    "ignore:lance is not fork-safe:UserWarning",
 ]
 markers = [
     "integration: marks integration tests",
     "benchmark: marks performance benchmark tests (skipped by default in CI)",
+    "timeout: marks tests with timeout (requires pytest-timeout)",
 ]
