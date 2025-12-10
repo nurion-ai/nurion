@@ -202,7 +202,7 @@ class RaySplitPayloadStore(SplitPayloadStore):
         import base64
 
         # Extract base64-encoded Arrow IPC data
-        arrow_b64 = key[len(self.JVM_ARROW_PREFIX):]
+        arrow_b64 = key[len(self.JVM_ARROW_PREFIX) :]
         arrow_bytes = base64.b64decode(arrow_b64)
 
         return self._convert_to_payload(arrow_bytes, split_id=key)

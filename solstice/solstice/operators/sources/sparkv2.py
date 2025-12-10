@@ -5,7 +5,7 @@ executors write directly to Ray Object Store and output_queue.
 
 Key improvements over V1:
 - Eliminates Python-side plan_splits() iteration
-- Eliminates source_queue and operator read step  
+- Eliminates source_queue and operator read step
 - JVM writes directly to output_queue with managed ObjectRef lifetime
 - Single serialization path (Spark → Arrow → Object Store → output_queue)
 
@@ -57,7 +57,7 @@ from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
 
 from solstice.core.models import Split
 from solstice.core.operator import OperatorConfig
-from solstice.core.stage_master import StageMaster, StageConfig, QueueEndpoint, QueueType
+from solstice.core.stage_master import StageMaster, StageConfig, QueueType
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -234,9 +234,7 @@ class SparkSourceV2Master(StageMaster):
         queue_bootstrap = f"{self._output_endpoint.host}:{self._output_endpoint.port}"
         queue_topic = self._output_topic
 
-        self.logger.info(
-            f"JVM writing directly to output_queue: {queue_bootstrap}/{queue_topic}"
-        )
+        self.logger.info(f"JVM writing directly to output_queue: {queue_bootstrap}/{queue_topic}")
 
         # Call JVM method to write Arrow data directly to output_queue
         jvm = df.sql_ctx.sparkSession.sparkContext._jvm
@@ -255,8 +253,7 @@ class SparkSourceV2Master(StageMaster):
     def plan_splits(self) -> Iterator[Split]:
         """Not used in V2 - JVM writes directly to output_queue."""
         raise NotImplementedError(
-            "V2 does not use plan_splits(). "
-            "JVM writes directly to output_queue."
+            "V2 does not use plan_splits(). JVM writes directly to output_queue."
         )
 
     async def stop(self) -> None:
