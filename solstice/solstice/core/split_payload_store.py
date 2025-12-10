@@ -96,27 +96,28 @@ class SplitPayloadStore(ABC):
 
 @ray.remote
 class _RaySplitPayloadStoreActor:
-    """Internal Ray actor that stores the payloads.
+    """Internal Ray actor that manages ObjectRef mappings.
 
-    This actor calls ray.put() to store payloads, becoming the owner of ObjectRefs
-    to prevent GC when original workers exit.
+    This actor stores key -> ObjectRef mappings. The actual objects are put
+    by callers with _owner=actor to prevent GC when original workers exit.
     """
 
     def __init__(self):
         self._refs: dict[str, ray.ObjectRef] = {}
         self._logger = create_ray_logger("RaySplitPayloadStoreActor")
 
-    def store(self, key: str, payload: SplitPayload) -> str:
-        ref = ray.put(payload)
-        self._refs[key] = ref
-        self._logger.debug(f"Stored payload for key {key}, rows={len(payload)}")
+    def register(self, key: str, ref_wrapper: dict) -> str:
+        """Register an ObjectRef (wrapped in dict to prevent auto-deref) with a key."""
+        self._refs[key] = ref_wrapper["ref"]
+        self._logger.debug(f"Registered payload for key {key}")
         return key
 
-    def get(self, key: str) -> Optional[SplitPayload]:
+    def get_ref(self, key: str) -> Optional[dict]:
+        """Get the ObjectRef (wrapped in dict) for a key."""
         ref = self._refs.get(key)
         if ref is None:
             return None
-        return ray.get(ref)
+        return {"ref": ref}
 
     def delete(self, key: str) -> bool:
         if key in self._refs:
@@ -159,10 +160,17 @@ class RaySplitPayloadStore(SplitPayloadStore):
         self._actor = _RaySplitPayloadStoreActor.options(**actor_options).remote()
 
     def store(self, key: str, payload: SplitPayload) -> str:
-        return ray.get(self._actor.store.remote(key, payload))
+        # Put directly to object store with actor as owner
+        # This avoids serializing payload twice (once to actor, once to object store)
+        ref = ray.put(payload, _owner=self._actor)
+        # Wrap ObjectRef in dict to prevent Ray from auto-dereferencing it
+        return ray.get(self._actor.register.remote(key, {"ref": ref}))
 
     def get(self, key: str) -> Optional[SplitPayload]:
-        return ray.get(self._actor.get.remote(key))
+        ref_wrapper = ray.get(self._actor.get_ref.remote(key))
+        if ref_wrapper is None:
+            return None
+        return ray.get(ref_wrapper["ref"])
 
     def delete(self, key: str) -> bool:
         return ray.get(self._actor.delete.remote(key))
