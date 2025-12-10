@@ -156,9 +156,10 @@ class SourceMaster(StageMaster):
             )
             await queue.start()
 
-            # Now we can get the actual port that was selected
+            # Now we can get the actual port and host that was selected
             self._source_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
+                host=queue.host,
                 port=queue.port,
                 storage_url=self.config.tansu_storage_url,
             )

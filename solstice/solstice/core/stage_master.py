@@ -246,13 +246,14 @@ class StageMaster:
                 port=None,  # Auto-select free port
             )
             await queue.start()
-            # Now we can get the actual port that was selected
+            # Now we can get the actual port and host that was selected
             self._output_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
+                host=queue.host,
                 port=queue.port,
                 storage_url=self.config.tansu_storage_url,
             )
-            self.logger.info(f"Created Tansu backend on port {queue.port}")
+            self.logger.info(f"Created Tansu backend on {queue.host}:{queue.port}")
         else:
             # MEMORY - only for single-process testing
             queue = MemoryBackend()

@@ -601,8 +601,11 @@ config_v2 = SparkSourceV2Config(
 | **Testing** | | |
 | Unit tests | 1 day | Medium |
 | Integration tests | 1 day | Medium |
+| **Benchmark** | | |
+| Benchmark setup and V1 baseline | 1 day | Medium |
+| V2 benchmark and analysis | 1 day | Medium |
 
-**Total: ~6 days**
+**Total: ~8 days**
 
 ## 9. Risks and Mitigations
 
@@ -645,3 +648,329 @@ Worker: consume → payload_store.get(key) → SplitPayload
 - Python `plan_splits()` iteration
 - cloudpickle + base64 serialization
 - `SparkSource.read()` invocation
+
+## Appendix B: Benchmark Plan
+
+### B.1 Test Environment
+
+| Component | Specification |
+|-----------|---------------|
+| Cluster | Ray cluster with 4 nodes |
+| CPU | 8 cores per node |
+| Memory | 32 GB per node |
+| Storage | S3 (for Tansu persistence) |
+| Spark | 2 executors, 4 cores each, 8GB memory |
+
+### B.2 Test Datasets
+
+| Dataset | Size | Records | Columns | Description |
+|---------|------|---------|---------|-------------|
+| Small | 100 MB | 1M | 10 | Baseline test |
+| Medium | 1 GB | 10M | 20 | Typical workload |
+| Large | 10 GB | 100M | 30 | Stress test |
+| Wide | 1 GB | 1M | 200 | Column-heavy schema |
+
+Data generation:
+
+```python
+def generate_test_data(spark, num_records, num_columns):
+    from pyspark.sql.functions import rand, expr
+    
+    df = spark.range(num_records)
+    for i in range(num_columns):
+        df = df.withColumn(f"col_{i}", rand() * 1000)
+    return df
+```
+
+### B.3 Metrics
+
+| Metric | Description | How to Measure |
+|--------|-------------|----------------|
+| **End-to-end latency** | Time from Spark job start to last worker consuming | `time.time()` around full pipeline |
+| **Source stage latency** | Time for source stage to produce all splits | `SparkSourceMaster` timing |
+| **Throughput (records/sec)** | Records processed per second | `total_records / elapsed_time` |
+| **Throughput (MB/sec)** | Data processed per second | `data_size_mb / elapsed_time` |
+| **Object Store memory** | Peak memory usage in Ray Object Store | `ray.cluster_resources()` |
+| **CPU utilization** | CPU usage during pipeline | `ray.available_resources()` sampling |
+| **GC overhead** | Python garbage collection time | `gc.get_stats()` |
+
+### B.4 Test Scenarios
+
+#### Scenario 1: Source Stage Performance
+
+Measure time for source stage only (no downstream processing):
+
+```python
+# V1
+start = time.time()
+for split in spark_source_master.plan_splits():
+    pass
+v1_source_time = time.time() - start
+
+# V2
+start = time.time()
+await spark_source_v2_master._execute_spark_write()
+v2_source_time = time.time() - start
+```
+
+**Expected improvement**: V2 should be 30-50% faster (no Python iteration overhead)
+
+#### Scenario 2: End-to-End Pipeline
+
+Full pipeline with downstream map operator:
+
+```python
+job = Job(
+    stages=[
+        Stage("spark_source", SparkSourceConfig(...)),  # or V2Config
+        Stage("map", MapConfig(fn=lambda x: x)),
+        Stage("sink", PrintSinkConfig()),
+    ]
+)
+
+start = time.time()
+await runner.run(job)
+elapsed = time.time() - start
+```
+
+**Expected improvement**: V2 should be 10-20% faster overall
+
+#### Scenario 3: Memory Pressure
+
+Monitor Object Store memory with large dataset:
+
+```python
+import ray
+
+def get_object_store_memory():
+    resources = ray.cluster_resources()
+    used = ray.available_resources()
+    return resources.get("object_store_memory", 0) - used.get("object_store_memory", 0)
+
+# Sample every 1 second during pipeline execution
+memory_samples = []
+```
+
+**Expected result**: V2 should have similar or slightly lower peak memory
+
+#### Scenario 4: Scalability
+
+Test with varying number of partitions:
+
+| Partitions | V1 Time | V2 Time | Improvement |
+|------------|---------|---------|-------------|
+| 10 | TBD | TBD | TBD |
+| 50 | TBD | TBD | TBD |
+| 100 | TBD | TBD | TBD |
+| 500 | TBD | TBD | TBD |
+
+**Expected**: V2 improvement should increase with partition count
+
+### B.5 Benchmark Script
+
+```python
+# benchmarks/spark_source_benchmark.py
+
+import asyncio
+import time
+import ray
+from dataclasses import dataclass
+from typing import List, Dict, Any
+
+@dataclass
+class BenchmarkResult:
+    version: str
+    dataset: str
+    partitions: int
+    source_time_sec: float
+    total_time_sec: float
+    records_per_sec: float
+    mb_per_sec: float
+    peak_memory_mb: float
+
+async def run_benchmark(
+    version: str,  # "v1" or "v2"
+    num_records: int,
+    num_columns: int,
+    num_partitions: int,
+) -> BenchmarkResult:
+    """Run a single benchmark iteration."""
+    
+    # Setup
+    if version == "v1":
+        from solstice.operators.sources.spark import SparkSourceConfig
+        config_class = SparkSourceConfig
+    else:
+        from solstice.operators.sources.sparkv2 import SparkSourceV2Config
+        config_class = SparkSourceV2Config
+    
+    config = config_class(
+        app_name=f"benchmark-{version}",
+        num_executors=2,
+        executor_cores=4,
+        executor_memory="8g",
+        dataframe_fn=lambda spark: generate_test_data(spark, num_records, num_columns),
+        parallelism=num_partitions,
+    )
+    
+    # Run pipeline and measure
+    start = time.time()
+    # ... run pipeline ...
+    elapsed = time.time() - start
+    
+    data_size_mb = estimate_data_size(num_records, num_columns)
+    
+    return BenchmarkResult(
+        version=version,
+        dataset=f"{num_records}x{num_columns}",
+        partitions=num_partitions,
+        source_time_sec=source_elapsed,
+        total_time_sec=elapsed,
+        records_per_sec=num_records / elapsed,
+        mb_per_sec=data_size_mb / elapsed,
+        peak_memory_mb=peak_memory,
+    )
+
+async def run_all_benchmarks():
+    """Run complete benchmark suite."""
+    results: List[BenchmarkResult] = []
+    
+    test_configs = [
+        # (records, columns, partitions)
+        (1_000_000, 10, 10),
+        (1_000_000, 10, 50),
+        (10_000_000, 20, 50),
+        (10_000_000, 20, 100),
+        (100_000_000, 30, 100),
+    ]
+    
+    for records, columns, partitions in test_configs:
+        for version in ["v1", "v2"]:
+            print(f"Running {version} with {records} records, {partitions} partitions...")
+            result = await run_benchmark(version, records, columns, partitions)
+            results.append(result)
+            
+            # Cleanup between runs
+            ray.shutdown()
+            ray.init()
+    
+    return results
+
+def print_results(results: List[BenchmarkResult]):
+    """Print benchmark results as markdown table."""
+    print("| Version | Dataset | Partitions | Source Time | Total Time | Records/sec | MB/sec | Peak Memory |")
+    print("|---------|---------|------------|-------------|------------|-------------|--------|-------------|")
+    for r in results:
+        print(f"| {r.version} | {r.dataset} | {r.partitions} | "
+              f"{r.source_time_sec:.2f}s | {r.total_time_sec:.2f}s | "
+              f"{r.records_per_sec:,.0f} | {r.mb_per_sec:.1f} | {r.peak_memory_mb:.0f} MB |")
+
+if __name__ == "__main__":
+    ray.init()
+    results = asyncio.run(run_all_benchmarks())
+    print_results(results)
+```
+
+### B.6 Expected Results
+
+Based on the eliminated steps, we expect:
+
+| Metric | V1 Baseline | V2 Expected | Improvement |
+|--------|-------------|-------------|-------------|
+| Source stage latency | 100% | 50-70% | 30-50% faster |
+| End-to-end latency | 100% | 80-90% | 10-20% faster |
+| Peak Object Store memory | 100% | 95-100% | Similar |
+| CPU utilization (source) | 100% | 60-80% | Lower Python overhead |
+
+### B.7 Acceptance Criteria
+
+V2 is considered successful if:
+
+1. **Source stage latency** is at least **25% faster** than V1
+2. **End-to-end latency** is at least **10% faster** than V1
+3. **No regression** in memory usage or correctness
+4. **Scales better** with partition count (improvement increases with more partitions)
+
+### B.8 Benchmark Schedule
+
+| Phase | Duration | Description |
+|-------|----------|-------------|
+| Setup | 0.5 days | Prepare test environment and datasets |
+| V1 Baseline | 0.5 days | Run all scenarios with V1 |
+| V2 Implementation | Per schedule | Implement V2 |
+| V2 Benchmark | 0.5 days | Run all scenarios with V2 |
+| Analysis | 0.5 days | Compare results, identify issues |
+
+**Total benchmark effort: 2 days**
+
+---
+
+## Appendix C: Implementation Status
+
+_Last updated: December 10, 2025_
+
+### C.1 Completed Tasks
+
+| Task | Status | Notes |
+|------|--------|-------|
+| **Python Side** | | |
+| Enhance `SplitPayloadStore.get()` | ✅ Done | Auto-converts Arrow bytes, handles `_v2arrow:` prefix |
+| Create `sparkv2.py` | ✅ Done | SparkSourceV2Config, SparkSourceV2Master |
+| Update `__init__.py` exports | ✅ Done | V2 classes exported |
+| Update `stage_master.py` | ✅ Done | Added host to QueueEndpoint |
+| **JVM Side** | | |
+| Create `SplitPayloadStoreWriter.scala` | ✅ Done | Direct Arrow data in Kafka message |
+| Modify `ObjectStoreWriter.scala` | ✅ Done | Added `saveToStoreAndQueue()` |
+| Add Maven dependencies | ✅ Done | kafka-clients 3.6.0, gson 2.10.1 |
+| **Testing** | | |
+| Unit tests for V2 Arrow data | ✅ Done | 2 tests passing |
+| Config/Master unit tests | ✅ Done | 5 tests passing |
+| Integration tests | ✅ Done | 3 tests passing |
+| All tests | ✅ Done | **11 tests passing** |
+
+### C.2 Architecture Decision
+
+**Original design**: JVM uses `Ray.put()` with ObjectRef ID embedded in messages.
+**Issue**: Python's `ray.ObjectRef()` requires 28-byte format (ObjectId + metadata),
+but Java's `ObjectId.getBytes()` only provides 20 bytes. Cross-language serialization
+is not directly compatible.
+
+**Final design**: JVM embeds Arrow IPC data directly in Kafka message (base64 encoded).
+- `_v2arrow:{base64_arrow_ipc}` format in `payload_key`
+- Python `SplitPayloadStore.get()` detects prefix and decodes inline
+- Simple, reliable, no ObjectRef serialization issues
+- Suitable for typical partition sizes (< 16MB)
+
+### C.3 Files Modified/Created
+
+```
+solstice/solstice/core/split_payload_store.py          # Modified: _v2arrow: prefix handling
+solstice/solstice/core/stage_master.py                 # Modified: host in QueueEndpoint
+solstice/solstice/operators/sources/sparkv2.py         # New: V2 implementation
+solstice/solstice/operators/sources/__init__.py        # Modified: V2 exports
+
+solstice/java/raydp-main/src/main/scala/org/apache/spark/sql/raydp/
+├── SplitPayloadStoreWriter.scala                      # New: Direct Arrow data writer
+└── ObjectStoreWriter.scala                            # Modified: saveToStoreAndQueue()
+
+solstice/java/raydp-main/pom.xml                       # Modified: Kafka + Gson deps
+
+solstice/tests/test_spark_source_v2.py                 # New: V2 tests
+```
+
+### C.4 Usage
+
+```python
+from solstice.operators.sources.sparkv2 import SparkSourceV2Config
+
+config = SparkSourceV2Config(
+    dataframe_fn=lambda spark: spark.read.parquet("/data"),
+    num_executors=2,
+)
+```
+
+### C.5 Next Steps
+
+1. **Benchmark**: Compare V1 vs V2 performance
+2. **Large data optimization**: Consider chunking for partitions > 16MB
+3. **Production testing**: Validate with real workloads

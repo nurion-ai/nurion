@@ -16,6 +16,10 @@ from solstice.operators.sources.spark import (
     SparkSourceConfig,
     SparkSourceMaster,
 )
+from solstice.operators.sources.sparkv2 import (
+    SparkSourceV2Config,
+    SparkSourceV2Master,
+)
 
 __all__ = [
     # File source
@@ -31,8 +35,11 @@ __all__ = [
     # Source base
     "SourceMaster",
     "SourceConfig",
-    # Spark source
+    # Spark source V1
     "SparkSource",
     "SparkSourceConfig",
     "SparkSourceMaster",
+    # Spark source V2 (simplified - no operator needed)
+    "SparkSourceV2Config",
+    "SparkSourceV2Master",
 ]
