@@ -20,12 +20,11 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Union
 
-import ray
 
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
-    from solstice.core.stage_master import StageMaster, StageConfig
+    from solstice.core.stage_master import StageMaster
     from solstice.operators.sources.source import SourceMaster
 
 
@@ -299,18 +298,14 @@ class SimpleAutoscaler:
                     for _ in range(to_add):
                         await master._spawn_worker()
                     self._last_scale_time[stage_id] = now
-                    self.logger.info(
-                        f"Scaled UP {stage_id}: {current} -> {target} workers"
-                    )
+                    self.logger.info(f"Scaled UP {stage_id}: {current} -> {target} workers")
 
                 elif target < current:
                     # Scale down
                     to_remove = current - target
                     await master.scale_down(to_remove)
                     self._last_scale_time[stage_id] = now
-                    self.logger.info(
-                        f"Scaled DOWN {stage_id}: {current} -> {target} workers"
-                    )
+                    self.logger.info(f"Scaled DOWN {stage_id}: {current} -> {target} workers")
 
             except Exception as e:
                 self.logger.error(f"Failed to scale {stage_id}: {e}")
@@ -370,4 +365,3 @@ class SimpleAutoscaler:
                 for stage_id, m in self._current_metrics.items()
             },
         }
-

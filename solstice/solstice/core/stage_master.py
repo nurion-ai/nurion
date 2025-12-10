@@ -498,9 +498,7 @@ class StageMaster:
         actual_remove = min(count, safe_to_remove)
 
         if actual_remove == 0:
-            self.logger.debug(
-                f"Cannot scale down: current={current}, min={min_workers}"
-            )
+            self.logger.debug(f"Cannot scale down: current={current}, min={min_workers}")
             return 0
 
         # Select workers to remove (prefer idle workers, but we don't track that yet)
