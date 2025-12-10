@@ -444,6 +444,85 @@ class StageMaster:
             failure_message=self._failure_message,
         )
 
+    async def get_input_queue_lag(self) -> int:
+        """Get the input queue lag (messages pending to be processed).
+
+        This is calculated as: latest_offset - committed_offset
+        Returns 0 if upstream info is not available.
+        """
+        if not self.upstream_endpoint or not self.upstream_topic:
+            return 0
+
+        try:
+            # Create a temporary connection to check offsets
+            from solstice.queue import TansuBackend
+
+            if self.upstream_endpoint.queue_type.value == "tansu":
+                queue = TansuBackend(
+                    storage_url=self.upstream_endpoint.storage_url,
+                    port=self.upstream_endpoint.port,
+                    client_only=True,
+                )
+                await queue.start()
+
+                try:
+                    latest = await queue.get_latest_offset(self.upstream_topic)
+                    committed = await queue.get_committed_offset(
+                        self._consumer_group, self.upstream_topic
+                    )
+                    committed = committed or 0
+                    return max(0, latest - committed)
+                finally:
+                    await queue.stop()
+        except Exception:
+            pass
+
+        return 0
+
+    async def scale_down(self, count: int) -> int:
+        """Gracefully remove workers.
+
+        Args:
+            count: Number of workers to remove
+
+        Returns:
+            Number of workers actually removed
+        """
+        if count <= 0:
+            return 0
+
+        # Don't go below min_workers
+        current = len(self._workers)
+        min_workers = self.config.min_workers
+        safe_to_remove = max(0, current - min_workers)
+        actual_remove = min(count, safe_to_remove)
+
+        if actual_remove == 0:
+            self.logger.debug(f"Cannot scale down: current={current}, min={min_workers}")
+            return 0
+
+        # Select workers to remove (prefer idle workers, but we don't track that yet)
+        # For now, just remove the last N workers
+        workers_to_remove = list(self._workers.items())[-actual_remove:]
+
+        removed = 0
+        for worker_id, worker in workers_to_remove:
+            try:
+                # Stop the worker gracefully
+                ray.get(worker.stop.remote(), timeout=10)
+                self._workers.pop(worker_id, None)
+                self._worker_tasks.pop(worker_id, None)
+                removed += 1
+                self.logger.debug(f"Removed worker {worker_id}")
+            except Exception as e:
+                self.logger.warning(f"Error removing worker {worker_id}: {e}")
+
+        self.logger.info(
+            f"Scaled down {self.stage_id}: removed {removed}/{count} workers "
+            f"(now {len(self._workers)} workers)"
+        )
+        return removed
+
 
 @ray.remote
 class StageWorker:
