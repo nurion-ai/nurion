@@ -4,6 +4,7 @@ Architecture:
 - Workers pull directly from upstream queues
 - Masters manage their output queue
 - Offset-based recovery via queue backends
+- Optional autoscaling for dynamic worker management
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 import ray
 
@@ -26,6 +27,7 @@ from solstice.core.stage_master import (
 )
 from solstice.operators.sources.source import SourceMaster
 from solstice.core.split_payload_store import RaySplitPayloadStore
+from solstice.runtime.autoscaler import AutoscaleConfig, SimpleAutoscaler
 from solstice.utils.logging import create_ray_logger
 
 
@@ -68,6 +70,7 @@ class RayJobRunner:
         queue_type: QueueType = QueueType.TANSU,
         ray_init_kwargs: Optional[Dict[str, Any]] = None,
         tansu_storage_url: str = "memory://",
+        autoscale_config: Optional[AutoscaleConfig] = None,
     ):
         """Initialize the runner.
 
@@ -76,6 +79,7 @@ class RayJobRunner:
             queue_type: Type of queue backend (RAY for testing, TANSU for production)
             ray_init_kwargs: Arguments to pass to ray.init()
             tansu_storage_url: Storage URL for Tansu backend (memory://, s3://)
+            autoscale_config: Configuration for autoscaling (None to disable)
         """
         self.job = job
         self.queue_type = queue_type
@@ -88,8 +92,13 @@ class RayJobRunner:
         self._payload_store: Optional[RaySplitPayloadStore] = None
 
         # Stage masters (not Ray actors - they manage their own workers)
-        self._masters: Dict[str, StageMaster] = {}
+        self._masters: Dict[str, Union[StageMaster, SourceMaster]] = {}
         self._master_tasks: Dict[str, asyncio.Task] = {}
+
+        # Autoscaler
+        self._autoscale_config = autoscale_config
+        self._autoscaler: Optional[SimpleAutoscaler] = None
+        self._autoscale_task: Optional[asyncio.Task] = None
 
         # State
         self._initialized = False
@@ -259,6 +268,15 @@ class RayJobRunner:
                     )
                     self._master_tasks[stage_id] = task
 
+            # Start autoscaler if configured
+            if self._autoscale_config is not None:
+                self._autoscaler = SimpleAutoscaler(self._autoscale_config)
+                self._autoscale_task = asyncio.create_task(
+                    self._autoscaler.run_loop(self._masters),
+                    name="autoscaler",
+                )
+                self.logger.info("Autoscaler started")
+
             # Track which stages have finished (for upstream completion notification)
             finished_stages = set()
 
@@ -306,6 +324,19 @@ class RayJobRunner:
     async def stop(self) -> None:
         """Stop the pipeline."""
         self._running = False
+
+        # Stop autoscaler
+        if self._autoscale_task and not self._autoscale_task.done():
+            self._autoscale_task.cancel()
+            try:
+                await self._autoscale_task
+            except asyncio.CancelledError:
+                pass
+            self._autoscale_task = None
+
+        if self._autoscaler:
+            self._autoscaler.stop()
+            self._autoscaler = None
 
         # Cancel all running tasks
         for stage_id, task in list(self._master_tasks.items()):
@@ -397,6 +428,61 @@ class RayJobRunner:
     @property
     def is_initialized(self) -> bool:
         return self._initialized
+
+    # === Autoscaling Manual Intervention API ===
+
+    def set_stage_workers(self, stage_id: str, count: int) -> None:
+        """Set a fixed worker count for a stage (manual override).
+
+        This will override automatic scaling decisions for the specified stage.
+        Use `clear_stage_workers()` to return to automatic scaling.
+
+        Args:
+            stage_id: The stage to configure
+            count: Fixed number of workers to maintain
+        """
+        if not self._autoscaler:
+            self.logger.warning("Autoscaler not enabled, ignoring set_stage_workers")
+            return
+        self._autoscaler.set_fixed_workers(stage_id, count)
+
+    def clear_stage_workers(self, stage_id: str) -> None:
+        """Clear manual override, return stage to automatic scaling."""
+        if not self._autoscaler:
+            return
+        self._autoscaler.clear_fixed_workers(stage_id)
+
+    def freeze_stage(self, stage_id: str) -> None:
+        """Freeze a stage (disable autoscaling for it)."""
+        if not self._autoscaler:
+            self.logger.warning("Autoscaler not enabled, ignoring freeze_stage")
+            return
+        self._autoscaler.freeze_stage(stage_id)
+
+    def unfreeze_stage(self, stage_id: str) -> None:
+        """Unfreeze a stage (re-enable autoscaling)."""
+        if not self._autoscaler:
+            return
+        self._autoscaler.unfreeze_stage(stage_id)
+
+    def pause_autoscaling(self) -> None:
+        """Pause all automatic scaling decisions."""
+        if not self._autoscaler:
+            self.logger.warning("Autoscaler not enabled, ignoring pause_autoscaling")
+            return
+        self._autoscaler.pause()
+
+    def resume_autoscaling(self) -> None:
+        """Resume automatic scaling decisions."""
+        if not self._autoscaler:
+            return
+        self._autoscaler.resume()
+
+    def get_autoscale_status(self) -> Dict[str, Any]:
+        """Get current autoscaler status and metrics."""
+        if not self._autoscaler:
+            return {"enabled": False, "reason": "autoscaler not configured"}
+        return self._autoscaler.get_status()
 
 
 # Convenience function for simple pipeline execution
