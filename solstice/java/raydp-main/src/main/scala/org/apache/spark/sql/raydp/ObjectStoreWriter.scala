@@ -183,6 +183,117 @@ class ObjectStoreWriter(@transient val df: DataFrame) extends Serializable {
     ObjectRefHolder.removeQueue(uuid)
   }
 
+  /**
+   * Save DataFrame to Ray Object Store and Tansu output_queue directly.
+   *
+   * This is the V2 entry point that bypasses source_queue and operators.
+   * Each partition is processed by Spark executors and written directly to:
+   * 1. Ray Object Store (with RaySplitPayloadStoreActor as owner)
+   * 2. Tansu output_queue (Regular message with payload_key)
+   *
+   * The downstream worker calls payload_store.get(payload_key) which
+   * auto-detects the _v2ref: prefix and fetches via ObjectRef ID.
+   *
+   * @param useBatch Whether to use batch processing
+   * @param storeActorName Name of RaySplitPayloadStoreActor (for ObjectRef ownership)
+   * @param queueBootstrapServers Kafka bootstrap servers for Tansu
+   * @param queueTopic Topic name (output_queue topic)
+   * @param stageId Stage identifier for message IDs
+   * @return Total number of messages sent
+   */
+  def saveToStoreAndQueue(
+      useBatch: Boolean,
+      queueBootstrapServers: String,
+      queueTopic: String,
+      stageId: String
+  ): Int = {
+    val conf = df.queryExecution.sparkSession.sessionState.conf
+    val timeZoneId = conf.getConf(SQLConf.SESSION_LOCAL_TIMEZONE)
+    var batchSize = conf.getConf(SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH)
+    if (!useBatch) {
+      batchSize = 0
+    }
+    val schema = df.schema
+
+    val counts = df.queryExecution.toRdd.mapPartitionsWithIndex { case (partitionIndex, iter) =>
+      // Create writer to send Arrow data directly to queue
+      val writer = SplitPayloadStoreWriter.create(
+        queueBootstrapServers,
+        queueTopic,
+        stageId
+      )
+      writer.start()
+
+      // DO NOT use iter.grouped(). See BatchIterator.
+      val batchIter = if (batchSize > 0) {
+        new BatchIterator(iter, batchSize)
+      } else {
+        Iterator(iter)
+      }
+
+      val arrowSchema = SparkShimLoader.getSparkShims.toArrowSchema(schema, timeZoneId)
+      val allocator = ArrowUtils.rootAllocator.newChildAllocator(
+        s"v2 store writer partition $partitionIndex", 0, Long.MaxValue)
+      val root = VectorSchemaRoot.create(arrowSchema, allocator)
+      var batchIndex = 0
+      var totalMessages = 0
+
+      val byteOut = new ByteArrayOutputStream()
+      val arrowWriter = ArrowWriter.create(root)
+      var numRecords: Int = 0
+
+      Utils.tryWithSafeFinally {
+        while (batchIter.hasNext) {
+          // reset the state
+          numRecords = 0
+          byteOut.reset()
+          arrowWriter.reset()
+
+          // write out the schema meta data
+          val streamWriter = new ArrowStreamWriter(root, null, byteOut)
+          streamWriter.start()
+
+          // get the next record batch
+          val nextBatch = batchIter.next()
+
+          while (nextBatch.hasNext) {
+            numRecords += 1
+            arrowWriter.write(nextBatch.next())
+          }
+
+          // set the write record count
+          arrowWriter.finish()
+          // write out the record batch to the underlying out
+          streamWriter.writeBatch()
+
+          // get the wrote ByteArray
+          val byteArray = byteOut.toByteArray
+
+          // Store to SplitPayloadStore and send to Queue
+          val splitId = s"p${partitionIndex}_b${batchIndex}"
+          writer.storeAndSend(byteArray, splitId, numRecords)
+          totalMessages += 1
+          batchIndex += 1
+
+          // end writes footer to the output stream and doesn't clean any resources.
+          streamWriter.end()
+        }
+        arrowWriter.reset()
+        byteOut.close()
+
+        // Flush and close writer
+        writer.close()
+      } {
+        root.close()
+        allocator.close()
+      }
+
+      Iterator(totalMessages)
+    }.collect()
+
+    counts.sum
+  }
+
 }
 
 object ObjectStoreWriter {

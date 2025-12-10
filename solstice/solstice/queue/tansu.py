@@ -184,6 +184,9 @@ class TansuBackend(QueueBackend):
         else:
             self.port = port or 9092
 
+        # Get node IP for distributed access
+        self.host = self._get_node_ip()
+
         # Mark port as used
         _used_ports.add(self.port)
 
@@ -198,6 +201,26 @@ class TansuBackend(QueueBackend):
 
         # Register for cleanup
         _instances.add(self)
+
+    def _get_node_ip(self) -> str:
+        """Get the IP address of the current Ray node.
+
+        Returns the node IP for distributed access. Falls back to localhost
+        if Ray is not initialized or node info is unavailable.
+        """
+        try:
+            import ray
+
+            if ray.is_initialized():
+                # Get current node's IP from Ray runtime context
+                node_id = ray.get_runtime_context().get_node_id()
+                nodes = ray.nodes()
+                for node in nodes:
+                    if node.get("NodeID") == node_id:
+                        return node.get("NodeManagerAddress", "localhost")
+        except Exception:
+            pass
+        return "localhost"
 
     def __del__(self):
         """Cleanup on garbage collection."""

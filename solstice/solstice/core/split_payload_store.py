@@ -150,14 +150,21 @@ class RaySplitPayloadStore(SplitPayloadStore):
         store.clear()
     """
 
-    def __init__(self, name: Optional[str] = None):
+    def __init__(self, name: str):
         """Initialize the store.
 
         Args:
-            name: Optional name for the Ray actor (for debugging/discovery)
+            name: Name for the Ray actor (required for discovery and debugging)
         """
-        actor_options = {"name": name} if name else {}
-        self._actor = _RaySplitPayloadStoreActor.options(**actor_options).remote()
+        if not name:
+            raise ValueError("RaySplitPayloadStore requires a non-empty name")
+        self._actor_name = name
+        self._actor = _RaySplitPayloadStoreActor.options(name=name).remote()
+
+    @property
+    def actor_name(self) -> str:
+        """Get the actor name."""
+        return self._actor_name
 
     def store(self, key: str, payload: SplitPayload) -> str:
         # Put directly to object store with actor as owner
@@ -166,11 +173,61 @@ class RaySplitPayloadStore(SplitPayloadStore):
         # Wrap ObjectRef in dict to prevent Ray from auto-dereferencing it
         return ray.get(self._actor.register.remote(key, {"ref": ref}))
 
+    # Prefix for JVM-written Arrow data keys (embedded directly in payload_key)
+    JVM_ARROW_PREFIX = "_jvm_arrow:"
+
     def get(self, key: str) -> Optional[SplitPayload]:
+        # Check for JVM direct Arrow data key
+        # Format: _jvm_arrow:{base64_encoded_arrow_ipc}
+        if key.startswith(self.JVM_ARROW_PREFIX):
+            return self._get_from_arrow_data(key)
+
+        # Standard path: lookup from actor's registered refs
         ref_wrapper = ray.get(self._actor.get_ref.remote(key))
         if ref_wrapper is None:
             return None
-        return ray.get(ref_wrapper["ref"])
+
+        data = ray.get(ref_wrapper["ref"])
+        return self._convert_to_payload(data, split_id=key)
+
+    def _get_from_arrow_data(self, key: str) -> Optional[SplitPayload]:
+        """Extract Arrow data directly from key.
+
+        This is used when JVM writes directly to queue with payload_key
+        containing the base64-encoded Arrow IPC bytes.
+
+        This approach embeds data directly in the message, avoiding
+        ObjectRef serialization issues between JVM and Python.
+        """
+        import base64
+
+        # Extract base64-encoded Arrow IPC data
+        arrow_b64 = key[len(self.JVM_ARROW_PREFIX):]
+        arrow_bytes = base64.b64decode(arrow_b64)
+
+        return self._convert_to_payload(arrow_bytes, split_id=key)
+
+    def _convert_to_payload(self, data, split_id: str) -> SplitPayload:
+        """Convert various data types to SplitPayload."""
+        # Already a SplitPayload (from Python writers)
+        if isinstance(data, SplitPayload):
+            return data
+
+        # Arrow IPC bytes (from JVM writers)
+        if isinstance(data, bytes):
+            import pyarrow.ipc as ipc
+            import io
+
+            table = ipc.open_stream(io.BytesIO(data)).read_all()
+            return SplitPayload.from_arrow(table, split_id=split_id)
+
+        # Arrow Table (direct)
+        import pyarrow as pa
+
+        if isinstance(data, pa.Table):
+            return SplitPayload.from_arrow(data, split_id=split_id)
+
+        raise ValueError(f"Unsupported data type in store: {type(data)}")
 
     def delete(self, key: str) -> bool:
         return ray.get(self._actor.delete.remote(key))
