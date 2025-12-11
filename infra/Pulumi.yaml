@@ -1,0 +1,9 @@
+name: nurion-infra
+runtime:
+  name: python
+  options:
+    virtualenv: .venv
+description: Infrastructure for Nurion nightly E2E testing
+
+# Use S3-compatible storage as backend (no Pulumi Cloud required)
+# Backend URL is configured via `pulumi login` command
