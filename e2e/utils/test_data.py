@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import boto3
+from botocore.config import Config
 import lance
 import pyarrow as pa
 
@@ -130,12 +131,15 @@ class TestDataManager:
     def s3_client(self):
         """Get or create S3 client."""
         if self._s3_client is None:
+            # Use virtual addressing style for Volcengine TOS compatibility
+            s3_config = Config(s3={"addressing_style": "virtual"})
             self._s3_client = boto3.client(
                 "s3",
                 endpoint_url=self.s3_endpoint,
                 aws_access_key_id=self.s3_access_key,
                 aws_secret_access_key=self.s3_secret_key,
                 region_name=self.s3_region,
+                config=s3_config,
             )
         return self._s3_client
     

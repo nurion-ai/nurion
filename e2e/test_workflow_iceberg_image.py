@@ -16,8 +16,8 @@ from typing import Any, Dict
 
 import pytest
 
-from e2e.utils.aether_client import AetherClient
-from e2e.utils.test_data import TestDataManager
+from utils.aether_client import AetherClient
+from utils.test_data import TestDataManager
 
 pytestmark = [pytest.mark.e2e, pytest.mark.nightly, pytest.mark.slow]
 

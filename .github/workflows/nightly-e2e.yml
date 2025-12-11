@@ -119,13 +119,32 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.E2E_KUBECONFIG }}" > ~/.kube/config
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
       - name: Collect
-        run: ./scripts/collect-debug-logs.sh $K8S_NAMESPACE debug-artifacts
-      - uses: actions/upload-artifact@v4
-        with:
-          name: e2e-debug-${{ github.run_id }}
-          path: debug-artifacts/
-          retention-days: 14
+        working-directory: e2e
+        run: |
+          uv sync
+          uv run python -m utils.debug_collector $K8S_NAMESPACE debug-artifacts
+      - name: Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.E2E_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
+          AWS_REGION: ${{ secrets.E2E_S3_REGION }}
+        run: |
+          # Configure AWS CLI for virtual addressing (required for Volcengine TOS)
+          mkdir -p ~/.aws
+          cat > ~/.aws/config << 'EOF'
+          [default]
+          s3 =
+              addressing_style = virtual
+          EOF
+          # Upload debug artifacts to S3
+          aws s3 cp --recursive e2e/debug-artifacts/ \
+            "s3://nurion/debug-logs/${{ github.run_id }}/" \
+            --endpoint-url "$AWS_ENDPOINT_URL"
+          echo "Debug logs uploaded to: s3://nurion/debug-logs/${{ github.run_id }}/"
 
   cleanup:
     runs-on: [self-hosted, nurion-sh, linux]
