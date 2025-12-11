@@ -40,6 +40,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
           AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
           AWS_REGION: ${{ secrets.E2E_S3_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.E2E_S3_REGION }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.E2E_PULUMI_PASSPHRASE }}
           # Container registry for infra code
           CR_URL: ${{ secrets.E2E_CR_URL }}
@@ -167,6 +168,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
           AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
           AWS_REGION: ${{ secrets.E2E_S3_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.E2E_S3_REGION }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.E2E_PULUMI_PASSPHRASE }}
         run: |
           uv sync
