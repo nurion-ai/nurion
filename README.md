@@ -75,7 +75,9 @@ The project provides convenient development scripts:
 nurion/
 ├── aether/          # Orchestration service (FastAPI)
 ├── solstice/        # Data processing toolkit (Ray/Spark)
-├── scripts/         # Development scripts
+├── infra/           # Pulumi infrastructure (K8s deployment)
+├── e2e/             # End-to-end test suite
+├── scripts/         # Development and CI scripts
 └── pyproject.toml   # Workspace configuration
 ```
 
@@ -90,6 +92,25 @@ nurion/
 
 - [Aether Service Documentation](aether/README.md) - Detailed orchestration service documentation
 - [Solstice Framework Documentation](solstice/README.md) - Detailed data processing toolkit documentation
+- [Nightly E2E Testing Setup](e2e/README.md) - E2E testing infrastructure and configuration
+
+## E2E Testing
+
+Nurion includes a comprehensive end-to-end testing suite that runs nightly on Volcengine Kubernetes:
+
+```bash
+# Run E2E tests locally
+cd e2e
+uv sync
+uv run pytest -v -m "e2e"
+
+# Deploy infrastructure with Pulumi
+cd infra
+uv sync
+pulumi up -s nightly
+```
+
+See [Nightly E2E Testing Setup](e2e/README.md) for detailed configuration.
 
 ## Contributing
 

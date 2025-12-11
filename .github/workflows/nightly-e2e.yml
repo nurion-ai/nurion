@@ -1,0 +1,157 @@
+name: Nightly E2E Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      skip_cleanup:
+        description: 'Skip cleanup for debugging'
+        type: boolean
+        default: false
+
+env:
+  K8S_NAMESPACE: nurion-nightly
+  PULUMI_STACK: nightly
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, nurion-sh, linux]
+    timeout-minutes: 30
+    outputs:
+      aether_url: ${{ steps.pulumi.outputs.aether_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup mirrors
+        run: source scripts/china-mirrors.sh
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
+      - uses: pulumi/actions@v5
+      - name: Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.E2E_KUBECONFIG }}" > ~/.kube/config
+      - name: Deploy
+        id: pulumi
+        working-directory: infra
+        env:
+          # S3 backend credentials (Volcengine TOS)
+          AWS_ACCESS_KEY_ID: ${{ secrets.E2E_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
+          AWS_REGION: ${{ secrets.E2E_S3_REGION }}
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.E2E_PULUMI_PASSPHRASE }}
+          # Container registry for infra code
+          CR_URL: ${{ secrets.E2E_CR_URL }}
+        run: |
+          uv sync
+          # Login to S3 backend (no Pulumi Cloud required)
+          # Extract host from endpoint URL (remove https:// prefix)
+          S3_HOST=$(echo "$AWS_ENDPOINT_URL" | sed 's|https://||')
+          uv run pulumi login "s3://nurion/pulumi-state?endpoint=${S3_HOST}&region=${AWS_REGION}"
+          # Initialize stack if not exists
+          uv run pulumi stack select $PULUMI_STACK --create || true
+          # Set stack configuration (postgres uses default password for ephemeral test instance)
+          uv run pulumi config set --secret github_token "${{ secrets.E2E_RUNNER_TOKEN }}" -s $PULUMI_STACK
+          uv run pulumi config set github_repo "${{ github.repository }}" -s $PULUMI_STACK
+          uv run pulumi config set --secret s3_access_key "${{ secrets.E2E_S3_ACCESS_KEY_ID }}" -s $PULUMI_STACK
+          uv run pulumi config set --secret s3_secret_key "${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}" -s $PULUMI_STACK
+          uv run pulumi up -y -s $PULUMI_STACK
+          echo "aether_url=$(uv run pulumi stack output aether_url -s $PULUMI_STACK)" >> $GITHUB_OUTPUT
+      - name: Wait ready
+        run: kubectl -n $K8S_NAMESPACE wait --for=condition=ready pod -l app=aether --timeout=300s
+
+  build:
+    runs-on: [self-hosted, nurion-sh, linux]
+    timeout-minutes: 30
+    needs: deploy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push
+        env:
+          CR_IMAGE: ${{ secrets.E2E_CR_URL }}/aether
+        run: |
+          # Extract registry host from CR_URL (e.g., furion-cn-shanghai.cr.volces.com/nurion -> furion-cn-shanghai.cr.volces.com)
+          CR_REGISTRY=$(echo "${{ secrets.E2E_CR_URL }}" | cut -d'/' -f1)
+          echo "${{ secrets.E2E_CR_PASSWORD }}" | docker login $CR_REGISTRY -u "${{ secrets.E2E_CR_USERNAME }}" --password-stdin
+          docker build -f aether/Dockerfile -t "$CR_IMAGE:nightly" .
+          docker push "$CR_IMAGE:nightly"
+          kubectl -n $K8S_NAMESPACE set image deployment/aether aether="$CR_IMAGE:nightly"
+          kubectl -n $K8S_NAMESPACE rollout status deployment/aether --timeout=300s
+
+  test:
+    runs-on: [self-hosted, nurion-sh, linux]
+    timeout-minutes: 120
+    needs: [deploy, build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup mirrors
+        run: source scripts/china-mirrors.sh
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
+      - name: Run tests
+        working-directory: e2e
+        env:
+          AETHER_URL: ${{ needs.deploy.outputs.aether_url }}
+          K8S_NAMESPACE: ${{ env.K8S_NAMESPACE }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.E2E_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
+          AWS_DEFAULT_REGION: ${{ secrets.E2E_S3_REGION }}
+        run: |
+          uv sync
+          uv run pytest -v --tb=short --html=report.html --junitxml=junit.xml -m "e2e or nightly" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-report-${{ github.run_id }}
+          path: e2e/report.html
+          retention-days: 30
+
+  collect-logs:
+    runs-on: [self-hosted, nurion-sh, linux]
+    timeout-minutes: 15
+    needs: test
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.E2E_KUBECONFIG }}" > ~/.kube/config
+      - name: Collect
+        run: ./scripts/collect-debug-logs.sh $K8S_NAMESPACE debug-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-debug-${{ github.run_id }}
+          path: debug-artifacts/
+          retention-days: 14
+
+  cleanup:
+    runs-on: [self-hosted, nurion-sh, linux]
+    timeout-minutes: 15
+    needs: [test, collect-logs]
+    if: always() && inputs.skip_cleanup != true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.E2E_KUBECONFIG }}" > ~/.kube/config
+      - uses: astral-sh/setup-uv@v4
+      - uses: pulumi/actions@v5
+      - name: Destroy
+        working-directory: infra
+        env:
+          # S3 backend credentials (Volcengine TOS)
+          AWS_ACCESS_KEY_ID: ${{ secrets.E2E_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
+          AWS_REGION: ${{ secrets.E2E_S3_REGION }}
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.E2E_PULUMI_PASSPHRASE }}
+        run: |
+          uv sync
+          S3_HOST=$(echo "$AWS_ENDPOINT_URL" | sed 's|https://||')
+          uv run pulumi login "s3://nurion/pulumi-state?endpoint=${S3_HOST}&region=${AWS_REGION}"
+          uv run pulumi destroy -y -s $PULUMI_STACK || true
+      - run: kubectl delete namespace $K8S_NAMESPACE --wait=false --ignore-not-found=true

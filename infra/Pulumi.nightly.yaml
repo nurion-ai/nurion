@@ -1,0 +1,26 @@
+# Pulumi stack configuration for nightly E2E environment
+# Secrets should be set via `pulumi config set --secret <key> <value>`
+
+config:
+  # Kubernetes configuration
+  nurion-infra:k8s_context: nurion-sh
+  nurion-infra:namespace: nurion-nightly
+  
+  # Container registry (from E2E_CR_URL secret, set via pulumi config)
+  # nurion-infra:registry_url is set dynamically from secrets
+  
+  # Aether configuration
+  nurion-infra:aether_replicas: 1
+  nurion-infra:aether_image_tag: nightly
+  
+  # PostgreSQL configuration
+  nurion-infra:postgres_storage_size: 10Gi
+  
+  # GitHub Actions Runner configuration
+  nurion-infra:runner_replicas_min: 1
+  nurion-infra:runner_replicas_max: 3
+  nurion-infra:runner_labels: '["self-hosted", "nurion-sh", "linux", "nightly"]'
+  
+  # S3/Object Storage (endpoint from AWS_ENDPOINT_URL env)
+  nurion-infra:s3_bucket: nurion
+  # s3_endpoint is read from AWS_ENDPOINT_URL environment variable

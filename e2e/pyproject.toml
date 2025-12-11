@@ -1,0 +1,50 @@
+[project]
+name = "nurion-e2e"
+version = "0.1.0"
+description = "End-to-end tests for Nurion platform"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.3.0",
+    "pytest-html>=4.0.0",
+    "httpx>=0.27.0",
+    "kubernetes>=29.0.0",
+    "pyarrow>=15.0.0",
+    "pylance>=0.40.0",
+    "pyiceberg>=0.6.0",
+    "pyyaml>=6.0",
+    "boto3>=1.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4.0",
+]
+
+[tool.uv]
+# Use China mirrors for faster downloads
+index-url = "https://mirrors.aliyun.com/pypi/simple/"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["."]
+markers = [
+    "e2e: end-to-end tests",
+    "nightly: nightly test suite",
+    "slow: slow running tests",
+]
+timeout = 600  # 10 minute default timeout
+addopts = [
+    "-v",
+    "--tb=short",
+    "--html=report.html",
+    "--self-contained-html",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
