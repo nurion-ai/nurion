@@ -257,3 +257,20 @@ def collect_debug_on_failure(
     )
     collector.collect_all()
     return collector.create_archive()
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Collect debug logs from Kubernetes namespace")
+    parser.add_argument("namespace", nargs="?", default="nurion-nightly", help="Kubernetes namespace")
+    parser.add_argument("output_dir", nargs="?", default="debug-artifacts", help="Output directory")
+    parser.add_argument("--kubeconfig", help="Path to kubeconfig file")
+    args = parser.parse_args()
+    
+    collector = DebugCollector(
+        output_dir=args.output_dir,
+        namespace=args.namespace,
+        kubeconfig=args.kubeconfig,
+    )
+    collector.collect_all()

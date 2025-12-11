@@ -220,7 +220,8 @@ kubectl -n nurion-nightly logs -l app=aether
 ### Collect Logs Manually
 
 ```bash
-./scripts/collect-debug-logs.sh nurion-nightly debug-artifacts
+cd e2e
+uv run python -m utils.debug_collector nurion-nightly debug-artifacts
 ```
 
 ## China Network Optimizations
