@@ -45,6 +45,13 @@ jobs:
           # Container registry for infra code
           CR_URL: ${{ secrets.E2E_CR_URL }}
         run: |
+          # Configure AWS CLI for virtual addressing (required for Volcengine TOS)
+          mkdir -p ~/.aws
+          cat > ~/.aws/config << 'EOF'
+          [default]
+          s3 =
+              addressing_style = virtual
+          EOF
           uv sync
           # Login to S3 backend (no Pulumi Cloud required)
           # Extract host from endpoint URL (remove https:// prefix)
@@ -53,6 +60,14 @@ jobs:
           # Initialize stack if not exists
           uv run pulumi stack select $PULUMI_STACK --create || true
           # Set stack configuration (postgres uses default password for ephemeral test instance)
+          # Extract k8s context from kubeconfig
+          K8S_CONTEXT=$(kubectl config view --minify --output jsonpath='{.current-context}')
+          uv run pulumi config set k8s_context "$K8S_CONTEXT" -s $PULUMI_STACK
+          # Set container registry config (optional, but recommended)
+          uv run pulumi config set registry_url "${{ secrets.E2E_CR_URL }}" -s $PULUMI_STACK || true
+          uv run pulumi config set --secret registry_username "${{ secrets.E2E_CR_USERNAME }}" -s $PULUMI_STACK || true
+          uv run pulumi config set --secret registry_password "${{ secrets.E2E_CR_PASSWORD }}" -s $PULUMI_STACK || true
+          # Set GitHub and S3 config
           uv run pulumi config set --secret github_token "${{ secrets.E2E_RUNNER_TOKEN }}" -s $PULUMI_STACK
           uv run pulumi config set github_repo "${{ github.repository }}" -s $PULUMI_STACK
           uv run pulumi config set --secret s3_access_key "${{ secrets.E2E_S3_ACCESS_KEY_ID }}" -s $PULUMI_STACK
@@ -68,6 +83,10 @@ jobs:
     needs: deploy
     steps:
       - uses: actions/checkout@v4
+      - name: Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.E2E_KUBECONFIG }}" > ~/.kube/config
       - name: Build and push
         env:
           CR_IMAGE: ${{ secrets.E2E_CR_URL }}/aether
@@ -133,6 +152,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}
           AWS_ENDPOINT_URL: ${{ secrets.E2E_S3_ENDPOINT }}
           AWS_REGION: ${{ secrets.E2E_S3_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.E2E_S3_REGION }}
         run: |
           # Configure AWS CLI for virtual addressing (required for Volcengine TOS)
           mkdir -p ~/.aws
@@ -171,6 +191,13 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.E2E_S3_REGION }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.E2E_PULUMI_PASSPHRASE }}
         run: |
+          # Configure AWS CLI for virtual addressing (required for Volcengine TOS)
+          mkdir -p ~/.aws
+          cat > ~/.aws/config << 'EOF'
+          [default]
+          s3 =
+              addressing_style = virtual
+          EOF
           uv sync
           S3_HOST=$(echo "$AWS_ENDPOINT_URL" | sed 's|https://||')
           uv run pulumi login "s3://nurion/pulumi-state?endpoint=${S3_HOST}&region=${AWS_REGION}"
