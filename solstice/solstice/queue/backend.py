@@ -23,16 +23,18 @@ class Record:
         key: Optional key for partitioning (not used in single-partition mode).
         value: The message payload as bytes.
         timestamp: Unix timestamp in milliseconds when the record was produced.
+        partition: Partition number this record came from (for multi-partition topics).
     """
 
     offset: int
     value: bytes
     key: Optional[bytes] = None
     timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
+    partition: int = 0
 
     def __repr__(self) -> str:
         value_preview = self.value[:50] if len(self.value) <= 50 else self.value[:50] + b"..."
-        return f"Record(offset={self.offset}, value={value_preview!r})"
+        return f"Record(offset={self.offset}, partition={self.partition}, value={value_preview!r})"
 
 
 @dataclass
@@ -339,3 +341,154 @@ class QueueBackend(ABC):
             consumer groups should override this method.
         """
         return None
+
+    # === Multi-partition support ===
+
+    async def get_partition_count(self, topic: str) -> int:
+        """Get the number of partitions for a topic.
+
+        Args:
+            topic: Name of the topic.
+
+        Returns:
+            Number of partitions. Returns 1 for single-partition topics.
+
+        Note:
+            Default implementation returns 1. Backends that support
+            multi-partition topics should override this method.
+        """
+        return 1
+
+    async def produce_to_partition(
+        self,
+        topic: str,
+        partition: int,
+        value: bytes,
+        key: Optional[bytes] = None,
+    ) -> int:
+        """Produce a message to a specific partition.
+
+        Args:
+            topic: Name of the topic.
+            partition: Partition number to produce to.
+            value: Message payload as bytes.
+            key: Optional key for the message.
+
+        Returns:
+            The offset of the produced message within the partition.
+
+        Note:
+            Default implementation ignores partition and calls produce().
+            Backends that support multi-partition topics should override this.
+        """
+        return await self.produce(topic, value, key)
+
+    async def fetch_from_partition(
+        self,
+        topic: str,
+        partition: int,
+        offset: int = 0,
+        max_records: int = 100,
+        timeout_ms: int = 1000,
+    ) -> List[Record]:
+        """Fetch records from a specific partition.
+
+        Args:
+            topic: Name of the topic.
+            partition: Partition number to fetch from.
+            offset: Starting offset (inclusive).
+            max_records: Maximum number of records to fetch.
+            timeout_ms: Timeout in milliseconds.
+
+        Returns:
+            List of records from the specified partition.
+
+        Note:
+            Default implementation calls fetch() if partition is 0.
+            Backends that support multi-partition topics should override this.
+        """
+        if partition == 0:
+            return await self.fetch(topic, offset, max_records, timeout_ms)
+        return []
+
+    async def commit_partition_offset(
+        self,
+        group: str,
+        topic: str,
+        partition: int,
+        offset: int,
+    ) -> None:
+        """Commit the consumer offset for a specific partition.
+
+        Args:
+            group: Consumer group ID.
+            topic: Name of the topic.
+            partition: Partition number.
+            offset: Offset to commit (next offset to consume).
+
+        Note:
+            Default implementation ignores partition and calls commit_offset().
+            Backends that support multi-partition topics should override this.
+        """
+        await self.commit_offset(group, topic, offset)
+
+    async def get_committed_partition_offset(
+        self,
+        group: str,
+        topic: str,
+        partition: int,
+    ) -> Optional[int]:
+        """Get the committed offset for a specific partition.
+
+        Args:
+            group: Consumer group ID.
+            topic: Name of the topic.
+            partition: Partition number.
+
+        Returns:
+            The committed offset, or None if no offset has been committed.
+
+        Note:
+            Default implementation ignores partition and calls get_committed_offset().
+            Backends that support multi-partition topics should override this.
+        """
+        return await self.get_committed_offset(group, topic)
+
+    async def get_partition_latest_offset(self, topic: str, partition: int) -> int:
+        """Get the latest offset for a specific partition.
+
+        Args:
+            topic: Name of the topic.
+            partition: Partition number.
+
+        Returns:
+            The next offset that will be assigned to a new message in this partition.
+
+        Note:
+            Default implementation returns get_latest_offset() for partition 0.
+            Backends that support multi-partition topics should override this.
+        """
+        if partition == 0:
+            return await self.get_latest_offset(topic)
+        return 0
+
+    async def get_partition_lag(
+        self,
+        group: str,
+        topic: str,
+        partition: int,
+    ) -> int:
+        """Get the lag for a specific partition (latest offset - committed offset).
+
+        Args:
+            group: Consumer group ID.
+            topic: Name of the topic.
+            partition: Partition number.
+
+        Returns:
+            The number of unconsumed messages in the partition.
+        """
+        latest = await self.get_partition_latest_offset(topic, partition)
+        committed = await self.get_committed_partition_offset(group, topic, partition)
+        committed = committed or 0
+        return max(0, latest - committed)

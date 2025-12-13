@@ -194,8 +194,11 @@ class TansuBackend(QueueBackend):
         self._producer: Optional[AIOKafkaProducer] = None
         self._admin_client: Optional[AIOKafkaAdminClient] = None
         self._consumers: Dict[str, AIOKafkaConsumer] = {}
+        # Key format: (group, topic, partition) for per-partition offsets
         self._committed_offsets: Dict[tuple, int] = {}
         self._running = False
+        # Track partition counts for topics
+        self._topic_partitions: Dict[str, int] = {}
 
         self.logger = create_ray_logger(f"TansuBackend:{self.port}")
 
@@ -422,7 +425,7 @@ class TansuBackend(QueueBackend):
         self.logger.info("TansuBackend stopped")
 
     async def create_topic(self, topic: str, partitions: int = 1) -> None:
-        """Create a topic."""
+        """Create a topic with specified number of partitions."""
         try:
             new_topic = NewTopic(
                 name=topic,
@@ -430,11 +433,14 @@ class TansuBackend(QueueBackend):
                 replication_factor=1,
             )
             await self._admin_client.create_topics([new_topic])
-            self.logger.info(f"Created topic: {topic}")
+            self._topic_partitions[topic] = partitions
+            self.logger.info(f"Created topic: {topic} with {partitions} partitions")
         except Exception as e:
             # Topic may already exist
             if "TopicExistsError" not in str(e) and "TOPIC_ALREADY_EXISTS" not in str(e):
                 raise RuntimeError(f"Failed to create topic {topic}: {e}")
+            # If topic exists, try to get its partition count
+            self._topic_partitions[topic] = partitions
 
     async def delete_topic(self, topic: str) -> None:
         """Delete a topic."""
@@ -484,9 +490,18 @@ class TansuBackend(QueueBackend):
 
         return offsets
 
-    async def _get_consumer(self, topic: str) -> AIOKafkaConsumer:
-        """Get or create a consumer for the topic."""
-        if topic not in self._consumers:
+    async def _get_consumer(self, topic: str, partition: int = 0) -> AIOKafkaConsumer:
+        """Get or create a consumer for the topic/partition.
+
+        Args:
+            topic: Topic name.
+            partition: Partition number (default: 0).
+
+        Returns:
+            Consumer assigned to the specified partition.
+        """
+        consumer_key = f"{topic}:{partition}"
+        if consumer_key not in self._consumers:
             # Use manual partition assignment for more control
             consumer = AIOKafkaConsumer(
                 bootstrap_servers=f"localhost:{self.port}",
@@ -499,17 +514,17 @@ class TansuBackend(QueueBackend):
             # Wait a bit for metadata to be available
             await asyncio.sleep(0.2)
 
-            # Manually assign partition 0
-            tp = TopicPartition(topic, 0)
+            # Manually assign the specified partition
+            tp = TopicPartition(topic, partition)
             consumer.assign([tp])
 
             # Wait for partition assignment to take effect
             await asyncio.sleep(0.1)
 
-            self._consumers[topic] = consumer
-            self.logger.debug(f"Created consumer for topic {topic} with manual assignment")
+            self._consumers[consumer_key] = consumer
+            self.logger.debug(f"Created consumer for topic {topic} partition {partition}")
 
-        return self._consumers[topic]
+        return self._consumers[consumer_key]
 
     async def fetch(
         self,
@@ -518,9 +533,20 @@ class TansuBackend(QueueBackend):
         max_records: int = 100,
         timeout_ms: int = 1000,
     ) -> List[Record]:
-        """Fetch records from the topic starting at the given offset."""
-        consumer = await self._get_consumer(topic)
-        tp = TopicPartition(topic, 0)
+        """Fetch records from partition 0 (for backward compatibility)."""
+        return await self.fetch_from_partition(topic, 0, offset, max_records, timeout_ms)
+
+    async def fetch_from_partition(
+        self,
+        topic: str,
+        partition: int,
+        offset: int = 0,
+        max_records: int = 100,
+        timeout_ms: int = 1000,
+    ) -> List[Record]:
+        """Fetch records from a specific partition."""
+        consumer = await self._get_consumer(topic, partition)
+        tp = TopicPartition(topic, partition)
 
         # Seek to the desired offset
         consumer.seek(tp, offset)
@@ -542,6 +568,7 @@ class TansuBackend(QueueBackend):
                             value=record.value,
                             key=record.key,
                             timestamp=record.timestamp or int(time.time() * 1000),
+                            partition=record.partition,
                         )
                     )
         except asyncio.TimeoutError:
@@ -557,13 +584,23 @@ class TansuBackend(QueueBackend):
         topic: str,
         offset: int,
     ) -> None:
-        """Commit the consumer offset for a consumer group."""
+        """Commit the consumer offset for partition 0 (for backward compatibility)."""
+        await self.commit_partition_offset(group, topic, 0, offset)
+
+    async def commit_partition_offset(
+        self,
+        group: str,
+        topic: str,
+        partition: int,
+        offset: int,
+    ) -> None:
+        """Commit the consumer offset for a specific partition."""
         # For now, store locally (Tansu supports consumer groups but
-        # we use a simpler approach for single-partition topics)
-        self._committed_offsets[(group, topic)] = offset
+        # we use a simpler approach)
+        self._committed_offsets[(group, topic, partition)] = offset
 
         # TODO: Use Tansu's native consumer group support when needed
-        # tp = TopicPartition(topic, 0)
+        # tp = TopicPartition(topic, partition)
         # await consumer.commit({tp: offset})
 
     async def get_committed_offset(
@@ -571,17 +608,50 @@ class TansuBackend(QueueBackend):
         group: str,
         topic: str,
     ) -> Optional[int]:
-        """Get the committed offset for a consumer group."""
-        return self._committed_offsets.get((group, topic))
+        """Get the committed offset for partition 0 (for backward compatibility)."""
+        return await self.get_committed_partition_offset(group, topic, 0)
+
+    async def get_committed_partition_offset(
+        self,
+        group: str,
+        topic: str,
+        partition: int,
+    ) -> Optional[int]:
+        """Get the committed offset for a specific partition."""
+        return self._committed_offsets.get((group, topic, partition))
 
     async def get_latest_offset(self, topic: str) -> int:
-        """Get the latest offset in the topic."""
-        consumer = await self._get_consumer(topic)
-        tp = TopicPartition(topic, 0)
+        """Get the latest offset in partition 0 (for backward compatibility)."""
+        return await self.get_partition_latest_offset(topic, 0)
+
+    async def get_partition_latest_offset(self, topic: str, partition: int) -> int:
+        """Get the latest offset for a specific partition."""
+        consumer = await self._get_consumer(topic, partition)
+        tp = TopicPartition(topic, partition)
 
         # Get end offset
         end_offsets = await consumer.end_offsets([tp])
         return end_offsets.get(tp, 0)
+
+    async def get_partition_count(self, topic: str) -> int:
+        """Get the number of partitions for a topic."""
+        if topic in self._topic_partitions:
+            return self._topic_partitions[topic]
+        # Default to 1 if unknown
+        return 1
+
+    async def produce_to_partition(
+        self,
+        topic: str,
+        partition: int,
+        value: bytes,
+        key: Optional[bytes] = None,
+    ) -> int:
+        """Produce a message to a specific partition."""
+        result = await self._producer.send_and_wait(
+            topic, value, key=key, partition=partition
+        )
+        return result.offset
 
     @property
     def is_persistent(self) -> bool:
@@ -606,11 +676,24 @@ class TansuBackend(QueueBackend):
 
     def get_stats(self) -> Dict:
         """Get statistics about the backend."""
+        # Extract unique topics from consumer keys (format: "topic:partition")
+        topics = set()
+        for key in self._consumers.keys():
+            if ":" in key:
+                topics.add(key.split(":")[0])
+            else:
+                topics.add(key)
+
         return {
             "storage_url": self.storage_url,
             "port": self.port,
             "running": self._running,
             "process_alive": self._process.poll() is None if self._process else False,
-            "topics": list(self._consumers.keys()),
-            "committed_offsets": dict(self._committed_offsets),
+            "topics": list(topics),
+            "topic_partitions": dict(self._topic_partitions),
+            "consumers": list(self._consumers.keys()),
+            "committed_offsets": {
+                f"{g}:{t}:p{p}": o
+                for (g, t, p), o in self._committed_offsets.items()
+            },
         }

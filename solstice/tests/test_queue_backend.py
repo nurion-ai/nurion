@@ -500,9 +500,12 @@ class TestMemoryBackendProperties:
 
         assert "topics" in stats
         assert topic in stats["topics"]
-        assert stats["topics"][topic]["record_count"] == 2
-        assert stats["topics"][topic]["next_offset"] == 2
-        assert ("group1", topic) in stats["committed_offsets"]
+        # Updated: stats now have partition-aware format
+        assert stats["topics"][topic]["total_records"] == 2
+        assert stats["topics"][topic]["num_partitions"] >= 1
+        assert "partitions" in stats["topics"][topic]
+        # Check that committed offset is tracked (format: "group:topic:pN")
+        assert any("group1" in k and topic in k for k in stats["committed_offsets"])
 
 
 # ============================================================================

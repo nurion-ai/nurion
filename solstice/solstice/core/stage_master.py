@@ -76,6 +76,9 @@ class StageConfig:
         tansu_port: Port for Tansu broker
         max_workers: Maximum number of workers
         min_workers: Minimum number of workers
+        num_partitions: Number of partitions for output queue (default: max_workers for parallelism)
+        enable_work_stealing: Enable work-stealing for idle workers (helps with data skew)
+        work_steal_lag_threshold: Minimum lag to consider work-stealing
         batch_size: Number of messages to fetch per batch
         commit_interval_ms: Interval between offset commits (ms)
         processing_timeout_s: Timeout for processing a single message
@@ -88,6 +91,11 @@ class StageConfig:
     max_workers: int = 4
     min_workers: int = 1
 
+    # Multi-partition support for parallel consumption
+    num_partitions: Optional[int] = None  # None means auto (= max_workers)
+    enable_work_stealing: bool = True
+    work_steal_lag_threshold: int = 100
+
     batch_size: int = 100
     commit_interval_ms: int = 5000
     processing_timeout_s: float = 300.0
@@ -97,6 +105,13 @@ class StageConfig:
     num_gpus: float = 0.0
     memory_mb: int = 0
 
+    @property
+    def effective_partitions(self) -> int:
+        """Get the effective number of partitions (auto = max_workers)."""
+        if self.num_partitions is not None:
+            return self.num_partitions
+        return self.max_workers
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "queue_type": self.queue_type.value,
@@ -104,6 +119,8 @@ class StageConfig:
             "tansu_port": self.tansu_port,
             "max_workers": self.max_workers,
             "min_workers": self.min_workers,
+            "num_partitions": self.effective_partitions,
+            "enable_work_stealing": self.enable_work_stealing,
             "batch_size": self.batch_size,
             "commit_interval_ms": self.commit_interval_ms,
             "processing_timeout_s": self.processing_timeout_s,
@@ -166,6 +183,7 @@ class QueueEndpoint:
     host: str = "localhost"
     port: int = 9092
     storage_url: str = "memory://"
+    num_partitions: int = 1  # Number of partitions in the topic
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -173,6 +191,7 @@ class QueueEndpoint:
             "host": self.host,
             "port": self.port,
             "storage_url": self.storage_url,
+            "num_partitions": self.num_partitions,
         }
 
 
@@ -237,6 +256,8 @@ class StageMaster:
 
     async def _create_queue(self) -> QueueBackend:
         """Create the appropriate queue backend."""
+        num_partitions = self.config.effective_partitions
+
         if self.config.queue_type == QueueType.TANSU:
             from solstice.queue import TansuBackend
 
@@ -252,6 +273,7 @@ class StageMaster:
                 host=queue.host,
                 port=queue.port,
                 storage_url=self.config.tansu_storage_url,
+                num_partitions=num_partitions,
             )
             self.logger.info(f"Created Tansu backend on {queue.host}:{queue.port}")
         else:
@@ -260,9 +282,14 @@ class StageMaster:
             await queue.start()
             self._output_endpoint = QueueEndpoint(
                 queue_type=QueueType.MEMORY,
+                num_partitions=num_partitions,
             )
 
-        await queue.create_topic(self._output_topic)
+        # Create topic with configured number of partitions for parallel consumption
+        await queue.create_topic(self._output_topic, partitions=num_partitions)
+        self.logger.info(
+            f"Created output topic {self._output_topic} with {num_partitions} partitions"
+        )
         return queue
 
     async def start(self) -> None:
@@ -277,15 +304,46 @@ class StageMaster:
         # Create output queue
         self._output_queue = await self._create_queue()
 
-        # Spawn workers
+        # Spawn workers with partition assignments
         for i in range(self.config.min_workers):
             await self._spawn_worker()
 
         self.logger.info(f"Stage {self.stage_id} started with {len(self._workers)} workers")
 
+    def _compute_partition_assignment(self, worker_index: int, total_workers: int) -> list:
+        """Compute partition assignment for a worker using round-robin.
+
+        Args:
+            worker_index: Index of this worker (0-based).
+            total_workers: Total number of workers.
+
+        Returns:
+            List of partition IDs assigned to this worker.
+        """
+        num_partitions = self.config.effective_partitions
+        if num_partitions <= 0:
+            return [0]
+
+        # Round-robin assignment
+        assigned = []
+        for p in range(num_partitions):
+            if p % total_workers == worker_index:
+                assigned.append(p)
+
+        # Ensure each worker gets at least one partition if possible
+        if not assigned and num_partitions > 0:
+            assigned = [worker_index % num_partitions]
+
+        return assigned
+
     async def _spawn_worker(self) -> str:
-        """Spawn a new worker."""
-        worker_id = f"{self.stage_id}_w{len(self._workers)}_{uuid.uuid4().hex[:6]}"
+        """Spawn a new worker with partition assignment."""
+        worker_index = len(self._workers)
+        worker_id = f"{self.stage_id}_w{worker_index}_{uuid.uuid4().hex[:6]}"
+
+        # Compute partition assignment for this worker
+        total_workers = max(worker_index + 1, self.config.min_workers)
+        assigned_partitions = self._compute_partition_assignment(worker_index, total_workers)
 
         # Create worker actor
         resources = {}
@@ -309,6 +367,7 @@ class StageMaster:
             consumer_group=self._consumer_group,
             config=self.config,
             payload_store=self.payload_store,
+            assigned_partitions=assigned_partitions,
         )
 
         self._workers[worker_id] = worker
@@ -317,8 +376,30 @@ class StageMaster:
         task = worker.run.remote()
         self._worker_tasks[worker_id] = task
 
-        self.logger.info(f"Spawned worker {worker_id}")
+        self.logger.info(f"Spawned worker {worker_id} with partitions {assigned_partitions}")
         return worker_id
+
+    async def rebalance_partitions(self) -> None:
+        """Rebalance partition assignments across all workers.
+
+        Called when workers are added or removed to redistribute partitions evenly.
+        """
+        if not self._workers:
+            return
+
+        total_workers = len(self._workers)
+        worker_ids = sorted(self._workers.keys())
+
+        for idx, worker_id in enumerate(worker_ids):
+            new_assignment = self._compute_partition_assignment(idx, total_workers)
+            try:
+                ray.get(
+                    self._workers[worker_id].update_partition_assignment.remote(new_assignment),
+                    timeout=5,
+                )
+                self.logger.debug(f"Updated {worker_id} partition assignment: {new_assignment}")
+            except Exception as e:
+                self.logger.warning(f"Failed to update partition assignment for {worker_id}: {e}")
 
     async def run(self) -> bool:
         """Run the stage until completion."""
@@ -532,11 +613,16 @@ class StageWorker:
     This worker is self-scheduling: it pulls messages from upstream,
     processes them, and produces results to the output queue.
 
+    Multi-partition support:
+    - Workers are assigned specific partitions to consume from
+    - Each worker processes messages only from its assigned partitions
+    - Work-stealing allows idle workers to help with high-lag partitions
+
     Exactly-once semantics:
-    1. Fetch batch from upstream
+    1. Fetch batch from assigned partitions
     2. Process each message
-    3. Produce output to output queue
-    4. Commit upstream offset (only after output is durably stored)
+    3. Produce output to output queue (round-robin to partitions)
+    4. Commit upstream offset per partition (only after output is durably stored)
 
     Note: Workers create their own queue connections from endpoints,
     since QueueBackend instances contain locks and cannot be serialized.
@@ -553,6 +639,7 @@ class StageWorker:
         consumer_group: str,
         config: StageConfig,
         payload_store: SplitPayloadStore,
+        assigned_partitions: Optional[list] = None,
     ):
         self.worker_id = worker_id
         self.stage_id = stage.stage_id
@@ -569,6 +656,10 @@ class StageWorker:
         self.output_topic = output_topic
         self.consumer_group = consumer_group
 
+        # Partition assignment for this worker
+        # If None, will be computed based on worker index and total partitions
+        self._assigned_partitions = assigned_partitions or []
+
         # Queue connections (created lazily)
         self.upstream_queue: Optional[QueueBackend] = None
         self.output_queue: Optional[QueueBackend] = None
@@ -584,6 +675,9 @@ class StageWorker:
         self._error_count = 0
         self._last_commit_time = time.time()
         self._upstream_finished = False
+
+        # Per-partition offsets for multi-partition consumption
+        self._partition_offsets: Dict[int, int] = {}
 
     async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> QueueBackend:
         """Create a queue connection from endpoint info."""
@@ -657,71 +751,99 @@ class StageWorker:
         self._upstream_finished = True
         self.logger.info(f"Worker {self.worker_id} notified: upstream finished")
 
+    def update_partition_assignment(self, partitions: list) -> None:
+        """Update the partitions assigned to this worker.
+
+        Called by the master when workers scale up/down and partitions need rebalancing.
+        """
+        old_partitions = self._assigned_partitions
+        self._assigned_partitions = partitions
+        self.logger.info(
+            f"Worker {self.worker_id} partition assignment updated: {old_partitions} -> {partitions}"
+        )
+
     async def _process_from_upstream(self) -> None:
         """Process messages from upstream queue.
 
+        Multi-partition support:
+        - Processes messages from all assigned partitions
+        - Maintains per-partition offsets for proper checkpointing
+        - Supports work-stealing for data skew mitigation
+
         Completion criteria:
-        - When upstream is finished AND we've consumed all messages (offset >= latest)
+        - When upstream is finished AND all partitions are exhausted
         - Exit immediately when both conditions are met
         """
-        # Get starting offset
-        offset = (
-            await self.upstream_queue.get_committed_offset(self.consumer_group, self.upstream_topic)
-            or 0
-        )
+        # Determine partitions to process
+        num_partitions = getattr(self.upstream_endpoint, 'num_partitions', 1)
 
-        # Check topic exists
-        actual_actor = (
-            self.upstream_queue.get_actor_ref()
-            if hasattr(self.upstream_queue, "get_actor_ref")
-            else None
-        )
-        latest_check = await self.upstream_queue.get_latest_offset(self.upstream_topic)
+        if not self._assigned_partitions:
+            # Fallback: single partition mode for backward compatibility
+            self._assigned_partitions = [0]
+
+        # Initialize per-partition offsets from committed offsets
+        for partition in self._assigned_partitions:
+            committed = await self.upstream_queue.get_committed_partition_offset(
+                self.consumer_group, self.upstream_topic, partition
+            )
+            self._partition_offsets[partition] = committed or 0
+
         self.logger.info(
-            f"Starting from offset {offset} on topic {self.upstream_topic}, current latest: {latest_check}, actual actor: {actual_actor}"
+            f"Worker {self.worker_id} starting with partitions {self._assigned_partitions}, "
+            f"offsets: {self._partition_offsets}"
         )
 
         consecutive_empty = 0
+        partition_idx = 0  # Round-robin across partitions
 
         while self._running:
-            # Fetch batch from upstream
-            records = await self.upstream_queue.fetch(
+            # Round-robin through assigned partitions
+            if not self._assigned_partitions:
+                await asyncio.sleep(0.1)
+                continue
+
+            partition = self._assigned_partitions[partition_idx % len(self._assigned_partitions)]
+            partition_idx += 1
+
+            offset = self._partition_offsets.get(partition, 0)
+
+            # Fetch batch from the current partition
+            records = await self.upstream_queue.fetch_from_partition(
                 self.upstream_topic,
+                partition=partition,
                 offset=offset,
                 max_records=self.config.batch_size,
-                timeout_ms=1000,  # Shorter timeout for faster completion detection
+                timeout_ms=500,  # Shorter timeout for multi-partition
             )
-
-            # Debug: Check queue status periodically
-            if consecutive_empty == 0 or consecutive_empty % 10 == 0:
-                latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
-                self.logger.debug(
-                    f"Fetch from offset {offset}, got {len(records)} records, latest offset: {latest}, empty polls: {consecutive_empty}, upstream_finished: {self._upstream_finished}"
-                )
 
             if not records:
                 consecutive_empty += 1
 
-                # Check if we should stop: upstream finished AND queue exhausted
-                latest = await self.upstream_queue.get_latest_offset(self.upstream_topic)
-                if offset >= latest:
-                    if self._upstream_finished:
-                        # Upstream is done and we've consumed everything
-                        self.logger.info(
-                            f"Worker {self.worker_id} finished: upstream done, consumed all {offset} messages"
-                        )
-                        break
-                    elif consecutive_empty >= 50:
-                        # Not notified yet but no new data for 5 seconds, check again
-                        self.logger.debug(
-                            f"Waiting for upstream completion signal, offset={offset}, latest={latest}"
-                        )
+                # Check if all partitions are exhausted
+                all_exhausted = await self._check_all_partitions_exhausted()
+                if all_exhausted and self._upstream_finished:
+                    self.logger.info(
+                        f"Worker {self.worker_id} finished: all partitions exhausted"
+                    )
+                    break
 
-                # Don't wait too long if upstream is finished
-                if self._upstream_finished:
-                    await asyncio.sleep(0.05)  # Quick check
-                else:
-                    await asyncio.sleep(0.1)
+                # Work-stealing: if idle and work-stealing is enabled, try to help other partitions
+                if (
+                    consecutive_empty >= 10
+                    and self.config.enable_work_stealing
+                    and not self._upstream_finished
+                ):
+                    stolen = await self._try_work_steal()
+                    if stolen:
+                        consecutive_empty = 0
+                        continue
+
+                if consecutive_empty >= len(self._assigned_partitions) * 10:
+                    # Waited long enough across all partitions
+                    if self._upstream_finished:
+                        await asyncio.sleep(0.05)
+                    else:
+                        await asyncio.sleep(0.1)
                 continue
 
             consecutive_empty = 0
@@ -736,26 +858,104 @@ class StageWorker:
                     import traceback
 
                     self.logger.error(
-                        f"Error processing message at offset {record.offset}: {type(e).__name__}: {e}"
+                        f"Error processing message at p{partition}:o{record.offset}: {type(e).__name__}: {e}"
                     )
                     self.logger.debug(f"Traceback: {traceback.format_exc()}")
                     self._error_count += 1
                     # Continue processing - don't block on single errors
 
-                offset = record.offset + 1
+                self._partition_offsets[partition] = record.offset + 1
 
             # Commit offset periodically
             if time.time() - self._last_commit_time > self.config.commit_interval_ms / 1000:
-                await self.upstream_queue.commit_offset(
-                    self.consumer_group, self.upstream_topic, offset
-                )
+                await self._commit_all_partition_offsets()
                 self._last_commit_time = time.time()
 
-        # Final commit
-        if self.upstream_queue:
-            await self.upstream_queue.commit_offset(
-                self.consumer_group, self.upstream_topic, offset
+        # Final commit for all partitions
+        await self._commit_all_partition_offsets()
+
+    async def _check_all_partitions_exhausted(self) -> bool:
+        """Check if all assigned partitions have been fully consumed."""
+        for partition in self._assigned_partitions:
+            offset = self._partition_offsets.get(partition, 0)
+            latest = await self.upstream_queue.get_partition_latest_offset(
+                self.upstream_topic, partition
             )
+            if offset < latest:
+                return False
+        return True
+
+    async def _commit_all_partition_offsets(self) -> None:
+        """Commit offsets for all assigned partitions."""
+        if not self.upstream_queue:
+            return
+
+        for partition, offset in self._partition_offsets.items():
+            await self.upstream_queue.commit_partition_offset(
+                self.consumer_group, self.upstream_topic, partition, offset
+            )
+
+    async def _try_work_steal(self) -> bool:
+        """Try to steal work from high-lag partitions not assigned to this worker.
+
+        Returns True if work was found and processed.
+        """
+        num_partitions = getattr(self.upstream_endpoint, 'num_partitions', 1)
+
+        # Find partitions with high lag that aren't assigned to us
+        for partition in range(num_partitions):
+            if partition in self._assigned_partitions:
+                continue
+
+            # Check lag for this partition
+            lag = await self.upstream_queue.get_partition_lag(
+                self.consumer_group, self.upstream_topic, partition
+            )
+
+            if lag >= self.config.work_steal_lag_threshold:
+                # Found a partition with work to steal
+                offset = await self.upstream_queue.get_committed_partition_offset(
+                    self.consumer_group, self.upstream_topic, partition
+                )
+                offset = offset or 0
+
+                # Steal a small batch (don't take too much)
+                steal_size = min(self.config.batch_size // 2, lag // 2)
+                if steal_size < 1:
+                    continue
+
+                records = await self.upstream_queue.fetch_from_partition(
+                    self.upstream_topic,
+                    partition=partition,
+                    offset=offset,
+                    max_records=steal_size,
+                    timeout_ms=500,
+                )
+
+                if records:
+                    self.logger.debug(
+                        f"Work steal: processing {len(records)} messages from partition {partition}"
+                    )
+
+                    for record in records:
+                        try:
+                            message = QueueMessage.from_bytes(record.value)
+                            await self._process_message(message)
+                            self._processed_count += 1
+                        except Exception as e:
+                            self._error_count += 1
+
+                        # Commit immediately for stolen work
+                        await self.upstream_queue.commit_partition_offset(
+                            self.consumer_group,
+                            self.upstream_topic,
+                            partition,
+                            record.offset + 1,
+                        )
+
+                    return True
+
+        return False
 
     async def _process_message(self, message: QueueMessage) -> None:
         """Process a single message.
