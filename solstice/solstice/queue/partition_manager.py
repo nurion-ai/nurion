@@ -78,9 +78,22 @@ class WorkerState:
 
     @property
     def is_idle(self) -> bool:
-        """Check if worker is idle (not actively processing)."""
-        idle_threshold = 5.0  # seconds
+        """Check if worker is idle (not actively processing).
+
+        Uses the idle threshold configured in the PartitionManager.
+        Default threshold is 5.0 seconds.
+        """
+        # Note: idle_threshold is passed via PartitionManager config
+        # Default to 5.0 if not available (standalone usage)
+        idle_threshold = getattr(self, '_idle_threshold', 5.0)
         return time.time() - self.last_activity_time > idle_threshold
+
+
+# Default idle threshold in seconds
+DEFAULT_IDLE_THRESHOLD_S = 5.0
+
+# Default work-steal ratio (fraction of remaining work to steal)
+DEFAULT_WORK_STEAL_RATIO = 0.5
 
 
 @dataclass
@@ -132,6 +145,8 @@ class PartitionManager:
         num_partitions: int = 1,
         enable_work_stealing: bool = True,
         work_steal_lag_threshold: int = 100,
+        work_steal_ratio: float = DEFAULT_WORK_STEAL_RATIO,
+        idle_threshold_s: float = DEFAULT_IDLE_THRESHOLD_S,
         rebalance_interval_s: float = 30.0,
     ):
         """Initialize partition manager.
@@ -141,12 +156,16 @@ class PartitionManager:
             num_partitions: Number of partitions in the topic.
             enable_work_stealing: Whether to enable work-stealing for idle workers.
             work_steal_lag_threshold: Minimum lag to consider work-stealing.
+            work_steal_ratio: Fraction of remaining work to steal (0.0-1.0).
+            idle_threshold_s: Seconds of inactivity before worker is considered idle.
             rebalance_interval_s: Minimum time between rebalances.
         """
         self.topic = topic
         self.num_partitions = num_partitions
         self.enable_work_stealing = enable_work_stealing
         self.work_steal_lag_threshold = work_steal_lag_threshold
+        self.work_steal_ratio = max(0.1, min(1.0, work_steal_ratio))  # Clamp to 0.1-1.0
+        self.idle_threshold_s = idle_threshold_s
         self.rebalance_interval_s = rebalance_interval_s
 
         self.logger = create_ray_logger(f"PartitionManager-{topic}")
@@ -298,16 +317,17 @@ class PartitionManager:
             candidates.sort(key=lambda x: x[1].lag, reverse=True)
             partition_id, p_state = candidates[0]
 
-            # Calculate work range (steal half the remaining work)
+            # Calculate work range (steal configurable fraction of remaining work)
+            steal_amount = int(p_state.lag * self.work_steal_ratio)
             offset_start = p_state.current_offset
-            offset_end = p_state.current_offset + p_state.lag // 2
+            offset_end = p_state.current_offset + steal_amount
 
             if offset_end <= offset_start:
                 return None
 
             self.logger.debug(
                 f"Work steal: {worker_id} stealing from partition {partition_id} "
-                f"(offsets {offset_start}-{offset_end}, lag={p_state.lag})"
+                f"(offsets {offset_start}-{offset_end}, lag={p_state.lag}, ratio={self.work_steal_ratio})"
             )
 
             return WorkStealRequest(

@@ -775,7 +775,8 @@ class StageWorker:
         - Exit immediately when both conditions are met
         """
         # Determine partitions to process
-        num_partitions = getattr(self.upstream_endpoint, 'num_partitions', 1)
+        # QueueEndpoint has num_partitions field (default 1 for backward compatibility)
+        num_partitions = self.upstream_endpoint.num_partitions if self.upstream_endpoint else 1
 
         if not self._assigned_partitions:
             # Fallback: single partition mode for backward compatibility
@@ -900,7 +901,7 @@ class StageWorker:
 
         Returns True if work was found and processed.
         """
-        num_partitions = getattr(self.upstream_endpoint, 'num_partitions', 1)
+        num_partitions = self.upstream_endpoint.num_partitions if self.upstream_endpoint else 1
 
         # Find partitions with high lag that aren't assigned to us
         for partition in range(num_partitions):

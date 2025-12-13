@@ -175,7 +175,13 @@ class MemoryBackend(QueueBackend):
                 del self._committed_offsets[key]
 
     def _compute_partition(self, topic: str, key: Optional[bytes]) -> int:
-        """Compute the partition for a message based on key hash."""
+        """Compute the partition for a message based on key hash.
+
+        Uses a deterministic hash (CRC32) to ensure consistent partition
+        assignment across process restarts.
+        """
+        import zlib
+
         with self._global_lock:
             if topic not in self._topics:
                 return 0
@@ -185,8 +191,10 @@ class MemoryBackend(QueueBackend):
         if key is None or num_partitions <= 1:
             return 0
 
-        # Use hash of key to determine partition
-        return hash(key) % num_partitions
+        # Use CRC32 for deterministic hashing across process restarts
+        # (Python's built-in hash() is randomized by default)
+        hash_value = zlib.crc32(key) & 0xffffffff
+        return hash_value % num_partitions
 
     async def produce(
         self,
