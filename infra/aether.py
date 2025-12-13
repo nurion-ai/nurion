@@ -242,17 +242,21 @@ def deploy_aether(
     # Container registry secret for pulling images
     registry_secret = None
     if config.registry_username and config.registry_password:
-        import base64
         import json
         
-        docker_config = {
+        # Use Output.all() to handle Pulumi Output objects
+        docker_config_json = pulumi.Output.all(
+            config.registry_url,
+            config.registry_username,
+            config.registry_password
+        ).apply(lambda args: json.dumps({
             "auths": {
-                config.registry_url: {
-                    "username": config.registry_username,
-                    "password": config.registry_password,
+                args[0]: {
+                    "username": args[1],
+                    "password": args[2],
                 }
             }
-        }
+        }))
         
         registry_secret = k8s.core.v1.Secret(
             "registry-secret",
@@ -263,7 +267,7 @@ def deploy_aether(
             ),
             type="kubernetes.io/dockerconfigjson",
             string_data={
-                ".dockerconfigjson": json.dumps(docker_config),
+                ".dockerconfigjson": docker_config_json,
             },
             opts=pulumi.ResourceOptions(provider=k8s_provider),
         )

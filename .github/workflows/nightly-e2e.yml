@@ -85,8 +85,9 @@ jobs:
           uv run pulumi config set --secret s3_secret_key "${{ secrets.E2E_S3_SECRET_ACCESS_KEY }}" -s $PULUMI_STACK
           uv run pulumi up -y -s $PULUMI_STACK
           echo "aether_url=$(uv run pulumi stack output aether_url -s $PULUMI_STACK)" >> $GITHUB_OUTPUT
-      - name: Wait ready
-        run: kubectl -n $K8S_NAMESPACE wait --for=condition=ready pod -l app=aether --timeout=300s
+      # Note: Don't wait for aether pod here - build job will push image and update deployment
+      # - name: Wait ready
+      #   run: kubectl -n $K8S_NAMESPACE wait --for=condition=ready pod -l app=aether --timeout=300s
 
   build:
     runs-on: [self-hosted, nurion-sh, linux]
