@@ -40,11 +40,13 @@ def deploy_actions_runner_controller(
     )
     
     # Deploy ARC controller using Helm
+    # Use traditional Helm repo instead of OCI registry for better compatibility
+    # Alternative repo: https://danmanners.github.io/gha-scale-set-helm
     arc_controller = k8s.helm.v3.Release(
         "arc-controller",
         chart="gha-runner-scale-set-controller",
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(
-            repo="oci://ghcr.io/actions/actions-runner-controller-charts",
+            repo="https://danmanners.github.io/gha-scale-set-helm",
         ),
         namespace=arc_system_ns.metadata.name,
         values={
@@ -77,11 +79,12 @@ def deploy_actions_runner_controller(
     )
     
     # Deploy RunnerScaleSet for the nurion repository
+    # Use traditional Helm repo instead of OCI registry for better compatibility
     runner_scale_set = k8s.helm.v3.Release(
         "nurion-runners",
         chart="gha-runner-scale-set",
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(
-            repo="oci://ghcr.io/actions/actions-runner-controller-charts",
+            repo="https://danmanners.github.io/gha-scale-set-helm",
         ),
         namespace=namespace.metadata.name,
         values={
