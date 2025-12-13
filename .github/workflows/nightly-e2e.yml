@@ -60,6 +60,14 @@ jobs:
           # Initialize stack if not exists
           uv run pulumi stack select $PULUMI_STACK --create || true
           # Set stack configuration (postgres uses default password for ephemeral test instance)
+          # Extract k8s context from kubeconfig
+          K8S_CONTEXT=$(kubectl config view --minify --output jsonpath='{.current-context}')
+          uv run pulumi config set k8s_context "$K8S_CONTEXT" -s $PULUMI_STACK
+          # Set container registry config (optional, but recommended)
+          uv run pulumi config set registry_url "${{ secrets.E2E_CR_URL }}" -s $PULUMI_STACK || true
+          uv run pulumi config set --secret registry_username "${{ secrets.E2E_CR_USERNAME }}" -s $PULUMI_STACK || true
+          uv run pulumi config set --secret registry_password "${{ secrets.E2E_CR_PASSWORD }}" -s $PULUMI_STACK || true
+          # Set GitHub and S3 config
           uv run pulumi config set --secret github_token "${{ secrets.E2E_RUNNER_TOKEN }}" -s $PULUMI_STACK
           uv run pulumi config set github_repo "${{ github.repository }}" -s $PULUMI_STACK
           uv run pulumi config set --secret s3_access_key "${{ secrets.E2E_S3_ACCESS_KEY_ID }}" -s $PULUMI_STACK
