@@ -52,8 +52,8 @@ def deploy_actions_runner_controller(
         values={
             "replicaCount": 1,
             "image": {
-                # Use a China-accessible mirror if needed
-                "repository": "ghcr.io/actions/gha-runner-scale-set-controller",
+                # Use a China-accessible mirror
+                "repository": "docker.1ms.run/actions/gha-runner-scale-set-controller",
                 "tag": "0.9.3",
             },
         },
@@ -102,7 +102,7 @@ def deploy_actions_runner_controller(
                     "containers": [
                         {
                             "name": "runner",
-                            "image": "ghcr.io/actions/actions-runner:latest",
+                            "image": "docker.1ms.run/actions/actions-runner:latest",
                             "resources": {
                                 "requests": {
                                     "cpu": "2",
