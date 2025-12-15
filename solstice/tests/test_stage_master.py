@@ -108,6 +108,7 @@ def stage_config():
         min_workers=1,
         max_workers=2,
         batch_size=10,
+        partition_count=1,
     )
 
 

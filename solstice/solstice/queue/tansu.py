@@ -86,7 +86,7 @@ def _find_free_port(start: int = 10000, end: int = 60000) -> int:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("localhost", port))
+            sock.bind(("0.0.0.0", port))
             sock.close()
             return port
         except OSError:
@@ -193,8 +193,10 @@ class TansuBackend(QueueBackend):
         self._process: Optional[subprocess.Popen] = None
         self._producer: Optional[AIOKafkaProducer] = None
         self._admin_client: Optional[AIOKafkaAdminClient] = None
-        self._consumers: Dict[str, AIOKafkaConsumer] = {}
-        self._committed_offsets: Dict[tuple, int] = {}
+        self._consumers: Dict[tuple, AIOKafkaConsumer] = {}  # Consumer cache:
+        # - For consumer groups: (topic, group_id) -> consumer (handles all assigned partitions)
+        # - For manual assignment: (topic, None, partition) -> consumer (one per partition)
+        self._committed_offsets: Dict[tuple, int] = {}  # (group, topic, partition) -> offset
         self._running = False
 
         self.logger = create_ray_logger(f"TansuBackend:{self.port}")
@@ -246,11 +248,28 @@ class TansuBackend(QueueBackend):
             return
 
         if not self.client_only:
-            # Start Tansu subprocess
-            await self._start_tansu_process()
-
-            # Wait for broker to be ready
-            await self._wait_for_ready()
+            # Start Tansu subprocess (retry on port conflict)
+            for attempt in range(5):
+                try:
+                    await self._start_tansu_process()
+                    # Wait for broker to be ready
+                    await self._wait_for_ready()
+                    break
+                except RuntimeError as e:
+                    # If port is in use, try a new one
+                    if "Address already in use" in str(e) or "AddrInUse" in str(e):
+                        _used_ports.discard(self.port)
+                        self.port = _find_free_port()
+                        self.logger = create_ray_logger(f"TansuBackend:{self.port}")
+                        self.logger.warning(
+                            f"Port in use, retrying Tansu start on new port {self.port} (attempt {attempt + 2}/5)"
+                        )
+                        continue
+                    raise
+            else:
+                raise RuntimeError(
+                    "Failed to start Tansu after multiple attempts due to port conflicts."
+                )
 
         # Initialize Kafka clients
         await self._init_kafka_clients()
@@ -484,32 +503,79 @@ class TansuBackend(QueueBackend):
 
         return offsets
 
-    async def _get_consumer(self, topic: str) -> AIOKafkaConsumer:
-        """Get or create a consumer for the topic."""
-        if topic not in self._consumers:
-            # Use manual partition assignment for more control
+    async def _get_consumer(
+        self, topic: str, group_id: Optional[str] = None, partition: Optional[int] = None
+    ) -> AIOKafkaConsumer:
+        """Get or create a consumer for the topic.
+
+        This method implements proper consumer lifecycle management:
+        - For consumer groups: One consumer per (topic, group_id) pair
+        - For manual assignment: One consumer per (topic, partition) pair
+        - Consumers are reused across multiple calls and live for the lifetime of TansuBackend
+
+        Args:
+            topic: Topic name
+            group_id: Consumer group ID. If provided, uses consumer group protocol
+                for automatic partition assignment. If None, uses manual assignment.
+            partition: Specific partition to assign (only used if group_id is None).
+                If None and group_id is None, defaults to partition 0.
+
+        Returns:
+            AIOKafkaConsumer instance (reused if already exists)
+        """
+        # Consumer key design:
+        # - For consumer groups: (topic, group_id) - one consumer handles all assigned partitions
+        # - For manual assignment: (topic, None, partition) - one consumer per partition
+        if group_id:
+            # Consumer group mode: one consumer per (topic, group_id)
+            consumer_key = (topic, group_id)
+        else:
+            # Manual assignment mode: one consumer per (topic, partition)
+            partition_id = partition if partition is not None else 0
+            consumer_key = (topic, None, partition_id)
+
+        if consumer_key not in self._consumers:
             consumer = AIOKafkaConsumer(
                 bootstrap_servers=f"localhost:{self.port}",
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
-                request_timeout_ms=30000,  # Increase timeout
+                request_timeout_ms=30000,
+                group_id=group_id,  # Use consumer group for automatic partition assignment
             )
             await consumer.start()
 
             # Wait a bit for metadata to be available
             await asyncio.sleep(0.2)
 
-            # Manually assign partition 0
-            tp = TopicPartition(topic, 0)
-            consumer.assign([tp])
+            if group_id:
+                # Use consumer group - partitions will be automatically assigned
+                # Subscribe to topic and let Kafka handle partition assignment
+                consumer.subscribe([topic])
+                self.logger.debug(
+                    f"Created consumer for topic {topic} with group {group_id} "
+                    f"(automatic partition assignment, will be reused)"
+                )
+                # Trigger group join to ensure assignments exist before first use
+                try:
+                    await consumer.getmany(timeout_ms=200, max_records=1)
+                except Exception:
+                    pass
+            else:
+                # Manual partition assignment (for backward compatibility)
+                partition_id = partition if partition is not None else 0
+                tp = TopicPartition(topic, partition_id)
+                consumer.assign([tp])
+                self.logger.debug(
+                    f"Created consumer for topic {topic} with manual assignment to partition {partition_id} "
+                    f"(will be reused)"
+                )
 
             # Wait for partition assignment to take effect
             await asyncio.sleep(0.1)
 
-            self._consumers[topic] = consumer
-            self.logger.debug(f"Created consumer for topic {topic} with manual assignment")
+            self._consumers[consumer_key] = consumer
 
-        return self._consumers[topic]
+        return self._consumers[consumer_key]
 
     async def fetch(
         self,
@@ -517,13 +583,30 @@ class TansuBackend(QueueBackend):
         offset: int = 0,
         max_records: int = 100,
         timeout_ms: int = 1000,
+        group_id: Optional[str] = None,
+        partition: Optional[int] = None,
     ) -> List[Record]:
-        """Fetch records from the topic starting at the given offset."""
-        consumer = await self._get_consumer(topic)
-        tp = TopicPartition(topic, 0)
+        """Fetch records from the topic starting at the given offset.
 
-        # Seek to the desired offset
-        consumer.seek(tp, offset)
+        Args:
+            topic: Topic name
+            offset: Starting offset (only used for manual partition assignment)
+            max_records: Maximum number of records to fetch
+            timeout_ms: Timeout in milliseconds
+            group_id: Consumer group ID for automatic partition assignment
+            partition: Specific partition to fetch from (only used if group_id is None)
+
+        Returns:
+            List of records
+        """
+        consumer = await self._get_consumer(topic, group_id=group_id, partition=partition)
+
+        # For consumer group, we don't seek - we rely on committed offsets
+        # For manual assignment, seek to the desired offset
+        if not group_id:
+            partition_id = partition if partition is not None else 0
+            tp = TopicPartition(topic, partition_id)
+            consumer.seek(tp, offset)
 
         # Fetch records using getmany with proper timeout
         records = []
@@ -556,32 +639,178 @@ class TansuBackend(QueueBackend):
         group: str,
         topic: str,
         offset: int,
+        partition: Optional[int] = None,
     ) -> None:
-        """Commit the consumer offset for a consumer group."""
-        # For now, store locally (Tansu supports consumer groups but
-        # we use a simpler approach for single-partition topics)
-        self._committed_offsets[(group, topic)] = offset
+        """Commit the consumer offset for a consumer group.
 
-        # TODO: Use Tansu's native consumer group support when needed
-        # tp = TopicPartition(topic, 0)
-        # await consumer.commit({tp: offset})
+        This method follows Kafka best practices:
+        - Commits offsets for all partitions assigned to this consumer (group mode)
+        - Or commits a specific partition when requested (manual path)
+        - Uses Kafka's native offset commit mechanism (not local cache)
+        - In consumer group mode, Kafka automatically manages partition assignment
+
+        Args:
+            group: Consumer group ID
+            topic: Topic name
+            offset: Offset to commit (next offset to consume)
+            partition: Specific partition to commit. If None, commits all assigned partitions.
+
+        Note:
+            In Kafka consumer group mode, each consumer is assigned specific partitions.
+            If you need per-partition offsets, pass partition explicitly or track them in
+            the caller and commit with separate calls.
+        """
+        if partition is not None:
+            # Commit a specific partition using a dedicated, manually assigned consumer
+            tp = TopicPartition(topic, partition)
+            commit_consumer = await self._get_consumer(topic, group_id=None, partition=partition)
+            await commit_consumer.commit({tp: offset})
+            self._committed_offsets[(group, topic, partition)] = offset
+            return
+
+        # Commit all assigned partitions for the consumer group
+        consumer = await self._get_consumer(topic, group_id=group, partition=None)
+        assigned = consumer.assignment()
+
+        if not assigned:
+            # Ensure the consumer joins the group and gets assignments
+            try:
+                await consumer.getmany(timeout_ms=500, max_records=1)
+            except Exception:
+                pass
+            assigned = consumer.assignment()
+
+        if not assigned:
+            self.logger.warning(
+                f"No partitions assigned for group {group}, topic {topic}. "
+                "Cannot commit offsets. This may happen if the consumer hasn't "
+                "joined the group yet or if there are no partitions in the topic."
+            )
+            return
+
+        offsets_to_commit = {tp: offset for tp in assigned}
+        await consumer.commit(offsets_to_commit)
+
+        for tp in assigned:
+            self._committed_offsets[(group, topic, tp.partition)] = offset
 
     async def get_committed_offset(
         self,
         group: str,
         topic: str,
+        partition: Optional[int] = None,
     ) -> Optional[int]:
-        """Get the committed offset for a consumer group."""
-        return self._committed_offsets.get((group, topic))
+        """Get the committed offset for a consumer group.
 
-    async def get_latest_offset(self, topic: str) -> int:
-        """Get the latest offset in the topic."""
-        consumer = await self._get_consumer(topic)
-        tp = TopicPartition(topic, 0)
+        Args:
+            group: Consumer group ID
+            topic: Topic name
+            partition: Specific partition (if None, returns offset for partition 0 for backward compatibility)
+
+        Returns:
+            Committed offset, or None if not found
+        """
+        # First check memory cache
+        if partition is not None:
+            cached = self._committed_offsets.get((group, topic, partition))
+            if cached is not None:
+                return cached
+        else:
+            cached = self._committed_offsets.get((group, topic, 0)) or self._committed_offsets.get(
+                (group, topic)
+            )
+            if cached is not None:
+                return cached
+
+        # If not in cache, read from Kafka/Tansu
+        try:
+            partition_id = partition if partition is not None else 0
+            tp = TopicPartition(topic, partition_id)
+
+            # Reuse the consumer group consumer if it exists
+            # For consumer groups, we use the group consumer (one per topic+group)
+            # committed() can read offsets for any partition in the group, even if not assigned
+            consumer = await self._get_consumer(topic, group_id=group, partition=None)
+
+            # Get committed offset - this works even if partition is not assigned to this consumer
+            # Kafka stores committed offsets per group, not per consumer instance
+            offset = await consumer.committed(tp)
+
+            # committed() returns the offset directly (or None)
+            if offset is not None:
+                # Cache it
+                self._committed_offsets[(group, topic, partition_id)] = offset
+                self.logger.debug(
+                    f"Read committed offset {offset} for group={group}, topic={topic}, partition={partition_id}"
+                )
+                return offset
+            else:
+                # Offset is None means no commit yet
+                self.logger.debug(
+                    f"No committed offset found (None) for group={group}, topic={topic}, partition={partition_id}"
+                )
+                return None
+        except Exception as e:
+            self.logger.warning(
+                f"Error reading committed offset from Kafka/Tansu for group={group}, topic={topic}, partition={partition_id}: {e}"
+            )
+            import traceback
+
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+
+        return None
+
+    async def get_latest_offset(self, topic: str, partition: Optional[int] = None) -> int:
+        """Get the latest offset in the topic.
+
+        Args:
+            topic: Topic name
+            partition: Specific partition (if None, returns offset for partition 0 for backward compatibility)
+
+        Returns:
+            Latest offset (next offset that will be assigned)
+        """
+        partition_id = partition if partition is not None else 0
+        tp = TopicPartition(topic, partition_id)
+
+        # Reuse existing consumer or create one for this partition
+        # For read-only operations like getting latest offset, we can use a consumer
+        # without group_id (manual assignment)
+        consumer = await self._get_consumer(topic, group_id=None, partition=partition_id)
 
         # Get end offset
         end_offsets = await consumer.end_offsets([tp])
         return end_offsets.get(tp, 0)
+
+    async def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
+        """Get the latest offset for all partitions in the topic.
+
+        Args:
+            topic: Topic name
+
+        Returns:
+            Dictionary mapping partition ID to latest offset
+        """
+        # First, we need to get the number of partitions
+        # We'll try to get metadata from the admin client; let errors surface upstream
+        metadata = await self._admin_client.describe_topics([topic])
+        topic_metadata = metadata[0] if metadata else None
+
+        partitions = None
+        if isinstance(topic_metadata, dict):
+            partitions = topic_metadata.get("partitions")
+        elif topic_metadata is not None and hasattr(topic_metadata, "partitions"):
+            partitions = topic_metadata.partitions
+
+        num_partitions = len(partitions) if partitions else 1
+
+        # Get offsets for all partitions
+        partition_offsets = {}
+        for p in range(num_partitions):
+            offset = await self.get_latest_offset(topic, partition=p)
+            partition_offsets[p] = offset
+
+        return partition_offsets
 
     @property
     def is_persistent(self) -> bool:

@@ -176,21 +176,14 @@ class SimpleAutoscaler:
             status = master.get_status()
 
             # Get config (min/max workers)
-            if hasattr(master, "config"):
-                config = master.config
-                min_workers = config.min_workers
-                max_workers = config.max_workers
-            else:
-                min_workers = 1
-                max_workers = 4
+            config = master.config
+            min_workers = config.min_workers
+            max_workers = config.max_workers
 
             # For non-source stages, try to get input queue lag
             input_lag = 0
-            if not is_source and hasattr(master, "get_input_queue_lag"):
-                try:
-                    input_lag = await master.get_input_queue_lag()
-                except Exception:
-                    pass  # Use 0 if we can't get lag
+            if not is_source:
+                input_lag = await master.get_input_queue_lag()
 
             metrics[stage_id] = StageMetrics(
                 stage_id=stage_id,
@@ -289,7 +282,7 @@ class SimpleAutoscaler:
             if not master:
                 continue
 
-            current = len(master._workers) if hasattr(master, "_workers") else 0
+            current = len(master._workers)
 
             try:
                 if target > current:

@@ -2,10 +2,13 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
-from typing import Any, ClassVar, Dict, Optional, Type, TypeVar
+from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, TYPE_CHECKING
 import logging
 
 from solstice.core.models import SplitPayload, Split
+
+if TYPE_CHECKING:
+    from solstice.core.stage_master import StageMaster
 
 
 T = TypeVar("T", bound="Operator")
@@ -32,6 +35,7 @@ class OperatorConfig(ABC):
     """
 
     operator_class: ClassVar[Type["Operator"]]
+    master_class: ClassVar[Type["StageMaster"]]
 
     def setup(self, worker_id: Optional[str] = None) -> "Operator":
         """Create and return an operator instance with this configuration.

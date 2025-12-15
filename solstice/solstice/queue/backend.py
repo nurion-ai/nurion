@@ -9,7 +9,7 @@ The interface is designed to support:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 import time
 
 
@@ -199,6 +199,8 @@ class QueueBackend(ABC):
         offset: int = 0,
         max_records: int = 100,
         timeout_ms: int = 1000,
+        group_id: Optional[str] = None,
+        partition: Optional[int] = None,
     ) -> List[Record]:
         """Fetch records from the topic starting at the given offset.
 
@@ -207,6 +209,8 @@ class QueueBackend(ABC):
             offset: Starting offset (inclusive).
             max_records: Maximum number of records to fetch.
             timeout_ms: Timeout in milliseconds.
+            group_id: Consumer group id (for backends that support groups).
+            partition: Specific partition to read from (optional; ignored by single-partition backends).
 
         Returns:
             List of records. Empty list if no records available.
@@ -226,6 +230,7 @@ class QueueBackend(ABC):
         group: str,
         topic: str,
         offset: int,
+        partition: Optional[int] = None,
     ) -> None:
         """Commit the consumer offset for a consumer group.
 
@@ -233,6 +238,7 @@ class QueueBackend(ABC):
             group: Consumer group ID.
             topic: Name of the topic.
             offset: Offset to commit (next offset to consume).
+            partition: Specific partition to commit (optional; ignored by single-partition backends).
 
         Raises:
             RuntimeError: If commit fails.
@@ -249,12 +255,14 @@ class QueueBackend(ABC):
         self,
         group: str,
         topic: str,
+        partition: Optional[int] = None,
     ) -> Optional[int]:
         """Get the committed offset for a consumer group.
 
         Args:
             group: Consumer group ID.
             topic: Name of the topic.
+            partition: Specific partition (optional; ignored by single-partition backends).
 
         Returns:
             The committed offset, or None if no offset has been committed.
@@ -265,11 +273,12 @@ class QueueBackend(ABC):
         pass
 
     @abstractmethod
-    async def get_latest_offset(self, topic: str) -> int:
+    async def get_latest_offset(self, topic: str, partition: Optional[int] = None) -> int:
         """Get the latest offset in the topic.
 
         Args:
             topic: Name of the topic.
+            partition: Specific partition (optional; ignored by single-partition backends).
 
         Returns:
             The next offset that will be assigned to a new message.
@@ -277,6 +286,14 @@ class QueueBackend(ABC):
 
         Raises:
             RuntimeError: If the operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
+        """Get the latest offset for all partitions of a topic.
+
+        Single-partition backends should return a dict with a single entry {0: latest_offset}.
         """
         pass
 

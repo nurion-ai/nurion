@@ -20,7 +20,7 @@ from solstice.runtime.autoscaler import (
     SimpleAutoscaler,
     StageMetrics,
 )
-from solstice.core.stage_master import StageStatus
+from solstice.core.stage_master import StageStatus, StageConfig
 
 
 # ============================================================================
@@ -454,6 +454,7 @@ class TestMetricsCollection:
         source._workers = {"worker_0": MagicMock()}
         source._running = True
         source._finished = False
+        source.config = StageConfig(min_workers=1, max_workers=1)
         source.get_status.return_value = StageStatus(
             stage_id="source",
             worker_count=1,

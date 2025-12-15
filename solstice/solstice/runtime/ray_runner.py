@@ -144,15 +144,12 @@ class RayJobRunner:
                 self.logger.info(f"Created {type(master).__name__} for source stage {stage_id}")
             else:
                 # Regular stage: use StageMaster
-                if hasattr(stage, "config_v2") and stage.config_v2:
-                    config = stage.config_v2
-                else:
-                    config = StageConfig(
-                        queue_type=self.queue_type,
-                        tansu_storage_url=self.tansu_storage_url,
-                        min_workers=stage.min_parallelism,
-                        max_workers=stage.max_parallelism,
-                    )
+                config = stage.config_v2 or StageConfig(
+                    queue_type=self.queue_type,
+                    tansu_storage_url=self.tansu_storage_url,
+                    min_workers=stage.min_parallelism,
+                    max_workers=stage.max_parallelism,
+                )
 
                 # Get upstream endpoint and topic
                 upstream_id = upstream_ids[0]  # TODO: handle multi-input
@@ -173,8 +170,26 @@ class RayJobRunner:
                 self._masters[stage_id] = master
                 self.logger.info(f"Created StageMaster for stage {stage_id}")
 
+        # Wire downstream references for backpressure propagation
+        self._wire_downstream_refs()
+
         self._initialized = True
         self.logger.info(f"Initialized {len(self._masters)} stages")
+
+    def _wire_downstream_refs(self) -> None:
+        """Connect masters with their downstream refs so backpressure works."""
+        for upstream_id, downstream_ids in self.job.dag_edges.items():
+            upstream_master = self._masters.get(upstream_id)
+            if upstream_master is None:
+                continue
+
+            downstream_refs = {
+                downstream_id: self._masters[downstream_id]
+                for downstream_id in downstream_ids
+                if downstream_id in self._masters
+            }
+            if downstream_refs:
+                upstream_master.set_downstream_stage_refs(downstream_refs)
 
     def _create_source_master(self, stage: "Stage") -> SourceMaster:
         """Create appropriate SourceMaster for a source stage.
@@ -185,7 +200,7 @@ class RayJobRunner:
         operator_config = stage.operator_config
 
         # Get master_class from operator_config
-        master_class = getattr(operator_config, "master_class", None)
+        master_class = operator_config.master_class
         if master_class is None:
             raise ValueError(
                 f"Source stage '{stage.stage_id}' operator_config {type(operator_config).__name__} "
