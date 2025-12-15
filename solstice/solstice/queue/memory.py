@@ -284,9 +284,14 @@ class MemoryBackend(QueueBackend):
     def get_stats(self) -> Dict:
         """Get statistics about the backend (for debugging)."""
         with self._global_lock:
+            committed = dict(self._committed_offsets)
+            for (group, topic, _partition_id), offset in self._committed_offsets.items():
+                # legacy view without partition id (single-partition compatibility)
+                committed[(group, topic)] = offset
+
             stats = {
                 "topics": {},
-                "committed_offsets": dict(self._committed_offsets),
+                "committed_offsets": committed,
             }
             for topic_name, topic_data in self._topics.items():
                 with topic_data.lock:

@@ -86,7 +86,7 @@ def _find_free_port(start: int = 10000, end: int = 60000) -> int:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("localhost", port))
+            sock.bind(("0.0.0.0", port))
             sock.close()
             return port
         except OSError:
@@ -248,11 +248,28 @@ class TansuBackend(QueueBackend):
             return
 
         if not self.client_only:
-            # Start Tansu subprocess
-            await self._start_tansu_process()
-
-            # Wait for broker to be ready
-            await self._wait_for_ready()
+            # Start Tansu subprocess (retry on port conflict)
+            for attempt in range(5):
+                try:
+                    await self._start_tansu_process()
+                    # Wait for broker to be ready
+                    await self._wait_for_ready()
+                    break
+                except RuntimeError as e:
+                    # If port is in use, try a new one
+                    if "Address already in use" in str(e) or "AddrInUse" in str(e):
+                        _used_ports.discard(self.port)
+                        self.port = _find_free_port()
+                        self.logger = create_ray_logger(f"TansuBackend:{self.port}")
+                        self.logger.warning(
+                            f"Port in use, retrying Tansu start on new port {self.port} (attempt {attempt + 2}/5)"
+                        )
+                        continue
+                    raise
+            else:
+                raise RuntimeError(
+                    "Failed to start Tansu after multiple attempts due to port conflicts."
+                )
 
         # Initialize Kafka clients
         await self._init_kafka_clients()
@@ -538,6 +555,11 @@ class TansuBackend(QueueBackend):
                     f"Created consumer for topic {topic} with group {group_id} "
                     f"(automatic partition assignment, will be reused)"
                 )
+                # Trigger group join to ensure assignments exist before first use
+                try:
+                    await consumer.getmany(timeout_ms=200, max_records=1)
+                except Exception:
+                    pass
             else:
                 # Manual partition assignment (for backward compatibility)
                 partition_id = partition if partition is not None else 0
@@ -649,6 +671,14 @@ class TansuBackend(QueueBackend):
         # Commit all assigned partitions for the consumer group
         consumer = await self._get_consumer(topic, group_id=group, partition=None)
         assigned = consumer.assignment()
+
+        if not assigned:
+            # Ensure the consumer joins the group and gets assignments
+            try:
+                await consumer.getmany(timeout_ms=500, max_records=1)
+            except Exception:
+                pass
+            assigned = consumer.assignment()
 
         if not assigned:
             self.logger.warning(
