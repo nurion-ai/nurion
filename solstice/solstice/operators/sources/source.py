@@ -46,7 +46,7 @@ import asyncio
 import time
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Iterator, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
 
 
 from solstice.core.models import Split

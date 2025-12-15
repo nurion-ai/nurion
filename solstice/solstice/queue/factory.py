@@ -33,6 +33,8 @@ def create_queue_backend(
     """
     qt = _queue_type_value(queue_type).lower()
     if qt == "tansu":
-        return TansuBackend(storage_url=storage_url or "memory://", port=port, client_only=client_only)
+        return TansuBackend(
+            storage_url=storage_url or "memory://", port=port, client_only=client_only
+        )
     # default to memory
     return MemoryBackend()

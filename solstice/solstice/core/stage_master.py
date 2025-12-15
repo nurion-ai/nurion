@@ -291,7 +291,7 @@ class StageMaster:
 
     def _compute_partition_count(self) -> int:
         """Compute the number of partitions based on worker configuration.
-        
+
         Returns:
             Number of partitions to use. If partition_count is explicitly set,
             use that. Otherwise, auto-compute based on max_workers:
@@ -300,13 +300,13 @@ class StageMaster:
         """
         if self.config.partition_count is not None:
             return max(1, self.config.partition_count)
-        
+
         # Auto-compute based on workers
         # Use max_workers as a proxy for expected parallelism
         # For single worker, use 1 partition; for multiple, use max_workers
         if self.config.max_workers <= 1:
             return 1
-        
+
         # For multiple workers, use max_workers as partition count
         # This allows each worker to potentially consume from a different partition
         return self.config.max_workers
@@ -344,9 +344,7 @@ class StageMaster:
         )
 
         await queue.create_topic(self._output_topic, partitions=partition_count)
-        self.logger.info(
-            f"Created topic {self._output_topic} with {partition_count} partition(s)"
-        )
+        self.logger.info(f"Created topic {self._output_topic} with {partition_count} partition(s)")
         return queue
 
     async def start(self) -> None:
@@ -551,7 +549,6 @@ class StageMaster:
         skew_detected, skew_ratio, partition_lags = await self._detect_partition_skew()
 
         # Calculate total input lag
-        total_input_lag = sum(partition_lags.values()) if partition_lags else 0
 
         return StageMetrics(
             stage_id=self.stage_id,
@@ -775,9 +772,7 @@ class StageMaster:
 
         # TODO: Implement upstream stage reference tracking and propagation
         # For now, this is a placeholder
-        self.logger.debug(
-            f"Would propagate backpressure from {self.stage_id} to upstream stages"
-        )
+        self.logger.debug(f"Would propagate backpressure from {self.stage_id} to upstream stages")
 
     async def _check_backpressure_before_produce(self) -> bool:
         """Check if we should pause production due to downstream backpressure.
@@ -1059,7 +1054,7 @@ class StageWorker:
                     message = QueueMessage.from_bytes(record.value)
                     await self._process_message(message)
                     self._processed_count += 1
-                    
+
                     # Track the highest offset for each partition
                     # Note: record doesn't directly contain partition info in our current Record model
                     # For now, we'll commit based on the highest offset seen
@@ -1080,7 +1075,9 @@ class StageWorker:
                 # Note: This is a simplification - ideally we'd track per-partition offsets
                 # but that requires Record to include partition information
                 current_offset = record.offset + 1
-                if not last_committed_offsets or current_offset > max(last_committed_offsets.values()):
+                if not last_committed_offsets or current_offset > max(
+                    last_committed_offsets.values()
+                ):
                     # Update the highest offset seen
                     # Since we don't have partition info in Record, we use a single entry
                     # representing the highest offset across all partitions

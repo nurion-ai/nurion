@@ -327,8 +327,9 @@ class MemoryBackend(QueueBackend):
         """
         with self._global_lock:
             min_offset = None
-            for (group, t), offset in self._committed_offsets.items():
-                if t == topic:
-                    if min_offset is None or offset < min_offset:
-                        min_offset = offset
+            for (group, t, _partition_id), offset in self._committed_offsets.items():
+                if t != topic:
+                    continue
+                if min_offset is None or offset < min_offset:
+                    min_offset = offset
             return min_offset

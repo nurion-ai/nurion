@@ -161,7 +161,9 @@ class StageMetrics:
     backpressure_active: bool = False
     uptime_secs: float = 0.0
     timestamp: float = field(default_factory=time.time)
-    partition_metrics: Dict[int, PartitionMetrics] = field(default_factory=dict)  # partition_id -> metrics
+    partition_metrics: Dict[int, PartitionMetrics] = field(
+        default_factory=dict
+    )  # partition_id -> metrics
     skew_detected: bool = False
     skew_ratio: float = 0.0  # max_lag / avg_lag (if > 1.0, indicates skew)
 
@@ -178,9 +180,7 @@ class StageMetrics:
             "output_buffer_size": self.output_buffer_size,
             "backpressure_active": self.backpressure_active,
             "uptime_secs": self.uptime_secs,
-            "partition_metrics": {
-                pid: pm.to_dict() for pid, pm in self.partition_metrics.items()
-            },
+            "partition_metrics": {pid: pm.to_dict() for pid, pm in self.partition_metrics.items()},
             "skew_detected": self.skew_detected,
             "skew_ratio": self.skew_ratio,
             "timestamp": self.timestamp,
