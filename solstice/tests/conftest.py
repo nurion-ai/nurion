@@ -1,3 +1,27 @@
+from __future__ import annotations
+
+"""Shared test fixtures."""
+
+import hashlib
+import random
+import uuid
+
+import pytest_asyncio
+
+from solstice.core.split_payload_store import RaySplitPayloadStore
+from solstice.queue import TansuBackend
+
+
+@pytest_asyncio.fixture
+async def tansu_backend():
+    """Start a real TansuBackend backed by in-memory storage."""
+    port = 10000 + random.randint(0, 9999)
+    backend = TansuBackend(storage_url="memory://tansu/", port=port)
+    await backend.start()
+    try:
+        yield backend
+    finally:
+        await backend.stop()
 """Pytest configuration and fixtures for Solstice tests.
 
 Provides testcontainer-based fixtures for integration tests:
@@ -6,8 +30,6 @@ Provides testcontainer-based fixtures for integration tests:
 - Aether REST catalog server
 - Ray cluster fixtures
 """
-
-from __future__ import annotations
 
 import os
 import socket
@@ -382,3 +404,15 @@ def ray_cluster():
     except Exception:
         pass
     ray.shutdown()
+
+
+@pytest_asyncio.fixture
+async def payload_store(ray_cluster, request):
+    """Create a unique RaySplitPayloadStore for each test to avoid name collisions."""
+    test_name = request.node.name.replace("[", "_").replace("]", "_")
+    unique = hashlib.md5(test_name.encode()).hexdigest()[:8] if test_name else str(
+        uuid.uuid4()
+    )[:8]
+    store = RaySplitPayloadStore(name=f"test_store_{unique}")
+    yield store
+    # Ray handles cleanup

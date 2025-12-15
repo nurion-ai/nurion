@@ -188,16 +188,27 @@ class SparkSourceV2Master(StageMaster):
         # Downstream stage will consume from our output_queue
 
     async def _execute_spark_write(self) -> int:
-        """Execute Spark write via JVM.
+        """Execute Spark write via JVM with backpressure awareness.
 
         JVM writes directly to output_queue:
         1. Ray.put(arrowBytes, owner=storeActor) - managed lifetime
         2. Kafka produce to output_queue with payload_key = "_v2ref:{id}"
 
+        Note: Current implementation writes all data at once. For true backpressure
+        support, JVM-side streaming write with periodic backpressure checks is needed.
+        This is a TODO for future enhancement.
+
         Returns:
             Number of splits written
         """
         import raydp
+
+        # Check backpressure before starting write
+        if await self._check_backpressure_before_produce():
+            self.logger.warning(
+                f"Backpressure detected before Spark write for {self.stage_id}. "
+                f"Proceeding anyway (current implementation doesn't support streaming write)."
+            )
 
         # Initialize Spark
         spark_configs = {
@@ -237,6 +248,9 @@ class SparkSourceV2Master(StageMaster):
         self.logger.info(f"JVM writing directly to output_queue: {queue_bootstrap}/{queue_topic}")
 
         # Call JVM method to write Arrow data directly to output_queue
+        # TODO: For true backpressure support, this should be a streaming write
+        # that periodically checks backpressure and pauses/resumes accordingly.
+        # This requires JVM-side changes to support incremental writes.
         jvm = df.sql_ctx.sparkSession.sparkContext._jvm
         writer = jvm.org.apache.spark.sql.raydp.ObjectStoreWriter(df._jdf)
 
@@ -248,6 +262,14 @@ class SparkSourceV2Master(StageMaster):
         )
 
         self.logger.info(f"JVM write completed: {count} splits to output_queue")
+
+        # Check backpressure after write
+        if await self._check_backpressure_before_produce():
+            self.logger.warning(
+                f"Backpressure detected after Spark write for {self.stage_id}. "
+                f"Downstream may be overwhelmed."
+            )
+
         return count
 
     def plan_splits(self) -> Iterator[Split]:

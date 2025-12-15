@@ -206,6 +206,8 @@ class MemoryBackend(QueueBackend):
         offset: int = 0,
         max_records: int = 100,
         timeout_ms: int = 1000,
+        group_id: Optional[str] = None,
+        partition: Optional[int] = None,
     ) -> List[Record]:
         """Fetch records from the topic starting at the given offset."""
         with self._global_lock:
@@ -237,21 +239,25 @@ class MemoryBackend(QueueBackend):
         group: str,
         topic: str,
         offset: int,
+        partition: Optional[int] = None,
     ) -> None:
         """Commit the consumer offset for a consumer group."""
+        partition_id = partition if partition is not None else 0
         with self._global_lock:
-            self._committed_offsets[(group, topic)] = offset
+            self._committed_offsets[(group, topic, partition_id)] = offset
 
     async def get_committed_offset(
         self,
         group: str,
         topic: str,
+        partition: Optional[int] = None,
     ) -> Optional[int]:
         """Get the committed offset for a consumer group."""
+        partition_id = partition if partition is not None else 0
         with self._global_lock:
-            return self._committed_offsets.get((group, topic))
+            return self._committed_offsets.get((group, topic, partition_id))
 
-    async def get_latest_offset(self, topic: str) -> int:
+    async def get_latest_offset(self, topic: str, partition: Optional[int] = None) -> int:
         """Get the latest offset in the topic."""
         with self._global_lock:
             if topic not in self._topics:
@@ -260,6 +266,11 @@ class MemoryBackend(QueueBackend):
 
         with topic_data.lock:
             return topic_data.next_offset
+
+    async def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
+        """Return latest offsets for all partitions. Memory backend is single-partition."""
+        latest = await self.get_latest_offset(topic, partition=0)
+        return {0: latest}
 
     @property
     def is_persistent(self) -> bool:

@@ -42,10 +42,11 @@ Key design decisions:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Dict, Iterator, Optional
 
 
 from solstice.core.models import Split
@@ -126,6 +127,9 @@ class SourceMaster(StageMaster):
 
         # Metrics
         self._splits_produced = 0
+
+        # Backpressure configuration (inherited from parent, but can be overridden)
+        self._backpressure_threshold_queue_size = config.backpressure_threshold_queue_size
 
         # Override logger
         self.logger = create_ray_logger(f"SourceMaster-{self.stage_id}")
@@ -211,14 +215,33 @@ class SourceMaster(StageMaster):
         self._notify_splits_complete()
 
     async def _produce_splits(self) -> None:
-        """Generate splits and write to source queue."""
+        """Generate splits and write to source queue with backpressure awareness."""
         self.logger.info(f"Generating splits for source {self.stage_id}")
 
         split_iterator = self.plan_splits()
+        backpressure_check_interval = 10  # Check backpressure every N splits
+        consecutive_backpressure_pauses = 0
+        max_consecutive_pauses = 100  # Max pauses before logging warning
 
         for split in split_iterator:
             if not self._running:
                 break
+
+            # Check backpressure periodically
+            if self._splits_produced % backpressure_check_interval == 0:
+                should_pause = await self._check_backpressure_before_produce()
+                if should_pause:
+                    consecutive_backpressure_pauses += 1
+                    if consecutive_backpressure_pauses >= max_consecutive_pauses:
+                        self.logger.warning(
+                            f"Source {self.stage_id} paused for {consecutive_backpressure_pauses} "
+                            f"consecutive checks due to backpressure"
+                        )
+                    # Wait a bit before checking again
+                    await asyncio.sleep(0.1)
+                    continue
+                else:
+                    consecutive_backpressure_pauses = 0
 
             try:
                 await self._produce_split(split)
@@ -234,6 +257,46 @@ class SourceMaster(StageMaster):
                 raise
 
         self.logger.info(f"Source {self.stage_id} produced {self._splits_produced} splits to queue")
+
+    async def _check_backpressure_before_produce(self) -> bool:
+        """Check if we should pause production due to downstream backpressure.
+
+        Returns:
+            True if production should be paused, False otherwise
+        """
+        # Check if we have downstream stages configured
+        if not self._downstream_stage_refs:
+            return False
+
+        # Check all downstream stages for backpressure
+        for stage_id, stage_ref in self._downstream_stage_refs.items():
+            try:
+                # Get status from downstream stage
+                status = await stage_ref.get_status_async()
+
+                # Check if backpressure is active
+                if status.backpressure_active:
+                    self.logger.debug(
+                        f"Backpressure detected from downstream stage {stage_id}, "
+                        f"pausing split production"
+                    )
+                    return True
+
+                # Also check queue size if available
+                # Use a threshold (e.g., 80% of max queue size)
+                queue_size = status.output_queue_size
+                if queue_size > self._backpressure_threshold_queue_size * 0.8:
+                    self.logger.debug(
+                        f"Downstream queue size {queue_size} approaching threshold, "
+                        f"slowing down production"
+                    )
+                    return True
+
+            except Exception as e:
+                self.logger.debug(f"Error checking backpressure from {stage_id}: {e}")
+                # Continue checking other downstream stages
+
+        return False
 
     def _notify_splits_complete(self) -> None:
         """Notify workers that all splits have been produced.

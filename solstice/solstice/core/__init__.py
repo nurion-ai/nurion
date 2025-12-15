@@ -9,6 +9,7 @@ from solstice.core.stage_master import (
     StageWorker,
     QueueType,
     QueueEndpoint,
+    create_queue_endpoint,
     QueueMessage,
     StageStatus,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "StageWorker",
     "QueueType",
     "QueueEndpoint",
+    "create_queue_endpoint",
     "QueueMessage",
     "StageStatus",
 ]
