@@ -13,7 +13,6 @@ import uuid
 
 import pyarrow as pa
 import pytest
-import ray
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType

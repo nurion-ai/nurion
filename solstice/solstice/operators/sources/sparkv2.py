@@ -85,7 +85,6 @@ class SparkSourceV2Config(OperatorConfig):
         spark_configs: Additional Spark configurations
         dataframe_fn: Function that takes SparkSession and returns DataFrame
         parallelism: Number of partitions for the output data
-        tansu_storage_url: Tansu storage URL (memory://, s3://)
     """
 
     # Spark configuration
@@ -100,9 +99,6 @@ class SparkSourceV2Config(OperatorConfig):
 
     # Output configuration
     parallelism: Optional[int] = None
-
-    # Queue configuration
-    tansu_storage_url: str = "memory://"
 
 
 class SparkSourceV2Master(StageMaster):

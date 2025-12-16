@@ -1,15 +1,10 @@
-"""Abstract interface for queue backends.
+"""Protocol-based interface for queue backends.
 
-This module defines the contract that all queue backends must implement.
-The interface is designed to support:
-- Exactly-once semantics via offset tracking
-- Batch operations for performance
-- Multiple backend implementations (memory, Tansu, etc.)
+The contract is kept minimal so implementations can be lightweight.
 """
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Protocol, runtime_checkable
 import time
 
 
@@ -35,63 +30,14 @@ class Record:
         return f"Record(offset={self.offset}, value={value_preview!r})"
 
 
-@dataclass
-class QueueConfig:
-    """Configuration for queue backends.
+@runtime_checkable
+class QueueBackend(Protocol):
+    """Protocol for queue backends.
 
-    Attributes:
-        backend_type: Type of backend ("memory", "tansu").
-        storage_url: Storage URL for persistent backends (e.g., "s3://bucket/").
-        port: Port for Tansu broker (default: 9092).
-        batch_size: Default batch size for fetch operations.
-        fetch_timeout_ms: Timeout for fetch operations in milliseconds.
+    Implementations should satisfy this protocol; runtime checks are opt-in
+    via @runtime_checkable.
     """
 
-    backend_type: str = "memory"
-    storage_url: str = "memory://"
-    port: int = 9092
-    batch_size: int = 100
-    fetch_timeout_ms: int = 1000
-
-
-class QueueBackend(ABC):
-    """Abstract base class for queue backends.
-
-    All queue backends must implement this interface. The interface is designed
-    to support exactly-once semantics through offset tracking.
-
-    Lifecycle:
-        1. Create backend instance
-        2. Call start() to initialize
-        3. Use produce/fetch/commit operations
-        4. Call stop() to cleanup
-
-    Thread Safety:
-        Implementations should be thread-safe for concurrent produce/fetch
-        operations from multiple workers.
-
-    Example:
-        ```python
-        backend = SomeBackend(config)
-        await backend.start()
-        try:
-            # Create topic
-            await backend.create_topic("my-topic")
-
-            # Produce
-            offset = await backend.produce("my-topic", b"data")
-
-            # Fetch
-            records = await backend.fetch("my-topic", offset=0)
-
-            # Commit
-            await backend.commit_offset("group", "my-topic", records[-1].offset + 1)
-        finally:
-            await backend.stop()
-        ```
-    """
-
-    @abstractmethod
     async def start(self) -> None:
         """Start the queue backend.
 
@@ -103,7 +49,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def stop(self) -> None:
         """Stop the queue backend.
 
@@ -112,7 +57,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def create_topic(self, topic: str, partitions: int = 1) -> None:
         """Create a topic.
 
@@ -128,7 +72,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def delete_topic(self, topic: str) -> None:
         """Delete a topic.
 
@@ -143,7 +86,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def produce(
         self,
         topic: str,
@@ -169,7 +111,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def produce_batch(
         self,
         topic: str,
@@ -192,7 +133,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def fetch(
         self,
         topic: str,
@@ -224,7 +164,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def commit_offset(
         self,
         group: str,
@@ -250,7 +189,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def get_committed_offset(
         self,
         group: str,
@@ -272,7 +210,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def get_latest_offset(self, topic: str, partition: Optional[int] = None) -> int:
         """Get the latest offset in the topic.
 
@@ -289,7 +226,6 @@ class QueueBackend(ABC):
         """
         pass
 
-    @abstractmethod
     async def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
         """Get the latest offset for all partitions of a topic.
 
@@ -298,7 +234,6 @@ class QueueBackend(ABC):
         pass
 
     @property
-    @abstractmethod
     def is_persistent(self) -> bool:
         """Whether this backend persists data across restarts.
 
@@ -306,6 +241,10 @@ class QueueBackend(ABC):
             True if data survives backend restart, False otherwise.
         """
         pass
+
+    # Optional attributes used for endpoint wiring
+    host: str
+    port: int
 
     async def health_check(self) -> bool:
         """Check if the backend is healthy.

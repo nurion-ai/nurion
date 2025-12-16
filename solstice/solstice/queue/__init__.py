@@ -31,7 +31,7 @@ Example:
     ```
 """
 
-from solstice.queue.backend import QueueBackend, Record, QueueConfig
+from solstice.queue.backend import QueueBackend, Record
 from solstice.queue.memory import MemoryBackend
 from solstice.queue.tansu import TansuBackend
 from solstice.queue.factory import create_queue_backend
@@ -39,7 +39,6 @@ from solstice.queue.factory import create_queue_backend
 __all__ = [
     "QueueBackend",
     "Record",
-    "QueueConfig",
     "MemoryBackend",
     "TansuBackend",
     "create_queue_backend",

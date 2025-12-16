@@ -9,7 +9,6 @@ Tests the complete flow:
 
 import asyncio
 import pytest
-import ray
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 

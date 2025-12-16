@@ -52,6 +52,7 @@ SKIP_RAYDP_REASON = "raydp JAR files not available (need to build java component
 def _wait_for_actor(store: RaySplitPayloadStore, timeout: float = 5.0):
     """Wait for the store actor to be ready."""
     import time
+
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -116,6 +117,7 @@ class TestSparkSourceV2Integration:
 
             # Check message format (messages are Record objects with .value attribute)
             from solstice.core.stage_master import QueueMessage
+
             msg = QueueMessage.from_bytes(messages[0].value)
             assert msg.payload_key.startswith("_jvm_arrow:")
 

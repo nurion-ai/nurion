@@ -1,35 +1,4 @@
-from __future__ import annotations
-
-"""Shared test fixtures."""
-
-import hashlib
-import random
-import uuid
-
-import pytest_asyncio
-
-from solstice.core.split_payload_store import RaySplitPayloadStore
-from solstice.queue import TansuBackend
-
-
-@pytest_asyncio.fixture
-async def tansu_backend():
-    """Start a real TansuBackend backed by in-memory storage."""
-    port = 10000 + random.randint(0, 9999)
-    backend = TansuBackend(storage_url="memory://tansu/", port=port)
-    await backend.start()
-    try:
-        yield backend
-    finally:
-        await backend.stop()
-"""Pytest configuration and fixtures for Solstice tests.
-
-Provides testcontainer-based fixtures for integration tests:
-- PostgreSQL database
-- MinIO object storage
-- Aether REST catalog server
-- Ray cluster fixtures
-"""
+"""Pytest configuration and fixtures for Solstice tests."""
 
 import os
 import socket
@@ -37,12 +6,18 @@ import sys
 import tempfile
 import threading
 import time
+import hashlib
+import uuid
 from collections.abc import Generator
 from contextlib import closing
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 import ray
+
+from solstice.core.split_payload_store import RaySplitPayloadStore
+from solstice.queue import TansuBackend
 
 if TYPE_CHECKING:
     pass
@@ -86,6 +61,18 @@ def _find_free_port() -> int:
         s.bind(("", 0))
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         return s.getsockname()[1]
+
+
+@pytest_asyncio.fixture
+async def tansu_backend():
+    """Start a real TansuBackend backed by in-memory storage."""
+    port = _find_free_port()
+    backend = TansuBackend(storage_url="memory://tansu/", port=port)
+    await backend.start()
+    try:
+        yield backend
+    finally:
+        await backend.stop()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -382,6 +369,7 @@ def ray_cluster():
     jars_paths = []
     try:
         from raydp.utils import code_search_path
+
         jars_paths = code_search_path()
     except ImportError:
         pass
@@ -400,6 +388,7 @@ def ray_cluster():
     # Cleanup Spark if running
     try:
         import raydp
+
         raydp.stop_spark()
     except Exception:
         pass
@@ -410,9 +399,7 @@ def ray_cluster():
 async def payload_store(ray_cluster, request):
     """Create a unique RaySplitPayloadStore for each test to avoid name collisions."""
     test_name = request.node.name.replace("[", "_").replace("]", "_")
-    unique = hashlib.md5(test_name.encode()).hexdigest()[:8] if test_name else str(
-        uuid.uuid4()
-    )[:8]
+    unique = hashlib.md5(test_name.encode()).hexdigest()[:8] if test_name else str(uuid.uuid4())[:8]
     store = RaySplitPayloadStore(name=f"test_store_{unique}")
     yield store
     # Ray handles cleanup

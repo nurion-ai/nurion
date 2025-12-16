@@ -6,11 +6,8 @@ Tests the new queue-based architecture with:
 - QueueBackend integration
 """
 
-import random
-
 import pytest
 import pytest_asyncio
-import ray
 from dataclasses import dataclass
 from typing import List
 from unittest.mock import MagicMock
@@ -100,11 +97,8 @@ def mock_stage():
 @pytest.fixture
 def stage_config():
     """Provide default stage config using TANSU backend for distributed tests."""
-    # Use random port to avoid conflicts between tests
-    port = 10000 + random.randint(0, 9999)
     return StageConfig(
         queue_type=QueueType.TANSU,
-        tansu_port=port,
         min_workers=1,
         max_workers=2,
         batch_size=10,
@@ -185,12 +179,10 @@ class TestStageConfig:
         config = StageConfig(
             queue_type=QueueType.TANSU,
             tansu_storage_url="s3://my-bucket/",
-            tansu_port=19092,
         )
 
         assert config.queue_type == QueueType.TANSU
         assert config.tansu_storage_url == "s3://my-bucket/"
-        assert config.tansu_port == 19092
 
     def test_to_dict(self):
         """Test config serialization."""
