@@ -21,12 +21,13 @@ from solstice.queue import TansuBackend
 @dataclass
 class _TestOperatorConfig(OperatorConfig):
     """Test operator config (prefixed with _ to avoid pytest collection)."""
+
     pass
 
 
 class _TestOperator(Operator):
     """Test operator that passes through data (prefixed with _ to avoid pytest collection)."""
-    
+
     def __init__(self, config: _TestOperatorConfig, worker_id: str = None):
         super().__init__(config, worker_id)
         self._closed = False
@@ -36,6 +37,7 @@ class _TestOperator(Operator):
 
     def generate_splits(self):
         from solstice.core.models import Split
+
         return [
             Split(split_id=f"split_{i}", stage_id="test_stage", data_range={"index": i})
             for i in range(5)
@@ -66,7 +68,7 @@ class TestPartitionCountCalculation:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         assert partition_count == 1
 
@@ -84,7 +86,7 @@ class TestPartitionCountCalculation:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         assert partition_count == 8
 
@@ -102,7 +104,7 @@ class TestPartitionCountCalculation:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         assert partition_count == 4
 
@@ -120,7 +122,7 @@ class TestPartitionCountCalculation:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         assert partition_count >= 1
 
@@ -131,23 +133,19 @@ class TestQueueCreationWithPartitions:
     @pytest.mark.asyncio
     async def test_tansu_queue_created_with_correct_partitions(self, payload_store, ray_cluster):
         """Test that Tansu backend creates queue with correct partition count.
-        
+
         This test REQUIRES Tansu to be installed with dynostore feature enabled.
         It verifies that:
         1. Partition count is calculated correctly
         2. Tansu queue is created with the correct number of partitions
         3. The queue backend is actually a TansuBackend instance
-        
+
         If Tansu is not available or misconfigured, the test will FAIL (not skip).
         """
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
             tansu_storage_url="memory://tansu/",  # Use memory storage (requires dynostore feature)
-            tansu_port=port,
         )
         stage = Stage(
             stage_id="test_stage",
@@ -160,14 +158,14 @@ class TestQueueCreationWithPartitions:
             config=config,
             payload_store=payload_store,
         )
-        
+
         # Verify partition count calculation
         partition_count = master._compute_partition_count()
         assert partition_count == 4
-        
+
         # Start master to create queue
         await master.start()
-        
+
         try:
             # Verify queue was created with correct partition count
             assert master._output_queue is not None
@@ -176,21 +174,18 @@ class TestQueueCreationWithPartitions:
         finally:
             await master.stop()
 
+
 class TestPartitionRebalance:
     """Tests for partition rebalance when workers change."""
 
     @pytest.mark.asyncio
     async def test_rebalance_on_worker_add(self, payload_store, ray_cluster):
         """Test that adding workers triggers rebalance."""
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
             min_workers=2,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port,
         )
         stage = Stage(
             stage_id="test_stage",
@@ -203,36 +198,32 @@ class TestPartitionRebalance:
             config=config,
             payload_store=payload_store,
         )
-        
+
         await master.start()
-        
+
         initial_worker_count = len(master._workers)
         assert initial_worker_count == 2  # min_workers
-        
+
         # Add more workers
         await master._spawn_worker()
         await master._spawn_worker()
-        
+
         # Verify workers were added
         assert len(master._workers) == 4
-        
+
         # Workers will automatically rebalance via consumer group protocol
         # This is handled by Kafka/Tansu, not our code
-        
+
         await master.stop()
 
     @pytest.mark.asyncio
     async def test_rebalance_on_worker_remove(self, payload_store, ray_cluster):
         """Test that removing workers triggers rebalance."""
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
             min_workers=1,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port,
         )
         stage = Stage(
             stage_id="test_stage",
@@ -245,22 +236,22 @@ class TestPartitionRebalance:
             config=config,
             payload_store=payload_store,
         )
-        
+
         await master.start()
-        
+
         # Start with 4 workers
         while len(master._workers) < 4:
             await master._spawn_worker()
-        
+
         assert len(master._workers) == 4
-        
+
         # Remove workers
         removed = await master.scale_down(2)
         assert removed == 2
         assert len(master._workers) == 2
-        
+
         # Remaining workers will rebalance via consumer group protocol
-        
+
         await master.stop()
 
 
@@ -281,7 +272,7 @@ class TestPartitionCountEdgeCases:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         # Should default to 1 (minimum)
         assert partition_count == 1
@@ -300,7 +291,7 @@ class TestPartitionCountEdgeCases:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         # Should be clamped to minimum 1
         assert partition_count == 1
@@ -319,7 +310,7 @@ class TestPartitionCountEdgeCases:
             config=config,
             payload_store=payload_store,
         )
-        
+
         partition_count = master._compute_partition_count()
         # Should accept large value (no upper limit in calculation)
         assert partition_count == 1000

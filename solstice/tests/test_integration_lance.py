@@ -17,7 +17,6 @@ from pathlib import Path
 import lance
 import pyarrow as pa
 import pytest
-import ray
 from lance.dataset import write_dataset
 
 from solstice.core.models import Split

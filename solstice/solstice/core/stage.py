@@ -18,7 +18,6 @@ class Stage:
         operator_config: OperatorConfig,
         parallelism: Union[int, Tuple[int, int]] = 1,
         worker_resources: Optional[Dict[str, float]] = None,
-        skip_checkpoint: bool = False,
     ):
         """
         Initialize a stage.
@@ -32,8 +31,6 @@ class Stage:
                 - int: Fixed number of workers (no auto-scaling)
                 - Tuple[int, int]: (min_workers, max_workers) for auto-scaling
             worker_resources: Resource requirements per worker (num_cpus, num_gpus, memory)
-            skip_checkpoint: If True, this stage will not participate in checkpoints.
-                Use for lightweight stateless operators (filter, map) to reduce I/O.
 
         Examples:
             >>> # Fixed 4 workers, no scaling
@@ -42,12 +39,9 @@ class Stage:
             >>> # Auto-scaling between 2 and 10 workers
             >>> Stage('process', MyOperatorConfig(param=value), parallelism=(2, 10))
 
-            >>> # Skip checkpoint for lightweight filter stage
-            >>> Stage('filter', FilterConfig(...), skip_checkpoint=True)
         """
         self.stage_id = stage_id
         self.operator_config = operator_config
-        self.skip_checkpoint = skip_checkpoint
 
         from solstice.core.stage_master import StageConfig
 
@@ -92,7 +86,6 @@ class Stage:
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,
-            "skip_checkpoint": self.skip_checkpoint,
         }
         if self.config_v2:
             result["config_v2"] = self.config_v2.to_dict()

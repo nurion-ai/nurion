@@ -3,57 +3,9 @@
 import time
 import warnings
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import pyarrow as pa
-
-
-class CheckpointStatus(str, Enum):
-    """Status of a checkpoint"""
-
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-@dataclass
-class JobCheckpointConfig:
-    """Global checkpoint configuration for a job.
-
-    Controls checkpoint triggering strategy and timeouts.
-
-    Example:
-        >>> Job(
-        ...     job_id="etl_pipeline",
-        ...     checkpoint_config=JobCheckpointConfig(
-        ...         enabled=True,
-        ...         interval_secs=300,
-        ...     ),
-        ... )
-    """
-
-    enabled: bool = True
-    """Whether checkpointing is enabled for this job."""
-
-    interval_secs: int = 300
-    """Time interval between checkpoint triggers (seconds)."""
-
-    timeout_secs: int = 600
-    """Timeout for a single checkpoint operation (seconds)."""
-
-    min_pause_between_secs: int = 60
-    """Minimum pause between two consecutive checkpoints (seconds)."""
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        return {
-            "enabled": self.enabled,
-            "interval_secs": self.interval_secs,
-            "timeout_secs": self.timeout_secs,
-            "min_pause_between_secs": self.min_pause_between_secs,
-        }
 
 
 @dataclass
@@ -69,9 +21,6 @@ class Split:
     stage_id: str
     data_range: Dict[str, Any]  # offset, file path, key range, etc.
     parent_split_ids: List[str] = field(default_factory=list)
-    attempt: int = 0
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
 
     def lineage(self) -> Dict[str, Any]:
         """Return lineage metadata for downstream operators."""
@@ -79,7 +28,6 @@ class Split:
             "split_id": self.split_id,
             "stage_id": self.stage_id,
             "parents": list(self.parent_split_ids),
-            "attempt": self.attempt,
         }
 
     def derive_output_split(
@@ -97,7 +45,6 @@ class Split:
             stage_id=derived_stage_id,
             data_range=data_range or {},
             parent_split_ids=[self.split_id],
-            attempt=0,
         )
 
 
@@ -188,32 +135,6 @@ class StageMetrics:
 
 
 @dataclass
-class CheckpointHandle:
-    """Handle to a split-scoped checkpoint stored remotely."""
-
-    checkpoint_id: str
-    stage_id: str
-    split_id: str
-    split_attempt: int
-    state_path: str  # S3/DFS path
-    offset: Dict[str, Any]
-    size_bytes: int
-    timestamp: float = field(default_factory=time.time)
-
-
-@dataclass
-class Barrier:
-    """Checkpoint barrier marker"""
-
-    barrier_id: str
-    checkpoint_id: str
-    stage_id: str
-    timestamp: float = field(default_factory=time.time)
-    upstream_stages: List[str] = field(default_factory=list)
-    downstream_stages: List[str] = field(default_factory=list)
-
-
-@dataclass
 class BackpressureSignal:
     """Signal for backpressure propagation"""
 
@@ -251,7 +172,6 @@ class SplitPayload:
     data: pa.Table
     split_id: str
     timestamp: float = field(default_factory=time.time)
-    is_materialized: bool = field(default=False, init=False, repr=False)
 
     SOLSTICE_KEY_COLUMN = "__solstice_key"
     SOLSTICE_TS_COLUMN = "__solstice_timestamp"
@@ -305,14 +225,6 @@ class SplitPayload:
             )
         return rows
 
-    def with_split(self, split_id: Optional[str]) -> "SplitPayload":
-        """Return a copy of the payload associated with ``split_id``."""
-        cloned = SplitPayload(
-            data=self.data,
-            split_id=split_id or self.split_id,
-        )
-        return cloned
-
     def with_new_data(
         self,
         data: Union[pa.Table, pa.RecordBatch, Sequence[Record]],
@@ -335,13 +247,6 @@ class SplitPayload:
             data=table,
             split_id=split_id or self.split_id,
         )
-
-    def with_columns(self, columns: Sequence[str]) -> "SplitPayload":
-        """Return a batch containing only the specified columns."""
-        missing = set(columns) - set(self.column_names)
-        if missing:
-            raise ValueError(f"Columns {missing} not found in batch schema")
-        return self.with_new_data(self.data.select(columns))
 
     def column(self, name: str) -> pa.ChunkedArray:
         return self.data.column(name)

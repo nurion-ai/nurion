@@ -76,6 +76,8 @@ class MemoryBackend(QueueBackend):
         Args:
             gc_interval_seconds: Interval for automatic garbage collection.
         """
+        self.host = "localhost"
+        self.port = 0
         self._topics: Dict[str, TopicData] = {}
         self._committed_offsets: Dict[Tuple[str, str], int] = {}  # (group, topic) -> offset
         self._global_lock = threading.Lock()

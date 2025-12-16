@@ -10,24 +10,29 @@ All tests use real implementations (no mocks) to catch real issues.
 """
 
 import pytest
-import asyncio
 from dataclasses import dataclass
 
-from solstice.core.stage_master import StageMaster, StageConfig, QueueType, QueueEndpoint, QueueMessage
+from solstice.core.stage_master import (
+    StageMaster,
+    StageConfig,
+    QueueType,
+    QueueEndpoint,
+    QueueMessage,
+)
 from solstice.core.stage import Stage
 from solstice.core.operator import OperatorConfig, Operator
-from solstice.core.models import Split
 
 
 @dataclass
 class _TestOperatorConfig(OperatorConfig):
     """Test operator config (prefixed with _ to avoid pytest collection)."""
+
     pass
 
 
 class _TestOperator(Operator):
     """Test operator that passes through data (prefixed with _ to avoid pytest collection)."""
-    
+
     def __init__(self, config: _TestOperatorConfig, worker_id: str = None):
         super().__init__(config, worker_id)
         self._closed = False
@@ -37,6 +42,7 @@ class _TestOperator(Operator):
 
     def generate_splits(self):
         from solstice.core.models import Split
+
         return [
             Split(split_id=f"split_{i}", stage_id="test_stage", data_range={"index": i})
             for i in range(5)
@@ -56,36 +62,32 @@ class TestMultiPartitionParallelConsumption:
     @pytest.mark.asyncio
     async def test_partition_count_matches_worker_count(self, payload_store, ray_cluster):
         """Test that partition count matches worker count configuration."""
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=8,
             min_workers=1,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port,
         )
         stage = Stage(
             stage_id="test_stage",
             operator_config=_TestOperatorConfig(),
             parallelism=8,
         )
-        
+
         master = StageMaster(
             job_id="test_job",
             stage=stage,
             config=config,
             payload_store=payload_store,
         )
-        
+
         # Verify partition count calculation
         partition_count = master._compute_partition_count()
         assert partition_count == 8
-        
+
         # Start and verify actual partition count
         await master.start()
-        
+
         try:
             assert master._compute_partition_count() == 8
         finally:
@@ -96,7 +98,9 @@ class TestPartitionSkewScenario:
     """Integration tests for partition skew scenarios."""
 
     @pytest.mark.asyncio
-    async def test_skew_detection_in_multi_partition_setup(self, payload_store, tansu_backend, ray_cluster):
+    async def test_skew_detection_in_multi_partition_setup(
+        self, payload_store, tansu_backend, ray_cluster
+    ):
         """Test skew detection in a multi-partition setup."""
         import math
         import asyncio
@@ -106,7 +110,6 @@ class TestPartitionSkewScenario:
             queue_type=QueueType.TANSU,
             max_workers=4,
             tansu_storage_url="memory://tansu/",
-            tansu_port=tansu_backend.port,
             partition_count=3,
         )
         stage = Stage(
@@ -194,15 +197,11 @@ class TestBackpressureEndToEnd:
     @pytest.mark.asyncio
     async def test_backpressure_propagation_chain(self, payload_store, ray_cluster):
         """Test backpressure propagation through a chain of stages."""
-        import random
-        
         # Stage 1: Source
-        port1 = 10000 + random.randint(0, 9999)
         config1 = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=2,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port1,
         )
         stage1 = Stage(
             stage_id="source",
@@ -215,14 +214,12 @@ class TestBackpressureEndToEnd:
             config=config1,
             payload_store=payload_store,
         )
-        
+
         # Stage 2: Process (middle)
-        port2 = 10000 + random.randint(0, 9999)
         config2 = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=2,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port2,
         )
         stage2 = Stage(
             stage_id="process",
@@ -235,14 +232,12 @@ class TestBackpressureEndToEnd:
             config=config2,
             payload_store=payload_store,
         )
-        
+
         # Stage 3: Sink (slow)
-        port3 = 10000 + random.randint(0, 9999)
         config3 = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=1,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port3,
         )
         stage3 = Stage(
             stage_id="sink",
@@ -255,19 +250,19 @@ class TestBackpressureEndToEnd:
             config=config3,
             payload_store=payload_store,
         )
-        
+
         # Start all stages
         await master1.start()
         await master2.start()
         await master3.start()
-        
+
         try:
             # Activate backpressure on master3 (sink)
             master3._backpressure_active = True
-            
+
             # Connect master2 to master3
             master2._downstream_stage_refs = {"sink": master3}
-            
+
             # Verify master2 can detect backpressure from master3
             should_pause = await master2._check_backpressure_before_produce()
             # master2 should detect backpressure from master3
@@ -278,16 +273,14 @@ class TestBackpressureEndToEnd:
             await master3.stop()
 
     @pytest.mark.asyncio
-    async def test_backpressure_clears_when_downstream_catches_up(self, payload_store, tansu_backend, ray_cluster):
+    async def test_backpressure_clears_when_downstream_catches_up(
+        self, payload_store, tansu_backend, ray_cluster
+    ):
         """Test that backpressure clears when downstream processing catches up."""
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=2,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port,
         )
         stage = Stage(
             stage_id="test_stage",
@@ -301,11 +294,11 @@ class TestBackpressureEndToEnd:
             payload_store=payload_store,
         )
         master._backpressure_threshold_lag = 5000
-        
+
         # Create upstream topic
         topic = "upstream_topic"
         await tansu_backend.create_topic(topic, partitions=1)
-        
+
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
             host="localhost",
@@ -313,9 +306,9 @@ class TestBackpressureEndToEnd:
             storage_url="memory://tansu/",
         )
         master.upstream_topic = topic
-        
+
         await master.start()
-        
+
         try:
             # Initially produce many messages to create high lag
             for i in range(6000):
@@ -325,16 +318,17 @@ class TestBackpressureEndToEnd:
                     payload_key=f"key_{i}",
                 )
                 await tansu_backend.produce(topic, msg.to_bytes())
-            
+
             # Check backpressure - should be active
             result1 = await master._check_backpressure()
             assert isinstance(result1, bool)
-            
+
             # Commit offsets to simulate processing
             consumer_group = master._consumer_group
             # Commit offset for partition 0
             import asyncio
             from aiokafka import AIOKafkaConsumer, TopicPartition
+
             commit_consumer = AIOKafkaConsumer(
                 bootstrap_servers=f"localhost:{tansu_backend.port}",
                 enable_auto_commit=False,
@@ -348,7 +342,7 @@ class TestBackpressureEndToEnd:
             await asyncio.sleep(0.1)
             await commit_consumer.commit({TopicPartition(topic, 0): 3000})
             await commit_consumer.stop()
-            
+
             # Check backpressure again - should clear with hysteresis
             result2 = await master._check_backpressure()
             assert isinstance(result2, bool)
@@ -362,14 +356,10 @@ class TestCombinedScenarios:
     @pytest.mark.asyncio
     async def test_skew_and_backpressure_together(self, payload_store, tansu_backend, ray_cluster):
         """Test scenario where both skew and backpressure occur."""
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port,
             partition_count=4,
         )
         stage = Stage(
@@ -383,11 +373,11 @@ class TestCombinedScenarios:
             config=config,
             payload_store=payload_store,
         )
-        
+
         # Create upstream topic
         topic = "test_topic"
         await tansu_backend.create_topic(topic, partitions=4)
-        
+
         # Produce many messages to create both skew and high lag
         for i in range(10000):
             msg = QueueMessage(
@@ -396,7 +386,7 @@ class TestCombinedScenarios:
                 payload_key=f"key_{i}",
             )
             await tansu_backend.produce(topic, msg.to_bytes())
-        
+
         consumer_group = "test_job_test_stage"
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
@@ -406,17 +396,17 @@ class TestCombinedScenarios:
         )
         master.upstream_topic = topic
         master._consumer_group = consumer_group
-        
+
         await master.start()
-        
+
         try:
             # Check backpressure
             backpressure_active = await master._check_backpressure()
             assert isinstance(backpressure_active, bool)
-            
+
             # Collect metrics (includes skew detection)
             metrics = await master.collect_metrics()
-            
+
             # Both should be detected
             assert hasattr(metrics, "skew_detected")
             assert hasattr(metrics, "skew_ratio")
@@ -427,15 +417,11 @@ class TestCombinedScenarios:
     @pytest.mark.asyncio
     async def test_dynamic_workers_with_partitions(self, payload_store, ray_cluster):
         """Test dynamic worker scaling with multiple partitions."""
-        import random
-        port = 10000 + random.randint(0, 9999)
-        
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=8,
             min_workers=2,
             tansu_storage_url="memory://tansu/",
-            tansu_port=port,
             partition_count=8,
         )
         stage = Stage(
@@ -449,19 +435,19 @@ class TestCombinedScenarios:
             config=config,
             payload_store=payload_store,
         )
-        
+
         await master.start()
-        
+
         try:
             initial_workers = len(master._workers)
             assert initial_workers == 2  # min_workers
-            
+
             # Scale up
             for _ in range(4):
                 await master._spawn_worker()
-            
+
             assert len(master._workers) == 6
-            
+
             # Partition count should remain at max_workers (8)
             # Workers will rebalance via consumer group protocol
             assert master._compute_partition_count() == 8

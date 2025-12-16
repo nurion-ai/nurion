@@ -78,7 +78,6 @@ class SourceConfig(StageConfig):
 
     # Tansu storage URL (memory://, s3://)
     tansu_storage_url: str = "memory://"
-    tansu_port: int = 9092
 
 
 class SourceMaster(StageMaster):

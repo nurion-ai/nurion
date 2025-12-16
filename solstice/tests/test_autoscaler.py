@@ -8,10 +8,7 @@ Tests the autoscaling functionality including:
 """
 
 import asyncio
-import time
-from dataclasses import dataclass
-from typing import Dict, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -504,4 +501,3 @@ class TestScaleExecution:
 
         # Should stop at min_workers
         assert len(master._workers) == 2
-
