@@ -11,7 +11,7 @@ This document provides project context and development guidelines for AI coding 
 | Component | Path | Description |
 |-----------|------|-------------|
 | **Aether** | `/aether` | FastAPI-driven orchestration service connecting tasks, infrastructure, and data products |
-| **Solstice** | `/solstice` | Ray + Spark multimodal data processing framework with streaming and exactly-once semantics |
+| **Solstice** | `/solstice` | Ray + Spark multimodal data processing framework with high-throughput batch processing and streaming-style execution |
 
 ## Tech Stack
 
@@ -152,7 +152,7 @@ For Solstice integration tests, you need:
 
 1. **Design Docs**: Check `/solstice/design-docs/` for architecture decisions
 2. **Core Abstractions**: Start with `solstice/core/` to understand the framework
-3. **Example Workflows**: Reference `solstice/workflows/` and `quickstart.py`
+3. **Example Workflows**: Reference `solstice/workflows/`
 
 ### When Adding Features
 
@@ -242,26 +242,32 @@ runner.run()
 ### Custom Operator
 
 ```python
+from typing import Optional
+
 from solstice.core.operator import Operator
-from solstice.core.models import Record
+from solstice.core.models import Split, SplitPayload
+
 
 class MyOperator(Operator):
-    def process(self, record: Record):
-        result = transform(record.value)
-        return [Record(key=record.key, value=result)]
-    
-    def checkpoint(self):
-        return {'state': self.internal_state}
-    
-    def restore(self, state):
-        self.internal_state = state['state']
+    def process_split(
+        self,
+        split: Split,
+        payload: Optional[SplitPayload] = None,
+    ) -> Optional[SplitPayload]:
+        # Implement your transform here using the Arrow payload
+        if payload is None:
+            return None
+
+        table = payload.to_table()
+        # TODO: apply transformations on `table`
+        return SplitPayload(data=table, split_id=split.split_id)
 ```
 
 ## Resources
 
 - **Design Documents**: `solstice/design-docs/`
 - **README Files**: Root directory and each subproject's README.md
-- **Examples**: `solstice/workflows/`, `solstice/quickstart.py`
+- **Examples**: `solstice/workflows/`
 
 ---
 

@@ -950,7 +950,7 @@ fc29b94 test: Add performance benchmark tests
    - Use MinIO or other path-style compatible S3 services
 
 2. **Integrate with Existing Workflows** ✅ DONE
-   - Updated `quickstart.py`, `simple_etl.py`, `test_video_slice.py`
+   - Updated `simple_etl.py`, `test_video_slice.py`
 
 3. **Exactly-Once Processing Loop** ✅ DONE
    - Output persisted before input offset commit

@@ -1,7 +1,14 @@
 # Solstice Runtime Architecture
 
 ## Overview
-Solstice implements a distributed, streaming dataflow engine on top of Ray actors. Workflows are expressed as directed acyclic graphs (DAGs) of stages. Each stage owns a user-defined operator and a pool of stateless `StageWorker` actors, while the stage master manages split-scoped state and checkpointing. Stages exchange *Splits*, which are metadata records describing batches of data pointed to by Ray object references. This orchestration keeps hot data off the control plane and allows the pipeline to scale horizontally across workers while maintaining exactly-once semantics.
+Solstice implements a **high-throughput dataflow engine** on top of Ray actors. Conceptually it is a **batch processing engine** (jobs are finite DAGs over finite inputs), but its internal execution model is **streaming-style and pull-based**. It is designed to run long-lived, multimodal pipelines (video, images, embeddings, text, binary blobs) with:
+
+- **Streaming-style execution** – no global stage barriers, no batch-style long tails.
+- **Stateless workers + checkpointed masters** – workers can be scaled in/out freely, while stage masters manage split state and recovery.
+- **Built-in backpressure** – downstream stages pull from upstream, so the system naturally throttles producers and can adapt resource usage.
+- **Externalised shuffle and state** – splits reference data in external storage (e.g. S3-like backends), avoiding tight coupling to the Ray object store.
+
+Workflows are expressed as directed acyclic graphs (DAGs) of stages. Each stage owns a user-defined operator and a pool of stateless `StageWorker` actors, while the stage master manages split-scoped state and checkpointing. Stages exchange *Splits*, which are metadata records describing batches of data pointed to by Ray object references or external storage locations. This orchestration keeps hot data off the control plane and allows the pipeline to scale horizontally across workers while maintaining exactly-once semantics.
 
 ```
        +-------------+       +-------------+       +-------------+

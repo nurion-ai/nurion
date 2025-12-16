@@ -1,8 +1,8 @@
-# Solstice Streaming Framework - Project Overview
+# Solstice - Project Overview
 
-## What is Solstice Streaming?
+## What is Solstice?
 
-A Ray-based distributed streaming processing framework inspired by the fusionflow blueprint, featuring exactly-once semantics, elastic scaling, and fault tolerance.
+Solstice is a Ray-based **high-throughput batch processing framework** whose internal execution model is **streaming-style and pull-based**, featuring exactly-once semantics, elastic scaling, and fault tolerance.
 
 ## Key Characteristics
 
@@ -26,13 +26,9 @@ solstice/
 │
 ├── workflows/             # Example workflows
 │   ├── simple_etl.py      # Basic ETL pipeline
-│   └── video_processing.py # Video processing pipeline
+│   └── video_slice_workflow.py  # Video processing pipeline
 │
-├── configs/               # Configuration files
-│   ├── simple_etl.yaml
-│   └── video_processing.yaml
-│
-└── Documentation files    # See INDEX.md for full list
+└── design-docs/           # Architecture and design docs
 ```
 
 ## Core Concepts
@@ -53,22 +49,32 @@ Stage('scale', MapOperator, {...}, parallelism=(2, 10))
 ```
 
 ### 3. Operator
-The logic that processes data.
+The logic that processes data for a single split.
 
 ```python
+from typing import Optional
+
+from solstice.core.operator import Operator
+from solstice.core.models import Split, SplitPayload
+
+
 class MyOperator(Operator):
-    def process(self, record):
-        # Transform record
-        return [transformed_record]
+    def process_split(
+        self,
+        split: Split,
+        payload: Optional[SplitPayload] = None,
+    ) -> Optional[SplitPayload]:
+        # Implement your transform here using the Arrow payload
+        if payload is None:
+            return None
+
+        table = payload.to_table()
+        # TODO: apply transformations on `table`
+        return SplitPayload(data=table, split_id=split.split_id)
 ```
 
 ### 4. State Backend
-Where checkpoints are stored.
-
-```python
-LocalStateBackend('/tmp/checkpoints')  # Testing
-S3StateBackend('my-bucket')            # Production
-```
+Where checkpoints are stored (see state backends configured in your Job/runner).
 
 ## Built-in Operators
 
@@ -126,25 +132,11 @@ Source → Preprocess → Classify → Filter →
 
 ## Running the Framework
 
-### Quickstart
-```bash
-cd /path/to/nurion/solstice
-python quickstart.py
-```
-
-### With Configuration
-```bash
-python -m solstice.main \
-  --config configs/simple_etl.yaml \
-  --workflow workflows.simple_etl \
-  --job-id my_job
-```
-
 ### On Ray Cluster
 ```bash
 python -m solstice.main \
-  --config configs/video_processing.yaml \
-  --workflow workflows.video_processing \
+  --workflow workflows.simple_etl \
+  --job-id my_job \
   --ray-address ray://head-node:10001
 ```
 
@@ -209,31 +201,13 @@ runner.restore_from_checkpoint(checkpoint_id)
 
 ## Next Steps
 
-1. **Read**: [START_HERE.md](START_HERE.md) or [GETTING_STARTED.md](GETTING_STARTED.md)
-2. **Run**: `python quickstart.py`
-3. **Learn**: [EXAMPLES.md](EXAMPLES.md)
-4. **Build**: Create your own workflow in `workflows/`
-5. **Deploy**: Use Ray cluster with `--ray-address`
+1. **Read**: `README.md`
+2. **Explore**: `workflows/` for complete workflows
+3. **Dive deeper**: `design-docs/` for architecture details
 
 ## Support & Documentation
 
-- **Quick Start**: [START_HERE.md](START_HERE.md)
-- **Getting Started**: [GETTING_STARTED.md](GETTING_STARTED.md)
-- **API Reference**: [API_SIMPLIFIED.md](API_SIMPLIFIED.md)
-- **Examples**: [EXAMPLES.md](EXAMPLES.md)
-- **Architecture**: [solstice/README.md](solstice/README.md)
-- **Full Index**: [INDEX.md](INDEX.md)
-
-## Status
-
-✅ **COMPLETE AND READY FOR USE**
-
-All requirements met:
-- ✅ Import paths simplified (`from solstice.core...`)
-- ✅ Documentation in English
-- ✅ FlatMapOperator available
-- ✅ Simplified parallelism API
-- ✅ Complete examples and documentation
-
-Start streaming now: `python quickstart.py` 🚀
+- **Overview & API**: `README.md`
+- **Extended Overview**: `PROJECT_OVERVIEW.md`
+- **Architecture**: `design-docs/`
 
