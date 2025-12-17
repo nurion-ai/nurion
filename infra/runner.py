@@ -1,3 +1,17 @@
+# Copyright 2025 nurion team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """GitHub Actions Runner Controller (ARC) deployment for self-hosted runners.
 
 Uses actions-runner-controller v2 with RunnerScaleSet for autoscaling.
@@ -52,8 +66,7 @@ def deploy_actions_runner_controller(
         values={
             "replicaCount": 1,
             "image": {
-                # Use a China-accessible mirror
-                "repository": "docker.1ms.run/actions/gha-runner-scale-set-controller",
+                "repository": "ghcr.io/actions/gha-runner-scale-set-controller",
                 "tag": "0.9.3",
             },
         },
@@ -102,7 +115,7 @@ def deploy_actions_runner_controller(
                     "containers": [
                         {
                             "name": "runner",
-                            "image": "docker.1ms.run/actions/actions-runner:latest",
+                            "image": "ghcr.io/actions/actions-runner:latest",
                             "resources": {
                                 "requests": {
                                     "cpu": "2",
@@ -113,17 +126,7 @@ def deploy_actions_runner_controller(
                                     "memory": "8Gi",
                                 },
                             },
-                            "env": [
-                                # China mirror environment variables
-                                {
-                                    "name": "PIP_INDEX_URL",
-                                    "value": "https://mirrors.aliyun.com/pypi/simple/",
-                                },
-                                {
-                                    "name": "PIP_TRUSTED_HOST",
-                                    "value": "mirrors.aliyun.com",
-                                },
-                            ],
+                            "env": [],
                             "volumeMounts": [
                                 {
                                     "name": "work",
@@ -263,11 +266,6 @@ def deploy_runner_simple(
                                             key="RUNNER_TOKEN",
                                         ),
                                     ),
-                                ),
-                                # China mirrors
-                                k8s.core.v1.EnvVarArgs(
-                                    name="PIP_INDEX_URL",
-                                    value="https://mirrors.aliyun.com/pypi/simple/",
                                 ),
                             ],
                             resources=k8s.core.v1.ResourceRequirementsArgs(

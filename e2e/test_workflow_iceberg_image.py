@@ -1,3 +1,17 @@
+# Copyright 2025 nurion team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """E2E tests for Workflow 2: Iceberg Image Processing.
 
 Pipeline:
@@ -263,9 +277,7 @@ class TestImageWorkflowSubmission:
                     "Pillow",
                     "scipy",
                 ],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
             metadata={
                 "test": "e2e",
@@ -316,7 +328,6 @@ class TestImageWorkflowSubmission:
                     "scipy",
                 ],
                 "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
                     "SPARK_HOME": "/opt/spark",
                 },
             },
@@ -356,9 +367,7 @@ class TestImageWorkflowSubmission:
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "pyarrow", "lance", "Pillow", "scipy"],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
         )
         
@@ -442,7 +451,7 @@ print(f"Resized image size: {result.to_pylist()[0]['size_bytes']}")
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "Pillow", "pyarrow"],
-                "env_vars": {"PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/"},
+                "env_vars": {},
             },
         )
         
@@ -501,7 +510,7 @@ print(f"Filtered result count: {len(result)}")
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "Pillow", "pyarrow", "scipy", "numpy"],
-                "env_vars": {"PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/"},
+                "env_vars": {},
             },
         )
         
@@ -537,9 +546,7 @@ class TestImageWorkflowScaling:
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "pyarrow", "lance", "Pillow", "scipy"],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
         )
         

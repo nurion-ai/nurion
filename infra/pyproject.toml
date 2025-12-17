@@ -17,8 +17,6 @@ dev = [
 ]
 
 [tool.uv]
-# Use China mirrors for faster downloads
-index-url = "https://mirrors.aliyun.com/pypi/simple/"
 
 [tool.ruff]
 line-length = 100
