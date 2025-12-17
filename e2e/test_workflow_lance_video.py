@@ -189,9 +189,7 @@ class TestVideoWorkflowSubmission:
                     "pyarrow",
                     "lance",
                 ],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
             metadata={
                 "test": "e2e",
@@ -236,9 +234,7 @@ class TestVideoWorkflowSubmission:
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "pyarrow", "lance"],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
         )
         

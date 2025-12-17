@@ -277,9 +277,7 @@ class TestImageWorkflowSubmission:
                     "Pillow",
                     "scipy",
                 ],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
             metadata={
                 "test": "e2e",
@@ -330,7 +328,6 @@ class TestImageWorkflowSubmission:
                     "scipy",
                 ],
                 "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
                     "SPARK_HOME": "/opt/spark",
                 },
             },
@@ -370,9 +367,7 @@ class TestImageWorkflowSubmission:
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "pyarrow", "lance", "Pillow", "scipy"],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
         )
         
@@ -456,7 +451,7 @@ print(f"Resized image size: {result.to_pylist()[0]['size_bytes']}")
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "Pillow", "pyarrow"],
-                "env_vars": {"PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/"},
+                "env_vars": {},
             },
         )
         
@@ -515,7 +510,7 @@ print(f"Filtered result count: {len(result)}")
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "Pillow", "pyarrow", "scipy", "numpy"],
-                "env_vars": {"PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/"},
+                "env_vars": {},
             },
         )
         
@@ -551,9 +546,7 @@ class TestImageWorkflowScaling:
             entrypoint=f"python -c '{entrypoint}'",
             runtime_env={
                 "pip": ["solstice", "pyarrow", "lance", "Pillow", "scipy"],
-                "env_vars": {
-                    "PIP_INDEX_URL": "https://mirrors.aliyun.com/pypi/simple/",
-                },
+                "env_vars": {},
             },
         )
         

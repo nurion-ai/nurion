@@ -224,17 +224,6 @@ cd e2e
 uv run python -m utils.debug_collector nurion-nightly debug-artifacts
 ```
 
-## China Network Optimizations
-
-The setup uses China mirrors for faster dependency installation:
-
-- **pip**: `mirrors.aliyun.com`
-- **Maven**: `maven.aliyun.com`
-- **npm**: `registry.npmmirror.com`
-- **Docker**: Volcengine CR
-
-Run `source scripts/china-mirrors.sh` to configure all mirrors.
-
 ## Troubleshooting
 
 ### Runner Not Picking Up Jobs

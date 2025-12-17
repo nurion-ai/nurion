@@ -23,8 +23,6 @@ dev = [
 ]
 
 [tool.uv]
-# Use China mirrors for faster downloads
-index-url = "https://mirrors.aliyun.com/pypi/simple/"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
