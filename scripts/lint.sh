@@ -3,6 +3,9 @@
 
 set -e
 
+echo "📜 Checking license headers..."
+python3 scripts/check_license_headers.py
+
 echo "🔍 Running ruff linting..."
 cd aether
 uv run ruff check .
