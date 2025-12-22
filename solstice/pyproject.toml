@@ -52,10 +52,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["solstice*", "workflows*"]
+include = ["solstice*", "workflows*", "raydp*"]
 
 [tool.setuptools.package-data]
 solstice = ["py.typed"]
+raydp = ["jars/*.jar"]
 
 [tool.black]
 line-length = 100
