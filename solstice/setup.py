@@ -20,9 +20,21 @@ Setup script for solstice package.
 Uses pyproject.toml for metadata but provides custom build hooks for JAR files.
 """
 
+import importlib.util
+import os
+
 from setuptools import setup
 
-from raydp._build_hooks import BuildWithJars, SdistWithJars
+# Load _build_hooks directly without triggering raydp/__init__.py
+_build_hooks_path = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "raydp", "_build_hooks.py"
+)
+spec = importlib.util.spec_from_file_location("_build_hooks", _build_hooks_path)
+_build_hooks = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(_build_hooks)
+
+BuildWithJars = _build_hooks.BuildWithJars
+SdistWithJars = _build_hooks.SdistWithJars
 
 setup(
     cmdclass={
