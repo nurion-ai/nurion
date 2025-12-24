@@ -25,6 +25,7 @@ import ray
 from pyspark.sql import SparkSession
 
 from raydp.spark import SparkCluster
+from raydp.utils import auto_infer_executor_config
 
 
 class _SparkContext(ContextDecorator):
@@ -99,8 +100,8 @@ _global_spark_context: _SparkContext = None
 
 def init_spark(
     app_name: str,
-    executor_cores: int,
-    executor_memory: Union[str, int],
+    executor_cores: Optional[int] = None,
+    executor_memory: Optional[Union[str, int]] = None,
     num_executors: Optional[int] = None,
     configs: Optional[Dict[str, str]] = None,
     log_to_driver: bool = False,
@@ -108,26 +109,71 @@ def init_spark(
     dynamic_allocation: bool = False,
     min_executors: Optional[int] = None,
     max_executors: Optional[int] = None,
+    auto_configure: bool = False,
 ) -> SparkSession:
     """
     Init a Spark cluster with given requirements.
+
     :param app_name: The application name.
-    :param num_executors: number of executor requests
-    :param executor_cores: the number of CPU cores for each executor
+    :param executor_cores: the number of CPU cores for each executor. If None and
+                           auto_configure=True, will be inferred from cluster resources.
     :param executor_memory: the memory size for each executor, both support bytes or human
-                            readable string.
+                            readable string. If None and auto_configure=True, will be
+                            inferred from cluster resources.
+    :param num_executors: number of executor requests. If None and auto_configure=True,
+                          will be inferred from cluster resources.
     :param configs: the extra Spark config need to set
-    :param log_to_driver: whether to log the Spark logs to the driver, default is False, set it to True when debugging
+    :param log_to_driver: whether to log the Spark logs to the driver, default is False,
+                          set it to True when debugging
+    :param dynamic_allocation: whether to enable Spark dynamic allocation
+    :param min_executors: minimum number of executors for dynamic allocation
+    :param max_executors: maximum number of executors for dynamic allocation
+    :param auto_configure: if True and executor_cores/executor_memory/num_executors are not
+                           provided, automatically infer from Ray cluster resources.
     :return: return the SparkSession
     """
+    logger = logging.getLogger(__name__)
 
     if not ray.is_initialized():
         # ray has not initialized, init local
         ray.init(log_to_driver=log_to_driver, logging_level=logging_level)
 
+    # Defensive copy to avoid mutating caller's dict
+    _configs = {} if configs is None else configs.copy()
+
+    # Auto-configure executor settings if requested and not explicitly provided
+    if auto_configure:
+        inferred_config = auto_infer_executor_config()
+
+        if executor_cores is None:
+            executor_cores = inferred_config.executor_cores
+            logger.info(f"Auto-configured executor_cores: {executor_cores}")
+
+        if executor_memory is None:
+            executor_memory = inferred_config.executor_memory
+            logger.info(f"Auto-configured executor_memory: {executor_memory}")
+
+        if num_executors is None and not dynamic_allocation:
+            num_executors = inferred_config.num_executors
+            logger.info(f"Auto-configured num_executors: {num_executors}")
+
+        # Also set driver memory if not already in configs
+        if "spark.driver.memory" not in _configs:
+            _configs["spark.driver.memory"] = inferred_config.driver_memory
+            logger.info(f"Auto-configured driver_memory: {inferred_config.driver_memory}")
+
+    # Validate required parameters
+    if executor_cores is None:
+        raise ValueError(
+            "executor_cores is required. Either provide it explicitly or set auto_configure=True."
+        )
+    if executor_memory is None:
+        raise ValueError(
+            "executor_memory is required. Either provide it explicitly or set auto_configure=True."
+        )
+
     with _spark_context_lock:
         global _global_spark_context
-        _configs = {} if configs is None else configs
         if dynamic_allocation:
             _configs["spark.dynamicAllocation.enabled"] = "true"
             assert min_executors is not None, (
@@ -140,9 +186,11 @@ def init_spark(
             _configs["spark.dynamicAllocation.maxExecutors"] = str(max_executors)
             _configs["spark.executor.instances"] = str(min_executors)
         else:
-            assert num_executors is not None, (
-                "num_executors is required when dynamic_allocation is disabled"
-            )
+            if num_executors is None:
+                raise ValueError(
+                    "num_executors is required when dynamic_allocation is disabled. "
+                    "Either provide it explicitly or set auto_configure=True."
+                )
             _configs["spark.dynamicAllocation.enabled"] = "false"
             _configs["spark.executor.instances"] = str(num_executors)
         _configs["spark.executor.cores"] = str(executor_cores)
