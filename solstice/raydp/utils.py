@@ -17,11 +17,17 @@
 
 import os
 import atexit
+import logging
 import math
 import glob
 import re
 import signal
-from typing import Dict, List, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import ray
+
+logger = logging.getLogger(__name__)
 
 MEMORY_SIZE_UNITS = {"K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}
 
@@ -213,3 +219,141 @@ def code_search_jars() -> List[str]:
     for path in paths:
         jars.extend(glob.glob(os.path.join(path, "*.jar")))
     return jars
+
+
+@dataclass
+class ExecutorConfig:
+    """Auto-inferred executor configuration based on Ray cluster resources."""
+
+    num_executors: int
+    executor_cores: int
+    executor_memory_gb: int
+    driver_memory_gb: int
+
+    @property
+    def executor_memory(self) -> str:
+        """Return executor memory as a Spark-compatible string (e.g., '4g')."""
+        return f"{self.executor_memory_gb}g"
+
+    @property
+    def driver_memory(self) -> str:
+        """Return driver memory as a Spark-compatible string (e.g., '2g')."""
+        return f"{self.driver_memory_gb}g"
+
+
+def auto_infer_executor_config(
+    cpu_overhead_per_executor: int = 1,
+    memory_overhead_gb_per_executor: int = 2,
+    min_executor_cores: int = 1,
+    min_executor_memory_gb: int = 4,
+    min_driver_memory_gb: int = 2,
+) -> ExecutorConfig:
+    """
+    Automatically infer Spark executor configuration based on Ray cluster resources.
+
+    This function analyzes the Ray cluster topology to determine optimal Spark executor
+    settings. It distinguishes between head and worker nodes, using worker nodes for
+    executors and the head node for the driver.
+
+    Args:
+        cpu_overhead_per_executor: Number of CPUs to reserve per executor for system overhead.
+        memory_overhead_gb_per_executor: GB of memory to reserve per executor for overhead.
+        min_executor_cores: Minimum number of cores per executor.
+        min_executor_memory_gb: Minimum memory (GB) per executor.
+        min_driver_memory_gb: Minimum memory (GB) for the driver.
+        logger: Optional logger for debug output.
+
+    Returns:
+        ExecutorConfig with inferred settings.
+
+    Example:
+        >>> config = auto_infer_executor_config()
+        >>> spark = init_spark(
+        ...     app_name="my_app",
+        ...     num_executors=config.num_executors,
+        ...     executor_cores=config.executor_cores,
+        ...     executor_memory=config.executor_memory,
+        ... )
+    """
+    if not ray.is_initialized():
+        raise RuntimeError(
+            "Ray must be initialized before calling auto_infer_executor_config. "
+            "Call ray.init() first."
+        )
+
+    # Get per-node resources using ray.nodes() for precise calculation
+    nodes = ray.nodes()
+
+    head_cpus = 0
+    head_memory_gb = 0
+    worker_nodes: List[Dict[str, int]] = []
+
+    for node in nodes:
+        if not node.get("Alive", False):
+            continue
+        node_resources = node.get("Resources", {})
+        node_cpus = int(node_resources.get("CPU", 0))
+        node_memory_gb = int(node_resources.get("memory", 0) / (1024 * 1024 * 1024))
+
+        # Head node has 'node:__internal_head__' resource
+        if "node:__internal_head__" in node_resources:
+            head_cpus = node_cpus
+            head_memory_gb = node_memory_gb
+            logger.debug(f"Head node: {node_cpus} CPUs, {node_memory_gb}GB memory")
+        else:
+            worker_nodes.append({"cpus": node_cpus, "memory_gb": node_memory_gb})
+            logger.debug(f"Worker node: {node_cpus} CPUs, {node_memory_gb}GB memory")
+
+    num_workers = len(worker_nodes)
+    if num_workers == 0:
+        # Fallback: treat all resources as single executor (local mode)
+        total_resources = ray.cluster_resources()
+        executor_cores = max(
+            int(total_resources.get("CPU", 4)) - cpu_overhead_per_executor,
+            min_executor_cores,
+        )
+        executor_memory_gb = max(
+            int(total_resources.get("memory", 8 * 1024**3) / 1024**3)
+            - memory_overhead_gb_per_executor,
+            min_executor_memory_gb,
+        )
+        num_executors = 1
+        driver_memory_gb = min_driver_memory_gb
+        logger.info(
+            f"Local mode detected: 1 executor with {executor_cores} cores, "
+            f"{executor_memory_gb}GB memory"
+        )
+    else:
+        # Use minimum worker resources to ensure all executors can be scheduled
+        min_worker_cpus = min(w["cpus"] for w in worker_nodes)
+        min_worker_memory_gb = min(w["memory_gb"] for w in worker_nodes)
+
+        # Executor config: leave overhead for system processes per worker
+        executor_cores = max(
+            min_worker_cpus - cpu_overhead_per_executor,
+            min_executor_cores,
+        )
+        executor_memory_gb = max(
+            min_worker_memory_gb - memory_overhead_gb_per_executor,
+            min_executor_memory_gb,
+        )
+        num_executors = num_workers
+
+        # Driver on head: use half of head memory
+        driver_memory_gb = max(head_memory_gb // 2, min_driver_memory_gb)
+
+        logger.info(
+            f"Cluster: {num_workers} workers, head={head_cpus}CPU/{head_memory_gb}GB"
+        )
+
+    logger.info(
+        f"Auto-configured: {num_executors} executors, {executor_cores} cores each, "
+        f"{executor_memory_gb}g memory, driver {driver_memory_gb}g"
+    )
+
+    return ExecutorConfig(
+        num_executors=num_executors,
+        executor_cores=executor_cores,
+        executor_memory_gb=executor_memory_gb,
+        driver_memory_gb=driver_memory_gb,
+    )
