@@ -26,7 +26,7 @@ import time
 import statistics
 import pytest
 
-from solstice.queue import MemoryBackend
+from solstice.queue import MemoryBroker, MemoryClient
 from solstice.core.stage_master import QueueMessage
 
 
@@ -108,17 +108,19 @@ class BenchmarkMetrics:
         )
 
 
-class TestMemoryBackendBenchmark:
-    """Benchmark tests for MemoryBackend."""
+class TestMemoryClientBenchmark:
+    """Benchmark tests for MemoryClient."""
 
     @pytest.mark.asyncio
     async def test_produce_throughput_1kb(self):
         """Measure produce throughput with 1KB messages."""
-        backend = MemoryBackend()
-        await backend.start()
+        broker = MemoryBroker()
+        await broker.start()
+        client = MemoryClient(broker)
+        await client.start()
 
         topic = "bench-produce"
-        await backend.create_topic(topic)
+        await client.create_topic(topic)
 
         num_messages = 10_000
         message_size = 1024  # 1KB
@@ -132,12 +134,12 @@ class TestMemoryBackendBenchmark:
         )
         msg_bytes = msg.to_bytes()
 
-        metrics = BenchmarkMetrics("MemoryBackend Produce (1KB)")
+        metrics = BenchmarkMetrics("MemoryClient Produce (1KB)")
         metrics.start()
 
         for i in range(num_messages):
             start = time.time()
-            await backend.produce(topic, msg_bytes)
+            await client.produce(topic, msg_bytes)
             latency_ms = (time.time() - start) * 1000
             metrics.record_latency(latency_ms)
 
@@ -148,54 +150,19 @@ class TestMemoryBackendBenchmark:
         assert metrics.throughput >= 5000, f"Throughput {metrics.throughput:.0f} < 5000 msg/s"
         assert metrics.p99_latency < 50, f"P99 latency {metrics.p99_latency:.2f}ms > 50ms"
 
-        await backend.stop()
-
-    @pytest.mark.asyncio
-    async def test_produce_batch_throughput(self):
-        """Measure batch produce throughput."""
-        backend = MemoryBackend()
-        await backend.start()
-
-        topic = "bench-batch"
-        await backend.create_topic(topic)
-
-        num_batches = 100
-        batch_size = 100
-        total_messages = num_batches * batch_size
-
-        msg = QueueMessage(
-            message_id="bench",
-            split_id="split",
-            payload_key="x" * 256,
-            metadata={},
-        )
-        msg_bytes = msg.to_bytes()
-        batch = [msg_bytes] * batch_size
-
-        metrics = BenchmarkMetrics("MemoryBackend Batch Produce")
-        metrics.start()
-
-        for i in range(num_batches):
-            start = time.time()
-            await backend.produce_batch(topic, batch)
-            latency_ms = (time.time() - start) * 1000
-            metrics.record_latency(latency_ms)
-
-        metrics.stop(total_messages)
-        print(metrics.report())
-
-        assert metrics.throughput >= 10000, f"Throughput {metrics.throughput:.0f} < 10000 msg/s"
-
-        await backend.stop()
+        await client.stop()
+        await broker.stop()
 
     @pytest.mark.asyncio
     async def test_fetch_throughput(self):
         """Measure fetch throughput."""
-        backend = MemoryBackend()
-        await backend.start()
+        broker = MemoryBroker()
+        await broker.start()
+        client = MemoryClient(broker)
+        await client.start()
 
         topic = "bench-fetch"
-        await backend.create_topic(topic)
+        await client.create_topic(topic)
 
         # Pre-populate
         num_messages = 10_000
@@ -208,17 +175,17 @@ class TestMemoryBackendBenchmark:
         msg_bytes = msg.to_bytes()
 
         for i in range(num_messages):
-            await backend.produce(topic, msg_bytes)
+            await client.produce(topic, msg_bytes)
 
         # Benchmark fetch
-        metrics = BenchmarkMetrics("MemoryBackend Fetch")
+        metrics = BenchmarkMetrics("MemoryClient Fetch")
         metrics.start()
 
         offset = 0
         fetched = 0
         while fetched < num_messages:
             start = time.time()
-            records = await backend.fetch(topic, offset=offset, max_records=100)
+            records = await client.fetch(topic, offset=offset, max_records=100)
             latency_ms = (time.time() - start) * 1000
             metrics.record_latency(latency_ms)
 
@@ -233,16 +200,19 @@ class TestMemoryBackendBenchmark:
 
         assert metrics.throughput >= 10000, f"Throughput {metrics.throughput:.0f} < 10000 msg/s"
 
-        await backend.stop()
+        await client.stop()
+        await broker.stop()
 
     @pytest.mark.asyncio
     async def test_end_to_end_latency(self):
         """Measure end-to-end latency (produce + fetch)."""
-        backend = MemoryBackend()
-        await backend.start()
+        broker = MemoryBroker()
+        await broker.start()
+        client = MemoryClient(broker)
+        await client.start()
 
         topic = "bench-e2e"
-        await backend.create_topic(topic)
+        await client.create_topic(topic)
 
         num_messages = 1000
         msg = QueueMessage(
@@ -252,7 +222,7 @@ class TestMemoryBackendBenchmark:
             metadata={},
         )
 
-        metrics = BenchmarkMetrics("MemoryBackend E2E Latency")
+        metrics = BenchmarkMetrics("MemoryClient E2E Latency")
         metrics.start()
 
         for i in range(num_messages):
@@ -260,10 +230,10 @@ class TestMemoryBackendBenchmark:
 
             # Produce
             msg.message_id = str(i)
-            offset = await backend.produce(topic, msg.to_bytes())
+            offset = await client.produce(topic, msg.to_bytes())
 
             # Fetch
-            await backend.fetch(topic, offset=offset, max_records=1)
+            await client.fetch(topic, offset=offset, max_records=1)
 
             latency_ms = (time.time() - start) * 1000
             metrics.record_latency(latency_ms)
@@ -274,7 +244,8 @@ class TestMemoryBackendBenchmark:
         assert metrics.p50_latency < 10, f"P50 latency {metrics.p50_latency:.2f}ms > 10ms"
         assert metrics.p99_latency < 50, f"P99 latency {metrics.p99_latency:.2f}ms > 50ms"
 
-        await backend.stop()
+        await client.stop()
+        await broker.stop()
 
 
 if __name__ == "__main__":

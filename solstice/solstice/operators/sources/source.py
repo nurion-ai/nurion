@@ -16,7 +16,7 @@
 
 SourceMaster is responsible for:
 1. Generating splits via the abstract plan_splits() method
-2. Writing split metadata to a persistent TansuBackend queue
+2. Writing split metadata to a persistent queue (Tansu broker)
 3. Spawning workers that consume from this queue and process data
 
 Architecture:
@@ -48,7 +48,7 @@ Architecture:
     └─────────────────────────────────────────────────────────────────┘
 
 Key design decisions:
-- SourceMaster uses TansuBackend for source queue (persistence)
+- SourceMaster uses TansuBrokerManager + TansuQueueClient for source queue
 - Split metadata is written to source queue, workers read actual data
 - Workers consume from source queue, produce to output queue
 - This enables crash recovery and exactly-once semantics
@@ -72,7 +72,14 @@ from solstice.core.stage_master import (
     StageStatus,
     StageMaster,
 )
-from solstice.queue import TansuBackend, QueueBackend, MemoryBackend
+from solstice.queue import (
+    QueueBroker,
+    QueueClient,
+    TansuBrokerManager,
+    TansuQueueClient,
+    MemoryBroker,
+    MemoryClient,
+)
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -84,7 +91,7 @@ if TYPE_CHECKING:
 class SourceConfig(StageConfig):
     """Configuration for SourceMaster.
 
-    Source stages always use TansuBackend for the source queue (persistence).
+    Source stages always use Tansu broker for the source queue (persistence).
     """
 
     # Override queue_type to always be TANSU for source queue
@@ -134,7 +141,9 @@ class SourceMaster(StageMaster):
         )
 
         # Source queue (for split metadata, distinct from output queue)
-        self._source_queue: Optional[QueueBackend] = None
+        # Broker manages lifecycle, client handles produce/consume
+        self._source_broker: Optional[QueueBroker] = None
+        self._source_client: Optional[QueueClient] = None
         self._source_topic = f"{job_id}_{self.stage_id}_source"
         self._source_endpoint: Optional[QueueEndpoint] = None
 
@@ -147,44 +156,62 @@ class SourceMaster(StageMaster):
         # Override logger
         self.logger = create_ray_logger(f"SourceMaster-{self.stage_id}")
 
-    async def _create_source_queue(self) -> QueueBackend:
-        """Create queue backend for source queue.
+    async def _create_source_queue(self) -> QueueClient:
+        """Create queue broker and client for source queue.
 
-        For production (TANSU): Uses persistent TansuBackend.
-        For testing (MEMORY): Uses in-memory MemoryBackend.
+        For production (TANSU): Uses persistent TansuBrokerManager + TansuQueueClient.
+        For testing (MEMORY): Uses in-memory MemoryBroker + MemoryClient.
+
+        Returns:
+            QueueClient for producing/consuming messages.
         """
         if self.config.queue_type == QueueType.MEMORY:
             # Use Memory for testing
-            queue = MemoryBackend()
-            await queue.start()
+            broker = MemoryBroker()
+            await broker.start()
+            self._source_broker = broker
+
+            client = MemoryClient(broker)
+            await client.start()
+            self._source_client = client
+
             self._source_endpoint = QueueEndpoint(
                 queue_type=QueueType.MEMORY,
                 port=0,
                 storage_url="memory://",
             )
-            await queue.create_topic(self._source_topic)
+            await client.create_topic(self._source_topic)
             self.logger.info(f"Created Memory source queue for {self.stage_id}")
-            return queue
+            return client
         else:
             # Use Tansu for production (persistent)
-            queue = TansuBackend(
+            broker = TansuBrokerManager(
                 storage_url=self.config.tansu_storage_url,
                 port=None,  # Auto-select free port
             )
-            await queue.start()
+            await broker.start()
+            self._source_broker = broker
 
-            # Now we can get the actual port and host that was selected
+            # Parse broker URL to get host:port
+            broker_url = broker.get_broker_url()
+            host, port_str = broker_url.split(":")
+            port = int(port_str)
+
+            client = TansuQueueClient(broker_url)
+            await client.start()
+            self._source_client = client
+
             self._source_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                host=queue.host,
-                port=queue.port,
+                host=host,
+                port=port,
                 storage_url=self.config.tansu_storage_url,
             )
 
-            await queue.create_topic(self._source_topic)
+            await client.create_topic(self._source_topic)
 
-            self.logger.info(f"Created Tansu source queue on port {queue.port} for {self.stage_id}")
-            return queue
+            self.logger.info(f"Created Tansu source queue on port {port} for {self.stage_id}")
+            return client
 
     async def start(self) -> None:
         """Start the source master.
@@ -201,8 +228,8 @@ class SourceMaster(StageMaster):
         self._start_time = time.time()
         self._running = True
 
-        # Create source queue (for split metadata)
-        self._source_queue = await self._create_source_queue()
+        # Create source queue (broker + client for split metadata)
+        self._source_client = await self._create_source_queue()
 
         # Generate splits and write to source queue
         await self._produce_splits()
@@ -344,7 +371,7 @@ class SourceMaster(StageMaster):
         )
 
         # Produce to source queue
-        offset = await self._source_queue.produce(self._source_topic, message.to_bytes())
+        offset = await self._source_client.produce(self._source_topic, message.to_bytes())
         self.logger.debug(f"Produced split {split.split_id} at offset {offset}")
 
     @abstractmethod
@@ -360,17 +387,22 @@ class SourceMaster(StageMaster):
 
     async def cleanup_queue(self) -> None:
         """Clean up queues. Called by runner after all consumers are done."""
-        # Clean up source queue
-        if self._source_queue:
-            await self._source_queue.stop()
-            self._source_queue = None
+        # Clean up source client first
+        if self._source_client:
+            await self._source_client.stop()
+            self._source_client = None
+
+        # Clean up source broker
+        if self._source_broker:
+            await self._source_broker.stop()
+            self._source_broker = None
 
         # Clean up output queue (parent)
         await super().cleanup_queue()
 
-    def get_source_queue(self) -> Optional[QueueBackend]:
-        """Get the source queue (for debugging/testing)."""
-        return self._source_queue
+    def get_source_client(self) -> Optional[QueueClient]:
+        """Get the source queue client (for debugging/testing)."""
+        return self._source_client
 
     def get_source_topic(self) -> str:
         """Get the source topic name."""
@@ -391,9 +423,9 @@ class SourceMaster(StageMaster):
         status = await super().get_status_async()
 
         # Add source queue size
-        if self._source_queue:
+        if self._source_client:
             try:
-                source_size = await self._source_queue.get_latest_offset(self._source_topic)
+                source_size = await self._source_client.get_latest_offset(self._source_topic)
                 status.metrics["source_queue_size"] = source_size
             except Exception:
                 pass

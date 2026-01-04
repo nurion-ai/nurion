@@ -71,7 +71,8 @@ from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
 
 from solstice.core.models import Split
 from solstice.core.operator import OperatorConfig
-from solstice.core.stage_master import StageMaster, StageConfig, QueueType
+from solstice.core.stage_master import StageMaster, StageConfig
+from solstice.queue import QueueType
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:

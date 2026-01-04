@@ -116,7 +116,7 @@ def test_video_slice_workflow_with_ray(ray_cluster):
             },
         )
 
-        from solstice.core.stage_master import QueueType
+        from solstice.queue import QueueType
 
         # Ray already initialized by ray_cluster fixture with correct excludes
         runner = job.create_ray_runner(
