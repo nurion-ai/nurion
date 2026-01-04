@@ -17,7 +17,7 @@
 Tests the new queue-based architecture with:
 - Worker pull model
 - Simplified master (output queue only)
-- QueueBackend integration
+- Queue broker/client integration
 """
 
 import pytest
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import List
 from unittest.mock import MagicMock
 
-from solstice.queue import MemoryBackend
+from solstice.queue import MemoryBroker, MemoryClient
 from solstice.core.stage_master import (
     StageMaster,
     StageConfig,
@@ -94,12 +94,15 @@ class MockStage:
 
 
 @pytest_asyncio.fixture
-async def memory_backend():
-    """Provide a fresh memory backend."""
-    backend = MemoryBackend()
-    await backend.start()
-    yield backend
-    await backend.stop()
+async def memory_client():
+    """Provide a fresh memory broker and client."""
+    broker = MemoryBroker()
+    await broker.start()
+    client = MemoryClient(broker)
+    await client.start()
+    yield client
+    await client.stop()
+    await broker.stop()
 
 
 @pytest.fixture
@@ -273,7 +276,7 @@ class TestStageMaster:
     @pytest.mark.asyncio
     async def test_get_output_queue(self, mock_stage, stage_config, payload_store, ray_cluster):
         """Test getting output queue for downstream."""
-        from solstice.queue import TansuBackend
+        from solstice.queue import TansuQueueClient
 
         master = StageMaster(
             job_id="test_job",
@@ -288,7 +291,7 @@ class TestStageMaster:
 
         queue = master.get_output_queue()
         assert queue is not None
-        assert isinstance(queue, TansuBackend)
+        assert isinstance(queue, TansuQueueClient)
 
         await master.stop()
 
@@ -399,12 +402,12 @@ class TestExactlyOnce:
     """Tests for exactly-once processing semantics."""
 
     @pytest.mark.asyncio
-    async def test_offset_tracking(self, memory_backend):
+    async def test_offset_tracking(self, memory_client):
         """Test that offsets are tracked correctly."""
         topic = "test_topic"
         group = "test_group"
 
-        await memory_backend.create_topic(topic)
+        await memory_client.create_topic(topic)
 
         # Produce messages
         for i in range(10):
@@ -413,35 +416,35 @@ class TestExactlyOnce:
                 split_id=f"split_{i}",
                 payload_key=f"ref_{i}",
             )
-            await memory_backend.produce(topic, msg.to_bytes())
+            await memory_client.produce(topic, msg.to_bytes())
 
         # Simulate processing and committing
-        offset = await memory_backend.get_committed_offset(group, topic)
+        offset = await memory_client.get_committed_offset(group, topic)
         assert offset is None
 
-        records = await memory_backend.fetch(topic, offset=0, max_records=5)
+        records = await memory_client.fetch(topic, offset=0, max_records=5)
         assert len(records) == 5
 
         # Commit after processing
         new_offset = records[-1].offset + 1
-        await memory_backend.commit_offset(group, topic, new_offset)
+        await memory_client.commit_offset(group, topic, new_offset)
 
         # Verify committed offset
-        committed = await memory_backend.get_committed_offset(group, topic)
+        committed = await memory_client.get_committed_offset(group, topic)
         assert committed == new_offset
 
         # Resume from committed offset
-        remaining = await memory_backend.fetch(topic, offset=committed)
+        remaining = await memory_client.fetch(topic, offset=committed)
         assert len(remaining) == 5
         assert remaining[0].offset == new_offset
 
     @pytest.mark.asyncio
-    async def test_crash_recovery_simulation(self, memory_backend):
+    async def test_crash_recovery_simulation(self, memory_client):
         """Simulate crash recovery with offset tracking."""
         topic = "test_topic"
         group = "test_group"
 
-        await memory_backend.create_topic(topic)
+        await memory_client.create_topic(topic)
 
         # Produce messages
         for i in range(10):
@@ -450,22 +453,22 @@ class TestExactlyOnce:
                 split_id=f"split_{i}",
                 payload_key=f"ref_{i}",
             )
-            await memory_backend.produce(topic, msg.to_bytes())
+            await memory_client.produce(topic, msg.to_bytes())
 
         # First "worker" processes some messages
         offset = 0
-        records = await memory_backend.fetch(topic, offset=offset, max_records=3)
+        records = await memory_client.fetch(topic, offset=offset, max_records=3)
         processed_ids = [QueueMessage.from_bytes(r.value).message_id for r in records]
 
         # Commit offset
-        await memory_backend.commit_offset(group, topic, records[-1].offset + 1)
+        await memory_client.commit_offset(group, topic, records[-1].offset + 1)
 
         # "Crash" - lose in-memory state
         del records, processed_ids
 
         # "Restart" - resume from committed offset
-        committed = await memory_backend.get_committed_offset(group, topic)
-        remaining = await memory_backend.fetch(topic, offset=committed)
+        committed = await memory_client.get_committed_offset(group, topic)
+        remaining = await memory_client.fetch(topic, offset=committed)
 
         # Should get remaining 7 messages
         assert len(remaining) == 7

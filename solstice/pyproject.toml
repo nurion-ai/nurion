@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 
 dependencies = [
+    "tansu-py",  # Embedded Kafka-compatible broker (built from tansu-py/)
     "ray[default]==2.48.0",
     "pyarrow>=18.1.0",
     "pandas>=2.0.0",
@@ -47,8 +48,14 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=45", "wheel", "setuptools-scm>=6.2"]
+requires = ["setuptools>=45", "wheel", "setuptools-scm>=6.2", "maturin>=1.9"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.uv.sources]
+tansu-py = { path = "tansu-py", editable = true }
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -84,5 +91,6 @@ filterwarnings = [
 markers = [
     "integration: marks integration tests",
     "benchmark: marks performance benchmark tests (skipped by default in CI)",
+    "slow: marks slow tests (Tansu broker startup ~5s per test)",
     "timeout: marks tests with timeout (requires pytest-timeout)",
 ]

@@ -7,12 +7,12 @@ from solstice.core.stage_master import (
     StageMaster,
     StageConfig,
     StageWorker,
-    QueueType,
     QueueEndpoint,
     create_queue_endpoint,
     QueueMessage,
     StageStatus,
 )
+from solstice.queue import QueueType
 
 __all__ = [
     "Job",

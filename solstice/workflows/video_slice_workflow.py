@@ -25,7 +25,7 @@ from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
 from solstice.operators.sinks import FileSinkConfig, LanceSinkConfig
-from solstice.core.stage_master import QueueType
+from solstice.queue import QueueType
 from solstice.operators.sources import LanceTableSourceConfig
 from solstice.operators.video import (
     FFmpegSceneDetectConfig,

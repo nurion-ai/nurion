@@ -1,45 +1,78 @@
 """Queue backends for inter-stage communication.
 
 This module provides abstractions for message queue backends used for
-communication between pipeline stages. The key abstraction is `QueueBackend`
-which defines the interface for producing and consuming messages.
+communication between pipeline stages.
 
-Available backends:
-- MemoryBackend: Fast in-memory queue for lightweight stages
-- TansuBackend: Persistent queue using Tansu broker subprocess
+Types:
+- QueueType: Enum for queue backend types (MEMORY, TANSU)
+
+Protocols (Interface Segregation):
+- QueueProducer: For producing messages
+- QueueConsumer: For consuming messages
+- QueueAdmin: For topic management
+- QueueBroker: For broker lifecycle management
+- QueueClient: Combined Producer + Consumer + Admin
+
+Implementations:
+- MemoryBroker + MemoryClient: Fast in-memory queue
+- TansuBrokerManager + TansuQueueClient: Kafka-compatible broker
 
 Example:
     ```python
-    from solstice.queue import MemoryBackend, TansuBackend
+    from solstice.queue import QueueType, TansuBrokerManager, TansuQueueClient
 
-    # For lightweight stages (no persistence)
-    backend = MemoryBackend()
-    await backend.start()
+    # On StageMaster - start broker
+    broker = TansuBrokerManager(storage_url="memory://tansu/")
+    await broker.start()
 
-    # For expensive stages (with persistence)
-    backend = TansuBackend(storage_url="s3://bucket/")
-    await backend.start()
+    # Create client
+    client = TansuQueueClient(broker.get_broker_url())
+    await client.start()
 
-    # Produce messages
-    offset = await backend.produce("my-topic", b"message data")
+    await client.create_topic("my-topic")
+    offset = await client.produce("my-topic", b"message data")
+    records = await client.fetch("my-topic", offset=0)
 
-    # Consume messages
-    records = await backend.fetch("my-topic", offset=0, max_records=100)
-
-    # Commit offset (for exactly-once semantics)
-    await backend.commit_offset("my-group", "my-topic", records[-1].offset + 1)
+    await client.stop()
+    await broker.stop()
     ```
 """
 
-from solstice.queue.backend import QueueBackend, Record
-from solstice.queue.memory import MemoryBackend
-from solstice.queue.tansu import TansuBackend
-from solstice.queue.factory import create_queue_backend
+from enum import Enum
+
+from solstice.queue.backend import Record
+from solstice.queue.protocols import (
+    QueueProducer,
+    QueueConsumer,
+    QueueAdmin,
+    QueueBroker,
+    QueueClient,
+)
+from solstice.queue.memory import MemoryBroker, MemoryClient
+from solstice.queue.tansu import TansuBrokerManager, TansuQueueClient
+
+
+class QueueType(str, Enum):
+    """Type of queue backend to use."""
+
+    MEMORY = "memory"  # In-process only (for single-worker testing)
+    TANSU = "tansu"  # Persistent broker (for production)
+
 
 __all__ = [
-    "QueueBackend",
+    # Types
+    "QueueType",
     "Record",
-    "MemoryBackend",
-    "TansuBackend",
-    "create_queue_backend",
+    # Protocols
+    "QueueProducer",
+    "QueueConsumer",
+    "QueueAdmin",
+    "QueueBroker",
+    "QueueClient",
+    # Memory implementations
+    "MemoryBroker",
+    "MemoryClient",
+    # Tansu implementations
+    "TansuBrokerManager",
+    "TansuQueueClient",
 ]

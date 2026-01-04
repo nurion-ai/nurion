@@ -23,13 +23,15 @@ Tests cover:
 All tests use real implementations (no mocks) to catch real issues.
 """
 
-import pytest
 from dataclasses import dataclass
 
-from solstice.core.stage_master import StageMaster, StageConfig, QueueType
+import pytest
+
+from solstice.core.stage_master import StageMaster, StageConfig
 from solstice.core.stage import Stage
 from solstice.core.operator import OperatorConfig, Operator
-from solstice.queue import TansuBackend
+from solstice.queue import QueueType
+from tests.utils import wait_until
 
 
 @dataclass
@@ -152,10 +154,12 @@ class TestQueueCreationWithPartitions:
         It verifies that:
         1. Partition count is calculated correctly
         2. Tansu queue is created with the correct number of partitions
-        3. The queue backend is actually a TansuBackend instance
+        3. The queue client is actually a TansuQueueClient instance
 
         If Tansu is not available or misconfigured, the test will FAIL (not skip).
         """
+        from solstice.queue import TansuQueueClient
+
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
@@ -184,7 +188,7 @@ class TestQueueCreationWithPartitions:
             # Verify queue was created with correct partition count
             assert master._output_queue is not None
             assert master._compute_partition_count() == 4
-            assert isinstance(master._output_queue, TansuBackend)
+            assert isinstance(master._output_queue, TansuQueueClient)
         finally:
             await master.stop()
 
@@ -257,14 +261,24 @@ class TestPartitionRebalance:
         while len(master._workers) < 4:
             await master._spawn_worker()
 
-        assert len(master._workers) == 4
+        # Wait for all 4 workers to be ready
+        await wait_until(
+            lambda: len(master._workers) == 4,
+            timeout=5.0,
+            message="Workers not spawned",
+        )
 
         # Remove workers
         removed = await master.scale_down(2)
-        assert removed == 2
-        assert len(master._workers) == 2
 
-        # Remaining workers will rebalance via consumer group protocol
+        # Wait for workers to be removed
+        await wait_until(
+            lambda: len(master._workers) == 2,
+            timeout=5.0,
+            message="Workers not removed",
+        )
+
+        assert removed == 2
 
         await master.stop()
 

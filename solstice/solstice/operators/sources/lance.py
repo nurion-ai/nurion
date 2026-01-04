@@ -23,7 +23,7 @@ import lance
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.core.stage_master import QueueType
+from solstice.queue import QueueType
 from solstice.operators.sources.source import SourceMaster, SourceConfig
 
 if TYPE_CHECKING:
@@ -112,7 +112,7 @@ class LanceSourceMaster(SourceMaster):
     """Source master for Lance tables.
 
     Generates splits based on Lance dataset fragments and writes
-    split metadata to a persistent TansuBackend queue.
+    split metadata to a persistent Tansu queue.
 
     Workers consume from the queue and use LanceTableSource operator
     to read actual data for each split.

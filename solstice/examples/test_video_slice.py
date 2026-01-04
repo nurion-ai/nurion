@@ -174,7 +174,7 @@ async def run_workflow_async(
     """
     import ray
     from solstice.runtime import RayJobRunner
-    from solstice.core.stage_master import QueueType
+    from solstice.queue import QueueType
 
     from workflows.video_slice_workflow import create_job
 

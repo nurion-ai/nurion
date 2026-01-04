@@ -114,7 +114,7 @@ class TestPartitionLagCalculation:
             bootstrap_servers=f"localhost:{tansu_backend.port}",
             enable_auto_commit=False,
             auto_offset_reset="earliest",
-            request_timeout_ms=30000,
+            request_timeout_ms=5000,
             group_id=consumer_group,
         )
         await commit_consumer.start()
@@ -196,7 +196,7 @@ class TestPartitionLagCalculation:
                 bootstrap_servers=f"localhost:{tansu_backend.port}",
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
-                request_timeout_ms=30000,
+                request_timeout_ms=5000,
                 group_id=consumer_group,
             )
             await commit_consumer.start()
