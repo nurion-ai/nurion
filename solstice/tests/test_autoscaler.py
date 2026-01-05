@@ -88,6 +88,14 @@ class MockStageMaster:
                 del self._workers[key]
         return to_remove
 
+    def _rebalance_partitions(self) -> None:
+        """Mock partition rebalancing."""
+        pass
+
+    async def _notify_workers_partition_update(self) -> None:
+        """Mock worker partition notification."""
+        pass
+
 
 class MockSourceMaster:
     """Mock SourceMaster for testing (should be skipped by autoscaler)."""

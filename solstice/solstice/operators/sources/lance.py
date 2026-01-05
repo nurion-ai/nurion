@@ -23,11 +23,11 @@ import lance
 
 from solstice.core.models import Split, SplitPayload
 from solstice.core.operator import SourceOperator, OperatorConfig
-from solstice.queue import QueueType
 from solstice.operators.sources.source import SourceMaster, SourceConfig
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
+    from solstice.core.split_payload_store import SplitPayloadStore
 
 
 @dataclass
@@ -36,6 +36,9 @@ class LanceTableSourceConfig(OperatorConfig):
 
     This unified config is used by both the operator (for reading splits)
     and the master (for planning splits).
+
+    Note: queue_type and tansu_storage_url are configured via JobConfig,
+    not here. The runner passes these to the master via SourceConfig.
     """
 
     dataset_uri: str
@@ -49,13 +52,6 @@ class LanceTableSourceConfig(OperatorConfig):
 
     split_size: int = 1024
     """Number of rows per split."""
-
-    # SourceConfig fields for master
-    queue_type: QueueType = QueueType.TANSU
-    """Queue type for source queue (TANSU for production, MEMORY for testing)."""
-
-    tansu_storage_url: str = "memory://"
-    """Tansu storage URL (memory://, s3://)."""
 
 
 def _get_lance_storage_options(uri: str) -> Optional[dict]:
@@ -122,22 +118,20 @@ class LanceSourceMaster(SourceMaster):
         self,
         job_id: str,
         stage: "Stage",
-        **kwargs,
+        payload_store: "SplitPayloadStore",
+        config: Optional[SourceConfig] = None,
     ):
-        # Get config from stage.operator_config
+        # Get Lance-specific config from stage.operator_config
         operator_cfg = stage.operator_config
         if not isinstance(operator_cfg, LanceTableSourceConfig):
             raise TypeError(
                 f"LanceSourceMaster requires LanceTableSourceConfig, got {type(operator_cfg)}"
             )
 
-        # Create SourceConfig from operator config fields
-        source_config = SourceConfig(
-            queue_type=operator_cfg.queue_type,
-            tansu_storage_url=operator_cfg.tansu_storage_url,
-        )
-        super().__init__(job_id, stage, config=source_config, **kwargs)
+        # Use config from runner (contains queue_type, parallelism, resources)
+        super().__init__(job_id, stage, payload_store, config)
 
+        # Lance-specific configuration
         self.dataset_uri: str = operator_cfg.dataset_uri
         self.filter: Optional[str] = operator_cfg.filter
         self.columns: Optional[Iterable[str]] = operator_cfg.columns

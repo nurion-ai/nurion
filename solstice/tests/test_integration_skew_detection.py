@@ -70,6 +70,9 @@ class _TestOperator(Operator):
 # Set operator_class after class definition
 _TestOperatorConfig.operator_class = _TestOperator
 
+# Mark all tests in this module as integration tests
+pytestmark = pytest.mark.integration
+
 
 class TestPartitionLagCalculation:
     """Tests for partition lag calculation using real Tansu backend."""

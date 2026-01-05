@@ -15,12 +15,32 @@
 """Job definition and DAG specification."""
 
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from solstice.core.stage import Stage
+from solstice.queue import QueueType
 
 if TYPE_CHECKING:
     from solstice.runtime.ray_runner import RayJobRunner
+    from solstice.core.stage_master import AutoscaleConfig
+
+
+@dataclass
+class JobConfig:
+    """Configuration for a Solstice job.
+
+    Attributes:
+        queue_type: Type of queue backend (TANSU for production, MEMORY for testing)
+        tansu_storage_url: Storage URL for Tansu backend (memory://, s3://)
+        ray_init_kwargs: Arguments to pass to ray.init()
+        autoscale_config: Configuration for autoscaling (None to disable)
+    """
+
+    queue_type: QueueType = QueueType.TANSU
+    tansu_storage_url: str = "memory://"
+    ray_init_kwargs: Dict[str, Any] = field(default_factory=dict)
+    autoscale_config: Optional["AutoscaleConfig"] = None
 
 
 class Job:
@@ -29,34 +49,31 @@ class Job:
     def __init__(
         self,
         job_id: str,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[JobConfig] = None,
     ):
         """
         Initialize a streaming job.
 
         Args:
             job_id: Unique identifier for the job
-            config: Additional job configuration
+            config: Job configuration (queue type, autoscaling, etc.)
 
         Examples:
             >>> job = Job(job_id="etl_pipeline")
 
             >>> job = Job(
             ...     job_id="etl_pipeline",
-            ...     config={"parallelism": 4},
+            ...     config=JobConfig(queue_type=QueueType.MEMORY),
             ... )
         """
         self.job_id = job_id
-        self.config = config or {}
+        self.config = config or JobConfig()
 
         self.logger = logging.getLogger(f"Job-{job_id}")
 
         # DAG components
         self.stages: dict[str, Stage] = {}
         self.dag_edges: dict[str, list[str]] = {}  # stage_id -> downstream stages
-
-        # Runtime hook (optional, populated when a runner is attached)
-        self._ray_runner: Optional[RayJobRunner] = None
 
         self.logger.debug("Job %s initialized", job_id)
 
@@ -106,19 +123,11 @@ class Job:
 
         return reverse_dag
 
-    # ------------------------------------------------------------------
-    # Runner helpers
-    # ------------------------------------------------------------------
-    def attach_ray_runner(self, runner: "RayJobRunner") -> None:
-        self._ray_runner = runner
+    def create_ray_runner(self) -> "RayJobRunner":
+        """Create a RayJobRunner for this job.
 
-    @property
-    def ray_runner(self) -> Optional["RayJobRunner"]:
-        return self._ray_runner
-
-    def create_ray_runner(self, **ray_runner_kwargs: Any) -> "RayJobRunner":
+        Configuration is read from self.config (JobConfig).
+        """
         from solstice.runtime.ray_runner import RayJobRunner
 
-        runner = RayJobRunner(self, **ray_runner_kwargs)
-        self.attach_ray_runner(runner)
-        return runner
+        return RayJobRunner(self)

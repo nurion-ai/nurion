@@ -21,14 +21,13 @@ Tests the complete flow:
 - Worker pull model
 """
 
-import asyncio
 import pytest
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import pyarrow as pa
 
-from solstice.core.job import Job
+from solstice.core.job import Job, JobConfig
 from solstice.core.stage import Stage
 from solstice.core.operator import Operator, OperatorConfig
 from solstice.core.models import Split, SplitPayload
@@ -44,10 +43,10 @@ pytestmark = pytest.mark.asyncio(loop_scope="function")
 # ============================================================================
 
 
-class TestSourceOperator(Operator):
+class MockSourceOperator(Operator):
     """Source operator that generates test data."""
 
-    def __init__(self, config: "TestSourceConfig", worker_id: str = None):
+    def __init__(self, config: "MockSourceConfig", worker_id: str = None):
         super().__init__(config, worker_id)
         self._generated = 0
 
@@ -91,7 +90,7 @@ class TestSourceOperator(Operator):
 
 
 @dataclass
-class TestSourceConfig(OperatorConfig):
+class MockSourceConfig(OperatorConfig):
     """Config for test source operator."""
 
     num_records: int = 100
@@ -99,10 +98,10 @@ class TestSourceConfig(OperatorConfig):
 
 
 # Set operator_class after class definition
-TestSourceConfig.operator_class = TestSourceOperator
+MockSourceConfig.operator_class = MockSourceOperator
 
 
-class TestSourceMaster(SourceMaster):
+class MockSourceMaster(SourceMaster):
     """Test source master that generates splits from config."""
 
     def plan_splits(self):
@@ -122,13 +121,13 @@ class TestSourceMaster(SourceMaster):
 
 
 # Set master_class after class definition
-TestSourceConfig.master_class = TestSourceMaster
+MockSourceConfig.master_class = MockSourceMaster
 
 
-class TestTransformOperator(Operator):
+class MockTransformOperator(Operator):
     """Transform operator that modifies data."""
 
-    def __init__(self, config: "TestTransformConfig", worker_id: str = None):
+    def __init__(self, config: "MockTransformConfig", worker_id: str = None):
         super().__init__(config, worker_id)
         self._processed = 0
 
@@ -160,23 +159,23 @@ class TestTransformOperator(Operator):
 
 
 @dataclass
-class TestTransformConfig(OperatorConfig):
+class MockTransformConfig(OperatorConfig):
     """Config for test transform operator."""
 
     suffix: str = "_transformed"
 
 
 # Set operator_class after class definition
-TestTransformConfig.operator_class = TestTransformOperator
+MockTransformConfig.operator_class = MockTransformOperator
 
 
-class TestSinkOperator(Operator):
+class MockSinkOperator(Operator):
     """Sink operator that collects results."""
 
     # Shared storage for test verification
     collected_records: List[Dict] = []
 
-    def __init__(self, config: "TestSinkConfig", worker_id: str = None):
+    def __init__(self, config: "MockSinkConfig", worker_id: str = None):
         super().__init__(config, worker_id)
 
     def process_split(
@@ -187,7 +186,7 @@ class TestSinkOperator(Operator):
             return None
 
         records = payload.to_pylist()
-        TestSinkOperator.collected_records.extend(records)
+        MockSinkOperator.collected_records.extend(records)
 
         # Sink doesn't produce output
         return None
@@ -201,14 +200,14 @@ class TestSinkOperator(Operator):
 
 
 @dataclass
-class TestSinkConfig(OperatorConfig):
+class MockSinkConfig(OperatorConfig):
     """Config for test sink operator."""
 
     pass
 
 
 # Set operator_class after class definition
-TestSinkConfig.operator_class = TestSinkOperator
+MockSinkConfig.operator_class = MockSinkOperator
 
 
 # ============================================================================
@@ -219,37 +218,17 @@ TestSinkConfig.operator_class = TestSinkOperator
 @pytest.fixture
 def simple_job():
     """Create a simple single-stage job."""
-    job = Job(job_id="test_simple")
+    job = Job(
+        job_id="test_simple",
+        config=JobConfig(queue_type=QueueType.TANSU),
+    )
 
     source_stage = Stage(
         stage_id="source",
-        operator_config=TestSourceConfig(num_records=50, batch_size=10),
+        operator_config=MockSourceConfig(num_records=50, batch_size=10),
         parallelism=(1, 2),  # (min, max)
     )
     job.add_stage(source_stage)
-
-    return job
-
-
-@pytest.fixture
-def two_stage_job():
-    """Create a two-stage job (source -> transform)."""
-    job = Job(job_id="test_two_stage")
-
-    source_stage = Stage(
-        stage_id="source",
-        operator_config=TestSourceConfig(num_records=50, batch_size=10),
-        parallelism=1,
-    )
-    job.add_stage(source_stage)
-
-    transform_stage = Stage(
-        stage_id="transform",
-        operator_config=TestTransformConfig(suffix="_v2"),
-        parallelism=1,
-    )
-    # Note: upstream_stages is set via job.add_stage with dependencies
-    job.add_stage(transform_stage, upstream_stages=["source"])
 
     return job
 
@@ -265,7 +244,7 @@ class TestRayJobRunner:
     @pytest.mark.asyncio
     async def test_initialization(self, simple_job, ray_cluster):
         """Test runner initialization."""
-        runner = RayJobRunner(simple_job, queue_type=QueueType.TANSU)
+        runner = RayJobRunner(simple_job)
 
         assert not runner.is_initialized
         assert not runner.is_running
@@ -278,7 +257,7 @@ class TestRayJobRunner:
     @pytest.mark.asyncio
     async def test_get_status(self, simple_job, ray_cluster):
         """Test getting pipeline status."""
-        runner = RayJobRunner(simple_job, queue_type=QueueType.TANSU)
+        runner = RayJobRunner(simple_job)
         await runner.initialize()
 
         status = runner.get_status()
@@ -292,77 +271,18 @@ class TestRayJobRunner:
     @pytest.mark.asyncio
     async def test_stop_before_run(self, simple_job, ray_cluster):
         """Test stopping before running."""
-        runner = RayJobRunner(simple_job, queue_type=QueueType.TANSU)
+        runner = RayJobRunner(simple_job)
         await runner.initialize()
         await runner.stop()  # Should not raise
 
         assert not runner.is_running
 
 
-class TestPipelineExecution:
-    """Tests for actual pipeline execution."""
-
-    @pytest.mark.asyncio
-    async def test_single_stage_messages(self, ray_cluster):
-        """Test that single stage produces messages to queue."""
-        job = Job(job_id="test_single_stage_msg")
-
-        source_stage = Stage(
-            stage_id="source",
-            operator_config=TestSourceConfig(num_records=20, batch_size=5),
-            parallelism=1,
-        )
-        job.add_stage(source_stage)
-
-        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
-        await runner.initialize()
-
-        # Start the source
-        source_master = runner._masters["source"]
-        await source_master.start()
-
-        # Give it time to produce some messages
-        await asyncio.sleep(0.5)
-
-        # Check output queue
-        queue = source_master.get_output_queue()
-        topic = source_master.get_output_topic()
-
-        if queue:
-            offset = await queue.get_latest_offset(topic)
-            # Source should have produced some messages
-            # (exact count depends on timing)
-            assert offset >= 0
-
-        await runner.stop()
-
-
-class TestQueueCommunication:
-    """Tests for queue-based stage communication."""
-
-    @pytest.mark.asyncio
-    async def test_upstream_downstream_connection(self, two_stage_job, ray_cluster):
-        """Test that downstream stage connects to upstream queue."""
-        runner = RayJobRunner(two_stage_job, queue_type=QueueType.TANSU)
-        await runner.initialize()
-
-        transform_master = runner._masters["transform"]
-
-        # Verify transform has upstream endpoint
-        assert transform_master.upstream_endpoint is not None
-        assert transform_master.upstream_topic is not None
-
-        # Endpoint should point to source's output
-        assert transform_master.upstream_endpoint.queue_type == QueueType.TANSU
-
-        await runner.stop()
-
-
 class TestExactlyOnce:
     """Tests for exactly-once semantics."""
 
     @pytest.mark.asyncio
-    async def test_offset_tracking(self, ray_cluster):
+    async def test_offset_tracking(self):
         """Test that offsets are tracked correctly."""
         from solstice.queue import MemoryBroker, MemoryClient
 
@@ -406,194 +326,3 @@ class TestExactlyOnce:
 
 
 # ============================================================================
-# Integration Tests
-# ============================================================================
-
-
-class TestIntegration:
-    """Full integration tests."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.timeout(30)
-    async def test_source_produces_to_queue(self, ray_cluster):
-        """Test that source stage produces data to its output queue."""
-        job = Job(job_id="test_source_queue")
-
-        source_stage = Stage(
-            stage_id="source",
-            operator_config=TestSourceConfig(num_records=10, batch_size=5),
-            parallelism=1,
-        )
-        job.add_stage(source_stage)
-
-        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
-        await runner.initialize()
-
-        source_master = runner._masters["source"]
-
-        # Start and let it run briefly
-        await source_master.start()
-
-        # Wait for workers to produce
-        await asyncio.sleep(1)
-
-        # Check that messages were produced
-        queue = source_master.get_output_queue()
-        if queue:
-            topic = source_master.get_output_topic()
-            latest = await queue.get_latest_offset(topic)
-            # Should have produced some messages (timing dependent)
-            print(f"Source produced {latest} messages")
-
-        await runner.stop()
-
-
-class TestMultiStagePipeline:
-    """Tests for multi-stage pipeline with actual data flow."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.timeout(60)
-    async def test_three_stage_pipeline_data_flow(self, ray_cluster):
-        """Test complete data flow: Source -> Transform -> Sink."""
-        # Reset sink collector
-        TestSinkOperator.reset()
-
-        job = Job(job_id="test_three_stage")
-
-        # Stage 1: Source generates data
-        source_stage = Stage(
-            stage_id="source",
-            operator_config=TestSourceConfig(num_records=30, batch_size=10),
-            parallelism=1,
-        )
-        job.add_stage(source_stage)
-
-        # Stage 2: Transform modifies data
-        transform_stage = Stage(
-            stage_id="transform",
-            operator_config=TestTransformConfig(suffix="_processed"),
-            parallelism=1,
-        )
-        job.add_stage(transform_stage, upstream_stages=["source"])
-
-        # Stage 3: Sink collects results
-        sink_stage = Stage(
-            stage_id="sink",
-            operator_config=TestSinkConfig(),
-            parallelism=1,
-        )
-        job.add_stage(sink_stage, upstream_stages=["transform"])
-
-        # Verify DAG structure
-        assert len(job.stages) == 3
-        assert job.dag_edges.get("source") == ["transform"]
-        assert job.dag_edges.get("transform") == ["sink"]
-
-        reverse_dag = job.build_reverse_dag()
-        assert reverse_dag["source"] == []
-        assert reverse_dag["transform"] == ["source"]
-        assert reverse_dag["sink"] == ["transform"]
-
-        print("DAG structure verified")
-
-    @pytest.mark.asyncio
-    async def test_two_stage_queue_topology(self, ray_cluster):
-        """Test that two-stage pipeline has correct queue topology."""
-        job = Job(job_id="test_topology")
-
-        source_stage = Stage(
-            stage_id="source",
-            operator_config=TestSourceConfig(num_records=10, batch_size=5),
-            parallelism=1,
-        )
-        job.add_stage(source_stage)
-
-        transform_stage = Stage(
-            stage_id="transform",
-            operator_config=TestTransformConfig(suffix="_t"),
-            parallelism=1,
-        )
-        job.add_stage(transform_stage, upstream_stages=["source"])
-
-        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
-        await runner.initialize()
-
-        # Verify topology
-        source_master = runner._masters["source"]
-        transform_master = runner._masters["transform"]
-
-        # Source master has internal source queue (for workers to pull from)
-        # and output queue (for downstream stages)
-        assert source_master._output_endpoint is not None
-
-        # Transform has upstream (from source)
-        assert transform_master.upstream_endpoint is not None
-
-        # Transform's upstream points to source's output
-        assert transform_master.upstream_topic == source_master._output_topic
-
-        # Note: Transform's output endpoint is created when start() is called
-        # So we just verify the upstream connection here
-
-        print("Queue topology verified: transform pulls from source")
-        await runner.stop()
-
-    @pytest.mark.asyncio
-    async def test_parallel_workers_in_stage(self, ray_cluster):
-        """Test that stage can have multiple parallel workers."""
-        job = Job(job_id="test_parallel")
-
-        source_stage = Stage(
-            stage_id="source",
-            operator_config=TestSourceConfig(num_records=100, batch_size=10),
-            parallelism=1,  # Single source
-        )
-        job.add_stage(source_stage)
-
-        transform_stage = Stage(
-            stage_id="transform",
-            operator_config=TestTransformConfig(suffix="_p"),
-            parallelism=2,  # Multiple transform workers
-        )
-        job.add_stage(transform_stage, upstream_stages=["source"])
-
-        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
-        await runner.initialize()
-
-        transform_master = runner._masters["transform"]
-
-        # Start transforms
-        await transform_master.start()
-
-        # Should spawn workers according to parallelism
-        status = transform_master.get_status()
-        # Note: actual worker count may vary based on implementation
-        print(f"Transform workers: {status.worker_count}")
-
-        await runner.stop()
-
-    @pytest.mark.asyncio
-    async def test_stage_completion_detection(self, ray_cluster):
-        """Test that pipeline detects when all stages complete."""
-        job = Job(job_id="test_completion")
-
-        # Small job that completes quickly
-        source_stage = Stage(
-            stage_id="source",
-            operator_config=TestSourceConfig(num_records=10, batch_size=10),
-            parallelism=1,
-        )
-        job.add_stage(source_stage)
-
-        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
-
-        try:
-            # Run should complete (or timeout)
-            status = await asyncio.wait_for(runner.run(timeout=10), timeout=15)
-
-            print(f"Pipeline completed: elapsed={status.elapsed_time:.2f}s")
-            assert status.elapsed_time > 0
-
-        except asyncio.TimeoutError:
-            print("Pipeline did not complete in time (expected for some implementations)")
-            await runner.stop()

@@ -304,6 +304,9 @@ class SimpleAutoscaler:
                     to_add = target - current
                     for _ in range(to_add):
                         await master._spawn_worker()
+                    # Rebalance partitions after adding workers to avoid overlapping assignments
+                    master._rebalance_partitions()
+                    await master._notify_workers_partition_update()
                     self._last_scale_time[stage_id] = now
                     self.logger.info(f"Scaled UP {stage_id}: {current} -> {target} workers")
 

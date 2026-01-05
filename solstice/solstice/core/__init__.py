@@ -1,6 +1,6 @@
 """Core components of the streaming framework"""
 
-from solstice.core.job import Job
+from solstice.core.job import Job, JobConfig
 from solstice.core.operator import Operator, OperatorConfig
 from solstice.core.stage import Stage
 from solstice.core.stage_master import (
@@ -16,6 +16,7 @@ from solstice.queue import QueueType
 
 __all__ = [
     "Job",
+    "JobConfig",
     "Stage",
     "Operator",
     "OperatorConfig",

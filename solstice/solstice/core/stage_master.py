@@ -57,7 +57,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ray
 
@@ -116,6 +116,10 @@ class StageConfig:
     num_cpus: float = 1.0
     num_gpus: float = 0.0
     memory_mb: int = 0
+
+    # Resource backoff configuration
+    worker_ready_timeout_seconds: float = 30.0  # Max time to wait for worker to be ready
+    worker_spawn_retry_delay_seconds: float = 2.0  # Delay between spawn retries
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -260,6 +264,11 @@ class StageMaster:
         self._workers: Dict[str, ray.actor.ActorHandle] = {}
         self._worker_tasks: Dict[str, ray.ObjectRef] = {}
 
+        # Partition assignment: worker_id -> List[partition_ids]
+        # Managed centrally, recomputed on worker add/remove
+        self._partition_assignments: Dict[str, List[int]] = {}
+        self._partition_count: Optional[int] = None  # Cached after queue creation
+
         # State
         self._running = False
         self._finished = False
@@ -370,7 +379,13 @@ class StageMaster:
         return queue
 
     async def start(self) -> None:
-        """Start the stage master."""
+        """Start the stage master.
+
+        Spawns workers with resource backoff strategy:
+        1. Tries to spawn min_workers first - these are required
+        2. If any min_worker fails to start due to resources, raises RuntimeError
+        3. Additional workers beyond min are optional and will be skipped if resources unavailable
+        """
         if self._running:
             return
 
@@ -381,15 +396,80 @@ class StageMaster:
         # Create output queue
         self._output_queue = await self._create_queue()
 
-        # Spawn workers
+        # Spawn minimum required workers first (these must succeed)
         for i in range(self.config.min_workers):
-            await self._spawn_worker()
+            # is_min_worker=True means failure will raise RuntimeError
+            await self._spawn_worker_with_resource_check(is_min_worker=True)
+
+        # Rebalance partitions after all workers are spawned
+        # This ensures all workers have consistent, non-overlapping assignments
+        if self._workers:
+            self._rebalance_partitions()
+            await self._notify_workers_partition_update()
 
         self.logger.info(f"Stage {self.stage_id} started with {len(self._workers)} workers")
 
+    def _rebalance_partitions(self) -> None:
+        """Recompute partition assignments for all workers.
+
+        Uses round-robin distribution to ensure all partitions are covered:
+        - 4 partitions, 2 workers: worker0 -> [0,2], worker1 -> [1,3]
+        - 4 partitions, 3 workers: worker0 -> [0,3], worker1 -> [1], worker2 -> [2]
+        """
+        if self._partition_count is None:
+            self._partition_count = self._compute_partition_count()
+
+        partition_count = self._partition_count
+        worker_ids = list(self._workers.keys())
+        num_workers = len(worker_ids)
+
+        # Clear existing assignments
+        self._partition_assignments.clear()
+
+        if num_workers == 0:
+            return
+
+        # Round-robin assignment
+        # When partition_count < num_workers, some workers will have empty assignments
+        # and remain idle. This is intentional to avoid duplicate message processing.
+        for i, worker_id in enumerate(worker_ids):
+            partitions = [p for p in range(partition_count) if p % num_workers == i]
+            self._partition_assignments[worker_id] = partitions
+
+        idle_workers = [wid for wid, parts in self._partition_assignments.items() if not parts]
+        if idle_workers:
+            self.logger.warning(
+                f"Partition rebalance: {len(idle_workers)} workers have no partitions "
+                f"(partition_count={partition_count} < num_workers={num_workers}). "
+                f"Consider increasing partition_count or reducing workers."
+            )
+        self.logger.debug(f"Partition rebalance: {self._partition_assignments}")
+
+    def get_partition_assignment(self, worker_id: str) -> List[int]:
+        """Get the current partition assignment for a worker.
+
+        Returns empty list if worker has no assigned partitions (idle worker).
+        """
+        return self._partition_assignments.get(worker_id, [])
+
     async def _spawn_worker(self) -> str:
-        """Spawn a new worker."""
-        worker_id = f"{self.stage_id}_w{len(self._workers)}_{uuid.uuid4().hex[:6]}"
+        """Spawn a new worker without resource checking.
+
+        Returns the worker_id of the spawned worker.
+        """
+        worker_index = len(self._workers)
+        worker_id = f"{self.stage_id}_w{worker_index}_{uuid.uuid4().hex[:6]}"
+
+        # Pre-compute partition count if not set
+        if self._partition_count is None:
+            self._partition_count = self._compute_partition_count()
+
+        # Compute initial partition assignment for this new worker
+        # This will be updated by rebalance after worker is added
+        # When partition_count < num_workers, some workers will have empty assignments
+        num_workers = len(self._workers) + 1
+        partition_count = self._partition_count
+        assigned_partitions = [p for p in range(partition_count) if p % num_workers == worker_index]
 
         # Create worker actor
         resources = {}
@@ -411,18 +491,123 @@ class StageMaster:
             output_endpoint=self._output_endpoint,
             output_topic=self._output_topic,
             consumer_group=self._consumer_group,
+            assigned_partitions=assigned_partitions,
             config=self.config,
             payload_store=self.payload_store,
         )
 
         self._workers[worker_id] = worker
+        self._partition_assignments[worker_id] = assigned_partitions
 
         # Start worker run loop
         task = worker.run.remote()
         self._worker_tasks[worker_id] = task
 
-        self.logger.info(f"Spawned worker {worker_id}")
+        self.logger.info(f"Spawned worker {worker_id} with partitions {assigned_partitions}")
         return worker_id
+
+    async def _check_worker_ready(self, worker_id: str, timeout: float) -> bool:
+        """Check if a worker is ready (actor has started and is responsive).
+
+        Args:
+            worker_id: The ID of the worker to check
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if worker is ready, False if timeout or error
+        """
+        worker = self._workers.get(worker_id)
+        if worker is None:
+            return False
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                # Try to call a lightweight method on the worker
+                # get_status is a method that should return quickly if worker is ready
+                ready_refs, _ = ray.wait(
+                    [worker.get_status.remote()],
+                    timeout=min(1.0, timeout - (time.time() - start_time)),
+                )
+                if ready_refs:
+                    # Worker responded, it's ready
+                    return True
+            except ray.exceptions.GetTimeoutError:
+                # Worker not ready yet, continue waiting
+                pass
+            except Exception as e:
+                self.logger.debug(f"Worker {worker_id} not ready yet: {e}")
+
+            await asyncio.sleep(self.config.worker_spawn_retry_delay_seconds)
+
+        return False
+
+    async def _cancel_worker(self, worker_id: str) -> None:
+        """Cancel a pending worker that couldn't start due to resource constraints."""
+        worker = self._workers.pop(worker_id, None)
+        task = self._worker_tasks.pop(worker_id, None)
+        self._partition_assignments.pop(worker_id, None)
+
+        if worker is not None:
+            try:
+                ray.kill(worker)
+                self.logger.info(f"Cancelled worker {worker_id} due to resource constraints")
+            except Exception as e:
+                self.logger.debug(f"Error killing worker {worker_id}: {e}")
+
+        if task is not None:
+            try:
+                ray.cancel(task, force=True)
+            except Exception:
+                pass
+
+    async def _spawn_worker_with_resource_check(self, is_min_worker: bool = False) -> Optional[str]:
+        """Spawn a worker with resource availability checking.
+
+        Args:
+            is_min_worker: If True, this worker is required for min_workers.
+                          If False, it's an optional worker that can be skipped.
+
+        Returns:
+            worker_id if worker started successfully, None if cancelled due to resources
+
+        Raises:
+            RuntimeError: If is_min_worker=True and worker cannot start
+        """
+        worker_id = await self._spawn_worker()
+
+        # Wait for worker to be ready
+        is_ready = await self._check_worker_ready(
+            worker_id, self.config.worker_ready_timeout_seconds
+        )
+
+        if is_ready:
+            return worker_id
+
+        # Worker didn't start in time - resource constraints
+        if is_min_worker:
+            # This is a required worker for min_workers
+            # Don't cancel, raise error immediately
+            current_count = len(self._workers)
+            min_required = self.config.min_workers
+            await self._cancel_worker(worker_id)
+            raise RuntimeError(
+                f"Stage {self.stage_id}: Cannot satisfy minimum worker requirement. "
+                f"Started {current_count - 1}/{min_required} workers. "
+                f"Worker {worker_id} failed to start within {self.config.worker_ready_timeout_seconds}s "
+                f"due to insufficient resources (CPU: {self.config.num_cpus}, "
+                f"GPU: {self.config.num_gpus}, Memory: {self.config.memory_mb}MB). "
+                f"Consider reducing min_workers or adding more cluster resources."
+            )
+        else:
+            # This is an optional worker beyond min_workers
+            # Cancel it and continue
+            self.logger.warning(
+                f"Worker {worker_id} could not start due to resource constraints. "
+                f"Cancelling worker and continuing with {len(self._workers) - 1} workers."
+            )
+            await self._cancel_worker(worker_id)
+            return None
 
     async def run(self) -> bool:
         """Run the stage until completion."""
@@ -874,16 +1059,35 @@ class StageMaster:
                 ray.get(worker.stop.remote(), timeout=10)
                 self._workers.pop(worker_id, None)
                 self._worker_tasks.pop(worker_id, None)
+                self._partition_assignments.pop(worker_id, None)
                 removed += 1
                 self.logger.debug(f"Removed worker {worker_id}")
             except Exception as e:
                 self.logger.warning(f"Error removing worker {worker_id}: {e}")
+
+        # Rebalance partitions among remaining workers
+        if removed > 0:
+            self._rebalance_partitions()
+            # Notify remaining workers of new partition assignments
+            await self._notify_workers_partition_update()
 
         self.logger.info(
             f"Scaled down {self.stage_id}: removed {removed}/{count} workers "
             f"(now {len(self._workers)} workers)"
         )
         return removed
+
+    async def _notify_workers_partition_update(self) -> None:
+        """Notify all workers of their updated partition assignments."""
+        for worker_id, worker in self._workers.items():
+            partitions = self._partition_assignments.get(worker_id, [])
+            try:
+                await asyncio.wait_for(
+                    asyncio.wrap_future(worker.update_partitions.remote(partitions)),
+                    timeout=5.0,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to notify worker {worker_id} of partition update: {e}")
 
 
 @ray.remote
@@ -912,6 +1116,7 @@ class StageWorker:
         output_endpoint: QueueEndpoint,
         output_topic: str,
         consumer_group: str,
+        assigned_partitions: List[int],
         config: StageConfig,
         payload_store: SplitPayloadStore,
     ):
@@ -929,6 +1134,7 @@ class StageWorker:
         self.output_endpoint = output_endpoint
         self.output_topic = output_topic
         self.consumer_group = consumer_group
+        self.assigned_partitions = assigned_partitions
 
         # Queue connections (created lazily)
         self.upstream_queue: Optional[QueueClient] = None
@@ -945,6 +1151,7 @@ class StageWorker:
         self._error_count = 0
         self._last_commit_time = time.time()
         self._upstream_finished = False
+        self._partitions_updated = False  # Flag to signal partition rebalance
 
     async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint):
         """Create a queue connection from endpoint info."""
@@ -1012,54 +1219,108 @@ class StageWorker:
         self._upstream_finished = True
         self.logger.info(f"Worker {self.worker_id} notified: upstream finished")
 
+    def get_status(self) -> Dict[str, Any]:
+        """Get current worker status. Used for health checks and monitoring."""
+        return {
+            "worker_id": self.worker_id,
+            "stage_id": self.stage_id,
+            "running": self._running,
+            "processed_count": self._processed_count,
+            "error_count": self._error_count,
+            "upstream_finished": self._upstream_finished,
+            "assigned_partitions": self.assigned_partitions,
+        }
+
     async def _process_from_upstream(self) -> None:
-        """Process messages from upstream queue using consumer group for partition assignment.
+        """Process messages from upstream queue from all assigned partitions.
 
         Completion criteria:
         - When upstream is finished AND we've consumed all messages from all assigned partitions
         - Exit immediately when both conditions are met
         """
-        # Use consumer group for automatic partition assignment
-        # This allows multiple workers to consume from different partitions in parallel
         consecutive_empty = 0
         last_committed_offsets: Dict[int, int] = {}  # Track offsets per partition
+        current_partition_idx = 0  # Round-robin index for partition polling
+        active_partitions = list(self.assigned_partitions)  # Local copy
 
         self.logger.info(
             f"Worker {self.worker_id} starting to consume from {self.upstream_topic} "
-            f"with consumer group {self.consumer_group}"
+            f"partitions {active_partitions} with consumer group {self.consumer_group}"
         )
 
         while self._running:
-            # Fetch batch from upstream using consumer group
-            # The queue backend will automatically assign partitions based on consumer group
+            # Check if partitions were updated by master
+            if self._partitions_updated:
+                self._partitions_updated = False
+                old_partitions = set(active_partitions)
+                new_partitions = set(self.assigned_partitions)
+                active_partitions = list(self.assigned_partitions)
+
+                # Reset index to avoid out-of-bounds
+                current_partition_idx = 0
+
+                # Clean up offset tracking for removed partitions
+                removed = old_partitions - new_partitions
+                for p in removed:
+                    if p in last_committed_offsets:
+                        # Commit final offset before removing
+                        try:
+                            await self.upstream_queue.commit_offset(
+                                self.consumer_group,
+                                self.upstream_topic,
+                                last_committed_offsets[p],
+                                partition=p,
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                f"Failed to commit offset for removed partition {p}: {e}"
+                            )
+                        del last_committed_offsets[p]
+
+                self.logger.info(
+                    f"Worker {self.worker_id} switched to partitions {active_partitions}"
+                )
+
+                # Reset empty poll counter since we have new partitions
+                consecutive_empty = 0
+
+            # Safety check: ensure we have partitions
+            if not active_partitions:
+                await asyncio.sleep(0.5)
+                continue
+
+            # Round-robin across assigned partitions
+            partition = active_partitions[current_partition_idx]
+            current_partition_idx = (current_partition_idx + 1) % len(active_partitions)
+
+            # Fetch batch from current partition
             records = await self.upstream_queue.fetch(
                 self.upstream_topic,
                 # offset=None to use consumer's current position (auto-managed)
                 max_records=self.config.batch_size,
                 timeout_ms=1000,  # Shorter timeout for faster completion detection
+                partition=partition,
             )
 
             # Debug: Check queue status periodically
             if consecutive_empty == 0 or consecutive_empty % 10 == 0:
-                # For multi-partition, we need to check all partitions
-                # For now, log the record count
                 self.logger.debug(
-                    f"Fetch got {len(records)} records, empty polls: {consecutive_empty}, "
-                    f"upstream_finished: {self._upstream_finished}"
+                    f"Fetch from partition {partition} got {len(records)} records, "
+                    f"empty polls: {consecutive_empty}, upstream_finished: {self._upstream_finished}"
                 )
 
             if not records:
                 consecutive_empty += 1
 
                 # Check if we should stop: upstream finished AND queue exhausted
-                # For consumer group, we check if all partitions are consumed
+                # Need consecutive empty polls across ALL partitions
                 if self._upstream_finished:
-                    # Check if there's more data in any partition
-                    # This is a simplified check - in production, we'd check all partitions
-                    if consecutive_empty >= 50:
+                    # Require more empty polls when handling multiple partitions
+                    min_empty_polls = 50 * len(active_partitions)
+                    if consecutive_empty >= min_empty_polls:
                         self.logger.info(
                             f"Worker {self.worker_id} finished: upstream done, "
-                            f"no new data for {consecutive_empty} polls"
+                            f"no new data for {consecutive_empty} polls across {len(active_partitions)} partitions"
                         )
                         break
 
@@ -1073,16 +1334,12 @@ class StageWorker:
             consecutive_empty = 0
 
             # Process each record and track offsets per partition
+            # Note: 'partition' variable is from the round-robin loop above
             for record in records:
                 try:
                     message = QueueMessage.from_bytes(record.value)
                     await self._process_message(message)
                     self._processed_count += 1
-
-                    # Track the highest offset for each partition
-                    # Note: record doesn't directly contain partition info in our current Record model
-                    # For now, we'll commit based on the highest offset seen
-                    # In a full implementation, we'd track partition-specific offsets
                 except Exception as e:
                     import traceback
 
@@ -1093,37 +1350,33 @@ class StageWorker:
                     self._error_count += 1
                     # Continue processing - don't block on single errors
 
-                # Track the highest offset seen across all partitions
-                # In consumer group mode, Kafka manages partition assignment automatically
-                # We commit the highest offset for all assigned partitions
-                # Note: This is a simplification - ideally we'd track per-partition offsets
-                # but that requires Record to include partition information
+                # Track the highest offset for this partition
                 current_offset = record.offset + 1
-                if not last_committed_offsets or current_offset > max(
-                    last_committed_offsets.values()
-                ):
-                    # Update the highest offset seen
-                    # Since we don't have partition info in Record, we use a single entry
-                    # representing the highest offset across all partitions
-                    last_committed_offsets[0] = current_offset
+                last_committed_offsets[partition] = max(
+                    last_committed_offsets.get(partition, 0),
+                    current_offset,
+                )
 
-            # Commit offset periodically using consumer group
-            # Commit the highest offset for all assigned partitions
+            # Commit offset periodically for all assigned partitions
             if time.time() - self._last_commit_time > self.config.commit_interval_ms / 1000:
-                if last_committed_offsets:
-                    # Commit the highest offset seen for all assigned partitions
-                    highest_offset = max(last_committed_offsets.values())
+                for p, offset in last_committed_offsets.items():
                     await self.upstream_queue.commit_offset(
-                        self.consumer_group, self.upstream_topic, highest_offset
+                        self.consumer_group,
+                        self.upstream_topic,
+                        offset,
+                        partition=p,
                     )
                 self._last_commit_time = time.time()
 
-        # Final commit for all partitions
+        # Final commit for all assigned partitions
         if self.upstream_queue and last_committed_offsets:
-            highest_offset = max(last_committed_offsets.values())
-            await self.upstream_queue.commit_offset(
-                self.consumer_group, self.upstream_topic, highest_offset
-            )
+            for p, offset in last_committed_offsets.items():
+                await self.upstream_queue.commit_offset(
+                    self.consumer_group,
+                    self.upstream_topic,
+                    offset,
+                    partition=p,
+                )
 
     async def _process_message(self, message: QueueMessage) -> None:
         """Process a single message.
@@ -1201,6 +1454,27 @@ class StageWorker:
             self.operator.close()
         except Exception as e:
             self.logger.error(f"Error closing operator: {e}")
+
+    def update_partitions(self, partitions: List[int]) -> None:
+        """Update the partition assignment for this worker.
+
+        Called by master when partition rebalance occurs (e.g., scale up/down).
+        Sets a flag that the processing loop will detect and handle.
+        """
+        old_partitions = set(self.assigned_partitions)
+        new_partitions = set(partitions)
+
+        added = new_partitions - old_partitions
+        removed = old_partitions - new_partitions
+
+        self.assigned_partitions = partitions
+        self._partitions_updated = True  # Signal to processing loop
+
+        self.logger.info(
+            f"Worker {self.worker_id} partition update: "
+            f"added={list(added)}, removed={list(removed)}, "
+            f"now handling {partitions}"
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         """Get worker statistics."""

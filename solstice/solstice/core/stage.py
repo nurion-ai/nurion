@@ -57,10 +57,6 @@ class Stage:
         self.stage_id = stage_id
         self.operator_config = operator_config
 
-        from solstice.core.stage_master import StageConfig
-
-        self.config_v2: Optional[StageConfig] = None
-
         # Parse parallelism parameter
         if isinstance(parallelism, int):
             # Fixed parallelism
@@ -94,13 +90,10 @@ class Stage:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert stage to dictionary representation"""
-        result = {
+        return {
             "stage_id": self.stage_id,
             "operator_config": self.operator_config.to_dict(),
             "max_parallelism": self.max_parallelism,
             "min_parallelism": self.min_parallelism,
             "worker_resources": self.worker_resources,
         }
-        if self.config_v2:
-            result["config_v2"] = self.config_v2.to_dict()
-        return result
