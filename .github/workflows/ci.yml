@@ -334,13 +334,13 @@ jobs:
         cd solstice
         uv sync --dev --python 3.12
     
-    - name: Run integration tests
+    - name: Run integration tests (excluding video workflow)
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       env:
         SOLSTICE_TEST_VIDEO_LIMIT: "20"
       run: |
         cd solstice
-        uv run pytest tests/ -v --tb=short -m "integration"
+        uv run pytest tests/ -v --tb=short -m "integration" --ignore=tests/test_video_workflow.py
     
     - name: Print Ray logs on failure
       if: failure()
@@ -374,3 +374,88 @@ jobs:
       run: |
         cd aether
         docker compose down -v
+
+  test-solstice-video-workflow:
+    name: Solstice Video Workflow Test
+    runs-on: ubuntu-latest
+    # This test is slow and optional - doesn't block PR merge
+    continue-on-error: true
+    
+    steps:
+    - name: Free up disk space
+      run: |
+        echo "Disk space before cleanup:"
+        df -h /
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        echo "Disk space after cleanup:"
+        df -h /
+
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v45
+      with:
+        files: |
+          solstice/**
+    
+    - name: Skip if no Solstice changes
+      if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
+      run: echo "No Solstice files changed, skipping..."
+    
+    - name: Install system dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    
+    - name: Set up Rust
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+    
+    - name: Set up Python 3.12
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: uv python install 3.12
+      
+    - name: Install dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv sync --dev --python 3.12
+    
+    - name: Run video workflow test
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv run pytest tests/test_video_workflow.py -v --tb=short -m "integration" --timeout=1200
+    
+    - name: Print Ray logs on failure
+      if: failure()
+      run: |
+        echo "=== Ray Session Logs ==="
+        if [ -d /tmp/ray ]; then
+          find /tmp/ray -name "*.log" -type f 2>/dev/null | head -20 | while read f; do
+            echo "=== $f ==="
+            tail -200 "$f" 2>/dev/null || true
+          done
+        else
+          echo "No Ray logs found in /tmp/ray"
+        fi
+    
+    - name: Cleanup test artifacts
+      if: always()
+      run: |
+        rm -rf /tmp/video_workflow_test_*
+        rm -rf /tmp/solstice_cache

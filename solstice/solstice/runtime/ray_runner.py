@@ -37,16 +37,15 @@ if TYPE_CHECKING:
 from solstice.core.stage_master import (
     StageMaster,
     StageConfig,
-    QueueType,
 )
 from solstice.operators.sources.source import SourceMaster
 from solstice.core.split_payload_store import RaySplitPayloadStore
-from solstice.runtime.autoscaler import AutoscaleConfig, SimpleAutoscaler
+from solstice.runtime.autoscaler import SimpleAutoscaler
 from solstice.utils.logging import create_ray_logger
 
 
 @dataclass
-class PipelineStatus:
+class JobStatus:
     """Status of the entire pipeline."""
 
     job_id: str
@@ -78,27 +77,19 @@ class RayJobRunner:
         ```
     """
 
-    def __init__(
-        self,
-        job: Job,
-        queue_type: QueueType = QueueType.TANSU,
-        ray_init_kwargs: Optional[Dict[str, Any]] = None,
-        tansu_storage_url: str = "memory://",
-        autoscale_config: Optional[AutoscaleConfig] = None,
-    ):
+    def __init__(self, job: Job):
         """Initialize the runner.
 
         Args:
-            job: The job to run
-            queue_type: Type of queue backend (RAY for testing, TANSU for production)
-            ray_init_kwargs: Arguments to pass to ray.init()
-            tansu_storage_url: Storage URL for Tansu backend (memory://, s3://)
-            autoscale_config: Configuration for autoscaling (None to disable)
+            job: The job to run (configuration read from job.config)
         """
         self.job = job
-        self.queue_type = queue_type
-        self.tansu_storage_url = tansu_storage_url
-        self._ray_init_kwargs = ray_init_kwargs or {}
+
+        # Read configuration from job.config
+        config = job.config
+        self.queue_type = config.queue_type
+        self.tansu_storage_url = config.tansu_storage_url
+        self._ray_init_kwargs = config.ray_init_kwargs or {}
 
         self.logger = create_ray_logger(f"RunnerV2-{job.job_id}")
 
@@ -110,7 +101,7 @@ class RayJobRunner:
         self._master_tasks: Dict[str, asyncio.Task] = {}
 
         # Autoscaler
-        self._autoscale_config = autoscale_config
+        self._autoscale_config = config.autoscale_config
         self._autoscaler: Optional[SimpleAutoscaler] = None
         self._autoscale_task: Optional[asyncio.Task] = None
 
@@ -151,20 +142,16 @@ class RayJobRunner:
             upstream_ids = self._reverse_dag.get(stage_id, [])
             is_source = not upstream_ids
 
+            # Build config from stage settings (same for source and regular stages)
+            config = self._build_stage_config(stage)
+
             if is_source:
-                # Source stage: use SourceMaster
-                master = self._create_source_master(stage)
+                # Source stage: use SourceMaster from operator_config
+                master = self._create_source_master(stage, config)
                 self._masters[stage_id] = master
                 self.logger.info(f"Created {type(master).__name__} for source stage {stage_id}")
             else:
                 # Regular stage: use StageMaster
-                config = stage.config_v2 or StageConfig(
-                    queue_type=self.queue_type,
-                    tansu_storage_url=self.tansu_storage_url,
-                    min_workers=stage.min_parallelism,
-                    max_workers=stage.max_parallelism,
-                )
-
                 # Get upstream endpoint and topic
                 upstream_id = upstream_ids[0]  # TODO: handle multi-input
                 upstream_master = self._masters[upstream_id]
@@ -205,7 +192,20 @@ class RayJobRunner:
             if downstream_refs:
                 upstream_master.set_downstream_stage_refs(downstream_refs)
 
-    def _create_source_master(self, stage: "Stage") -> SourceMaster:
+    def _build_stage_config(self, stage: "Stage") -> StageConfig:
+        """Build StageConfig from stage settings including worker resources."""
+        worker_res = stage.worker_resources or {}
+        return StageConfig(
+            queue_type=self.queue_type,
+            tansu_storage_url=self.tansu_storage_url,
+            min_workers=stage.min_parallelism,
+            max_workers=stage.max_parallelism,
+            num_cpus=worker_res.get("num_cpus", 1.0),
+            num_gpus=worker_res.get("num_gpus", 0.0),
+            memory_mb=int(worker_res.get("memory", 0) / (1024**2)),
+        )
+
+    def _create_source_master(self, stage: "Stage", config: StageConfig) -> SourceMaster:
         """Create appropriate SourceMaster for a source stage.
 
         The source operator_config must have a master_class attribute that
@@ -226,6 +226,7 @@ class RayJobRunner:
             job_id=self.job.job_id,
             stage=stage,
             payload_store=self._payload_store,
+            config=config,
         )
 
     def _get_topological_order(self) -> List[str]:
@@ -266,7 +267,7 @@ class RayJobRunner:
                     self._masters[stage_id].notify_upstream_finished()
                     self.logger.info(f"Notified stage {stage_id}: all upstreams finished")
 
-    async def run(self, timeout: Optional[float] = None) -> PipelineStatus:
+    async def run(self, timeout: Optional[float] = None) -> JobStatus:
         """Run the pipeline until completion.
 
         Args:
@@ -402,7 +403,7 @@ class RayJobRunner:
 
         self.logger.info("Pipeline stopped")
 
-    def get_status(self) -> PipelineStatus:
+    def get_status(self) -> JobStatus:
         """Get current pipeline status."""
         stages = {}
         for stage_id, master in self._masters.items():
@@ -417,7 +418,7 @@ class RayJobRunner:
 
         elapsed = time.time() - self._start_time if self._start_time else 0
 
-        return PipelineStatus(
+        return JobStatus(
             job_id=self.job.job_id,
             is_running=self._running,
             stages=stages,
@@ -426,7 +427,7 @@ class RayJobRunner:
             error=self._error,
         )
 
-    async def get_status_async(self) -> PipelineStatus:
+    async def get_status_async(self) -> JobStatus:
         """Get current pipeline status with queue metrics."""
         stages = {}
         for stage_id, master in self._masters.items():
@@ -441,7 +442,7 @@ class RayJobRunner:
 
         elapsed = time.time() - self._start_time if self._start_time else 0
 
-        return PipelineStatus(
+        return JobStatus(
             job_id=self.job.job_id,
             is_running=self._running,
             stages=stages,
@@ -517,19 +518,20 @@ class RayJobRunner:
 # Convenience function for simple pipeline execution
 async def run_pipeline(
     job: Job,
-    queue_type: QueueType = QueueType.TANSU,
     timeout: Optional[float] = None,
-) -> PipelineStatus:
+) -> JobStatus:
     """Run a pipeline and return its status.
+
+    Configuration is read from job.config.
 
     Example:
         ```python
-        job = Job(job_id="my_job")
+        job = Job(job_id="my_job", config=JobConfig(queue_type=QueueType.MEMORY))
         # ... add stages ...
 
         status = await run_pipeline(job)
         print(f"Completed in {status.elapsed_time:.2f}s")
         ```
     """
-    runner = RayJobRunner(job, queue_type=queue_type)
+    runner = RayJobRunner(job)
     return await runner.run(timeout=timeout)

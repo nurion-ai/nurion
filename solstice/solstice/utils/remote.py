@@ -61,6 +61,14 @@ def _load_s3_config_from_env() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _safe_path_exists(path: Path) -> bool:
+    """Check if path exists, handling PermissionError in sandboxed environments."""
+    try:
+        return path.exists()
+    except PermissionError:
+        return False
+
+
 def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any]]:
     """Load S3 configuration from AWS config files (~/.aws/credentials, ~/.aws/config)."""
     aws_creds_paths = [
@@ -76,7 +84,7 @@ def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any
 
     # Load credentials
     for creds_path in aws_creds_paths:
-        if creds_path.exists():
+        if _safe_path_exists(creds_path):
             config = configparser.ConfigParser()
             config.read(creds_path)
             if profile in config:
@@ -89,7 +97,7 @@ def _load_s3_config_from_aws(profile: str = "default") -> Optional[Dict[str, Any
 
     # Load config (region, endpoint)
     for config_path in aws_config_paths:
-        if config_path.exists():
+        if _safe_path_exists(config_path):
             config = configparser.ConfigParser()
             config.read(config_path)
             # AWS config uses "profile xxx" sections for non-default profiles
@@ -124,7 +132,7 @@ def _load_s3_config_from_rclone(remote_name: str = "s3") -> Optional[Dict[str, A
     ]
 
     for rclone_config in rclone_paths:
-        if rclone_config.exists():
+        if _safe_path_exists(rclone_config):
             config = configparser.ConfigParser()
             config.read(rclone_config)
 
@@ -311,14 +319,12 @@ def download_file(remote_url: str, local_path: Optional[Path] = None) -> Path:
     """Download a file from a remote URL to local storage.
 
     Args:
-        remote_url: The remote URL (s3://, gs://, etc.)
+        remote_url: The remote URL (s3://, http://, https://, etc.)
         local_path: Optional local path to save to. If None, uses cache.
 
     Returns:
         Path to the local file.
     """
-    import fsspec
-
     if local_path is None:
         local_path = _get_cache_path(remote_url)
 
@@ -331,16 +337,29 @@ def download_file(remote_url: str, local_path: Optional[Path] = None) -> Path:
 
     logger.info(f"Downloading {remote_url} to {local_path}")
 
-    # Get storage options for S3
-    storage_options = get_s3_storage_options() if remote_url.startswith("s3://") else {}
+    if remote_url.startswith(("http://", "https://")):
+        # Use requests for HTTP/HTTPS URLs (more reliable than fsspec/aiohttp for some endpoints)
+        import requests
 
-    with fsspec.open(remote_url, "rb", **storage_options) as remote_file:
-        with open(local_path, "wb") as local_file:
-            while True:
-                chunk = remote_file.read(8 * 1024 * 1024)  # 8MB chunks
-                if not chunk:
-                    break
-                local_file.write(chunk)
+        with requests.get(remote_url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as local_file:
+                for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
+                    if chunk:
+                        local_file.write(chunk)
+    else:
+        # Use fsspec for S3, GCS, and other protocols
+        import fsspec
+
+        storage_options = get_s3_storage_options() if remote_url.startswith("s3://") else {}
+
+        with fsspec.open(remote_url, "rb", **storage_options) as remote_file:
+            with open(local_path, "wb") as local_file:
+                while True:
+                    chunk = remote_file.read(8 * 1024 * 1024)  # 8MB chunks
+                    if not chunk:
+                        break
+                    local_file.write(chunk)
 
     logger.debug(f"Downloaded {remote_url} ({local_path.stat().st_size} bytes)")
     return local_path

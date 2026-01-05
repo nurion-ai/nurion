@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Ray-based end-to-end test for the video slice workflow."""
+"""Ray-based end-to-end test for the video slice workflow.
+
+Uses public HTTPS URLs for video files (no authentication required).
+
+Local Debug Mode:
+    Set VIDEO_CACHE_DIR environment variable to preserve output:
+
+        export VIDEO_CACHE_DIR=~/.cache/solstice_test_videos
+        pytest tests/test_video_workflow.py -v -m integration
+"""
 
 from __future__ import annotations
 
@@ -26,11 +35,12 @@ from pathlib import Path
 import lance
 import pyarrow as pa
 import pytest
+import requests
 
 logger = logging.getLogger("test")
 
-# Public R2 endpoint for videos (no authentication needed)
-PUBLIC_R2_ENDPOINT = "https://pub-8bc1f1d3d1984bdfb056d0bc0bf97c3d.r2.dev"
+# Public HTTPS endpoint (no auth required)
+PUBLIC_VIDEO_URL = "https://pub-8bc1f1d3d1984bdfb056d0bc0bf97c3d.r2.dev/videos/raw"
 
 # Video files available at the public endpoint
 TEST_VIDEOS = [
@@ -46,21 +56,23 @@ TEST_VIDEOS = [
     "4kzJHyYtNhk.mp4",
 ]
 
+# Local cache directory for debug mode (set via VIDEO_CACHE_DIR env var)
+LOCAL_CACHE_DIR = os.environ.get("VIDEO_CACHE_DIR")
+
 
 def create_test_lance_table(table_path: str) -> None:
     """Create a local Lance table with public video URLs for testing."""
     records = []
     for i, video in enumerate(TEST_VIDEOS):
-        # Use public HTTPS URL (no auth needed)
-        public_url = f"{PUBLIC_R2_ENDPOINT}/videos/raw/{video}"
+        video_url = f"{PUBLIC_VIDEO_URL}/{video}"
         slug = video.rsplit(".", 1)[0]
 
         records.append(
             {
                 "global_index": i,
                 "video_uid": slug,
-                "source_url": public_url,
-                "video_path": public_url,
+                "source_url": video_url,
+                "video_path": video_url,
                 "subset": "train" if i < 8 else "validation",
             }
         )
@@ -68,6 +80,16 @@ def create_test_lance_table(table_path: str) -> None:
     table = pa.Table.from_pylist(records)
     lance.write_dataset(table, table_path, mode="overwrite")
     logger.info(f"Created test Lance table at {table_path} with {len(records)} videos")
+
+
+def _check_video_access() -> bool:
+    """Check if we can access the public video endpoint."""
+    try:
+        test_url = f"{PUBLIC_VIDEO_URL}/{TEST_VIDEOS[0]}"
+        r = requests.head(test_url, timeout=10)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 @pytest.mark.integration
@@ -79,9 +101,24 @@ def test_video_slice_workflow_with_ray(ray_cluster):
 
     Uses ray_cluster fixture to ensure Ray is initialized with correct Python version
     and runtime_env excludes.
+
+    In local debug mode (VIDEO_CACHE_DIR set), output is preserved in the cache directory.
     """
-    # Create temp directory for test data
-    tmp_dir = tempfile.mkdtemp(prefix="video_workflow_test_")
+    # Skip if public endpoint not accessible
+    if not _check_video_access():
+        pytest.skip("Public video endpoint not accessible.")
+
+    # In local debug mode, use cache directory for output (preserved after test)
+    # Otherwise use temp directory (cleaned up after test)
+    if LOCAL_CACHE_DIR:
+        cache_dir = Path(LOCAL_CACHE_DIR).expanduser()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = str(cache_dir / "test_output")
+        Path(tmp_dir).mkdir(parents=True, exist_ok=True)
+        logger.info(f"Local debug mode: output will be preserved in {tmp_dir}")
+    else:
+        tmp_dir = tempfile.mkdtemp(prefix="video_workflow_test_")
+
     input_table_path = os.path.join(tmp_dir, "input_videos.lance")
     output_path = Path(tmp_dir) / "hashed_slices.lance"
 
@@ -108,21 +145,22 @@ def test_video_slice_workflow_with_ray(ray_cluster):
                 "scene_threshold": 0.4,
                 "split_size": 2,  # 2 rows per split = 5 splits for 10 videos
                 "tansu_storage_url": "memory://",  # Use memory for Tansu
-                "scene_parallelism": 1,
-                "slice_parallelism": 1,
-                "filter_parallelism": 1,
-                "hash_parallelism": 1,
+                # Elastic worker counts (min=2, max=4) to test multi-worker scenarios
+                # with resource backoff on limited CPU environments
+                "scene_parallelism": (2, 4),
+                "slice_parallelism": (2, 4),
+                "filter_parallelism": (2, 4),
+                "hash_parallelism": (2, 4),
                 "sink_buffer_size": 16,
+                # Low CPU/memory for local testing (4 CPU machine)
+                "worker_num_cpus": 0.25,  # 0.25 CPU per worker = 16 workers max on 4 CPUs
+                "worker_memory_mb": 256,  # 256MB per worker
             },
         )
 
-        from solstice.queue import QueueType
-
         # Ray already initialized by ray_cluster fixture with correct excludes
-        runner = job.create_ray_runner(
-            queue_type=QueueType.TANSU,
-            tansu_storage_url="memory://",
-        )
+        # Job config (queue_type, tansu_storage_url) is set in the workflow
+        runner = job.create_ray_runner()
 
         async def run_pipeline():
             try:
@@ -153,6 +191,8 @@ def test_video_slice_workflow_with_ray(ray_cluster):
         logger.info(f"✓ Test passed with {len(rows)} output slices")
 
     finally:
-        # Cleanup
-        if Path(tmp_dir).exists():
+        # Cleanup - skip in local debug mode to preserve output
+        if LOCAL_CACHE_DIR:
+            logger.info(f"Local debug mode: output preserved at {output_path}")
+        elif Path(tmp_dir).exists():
             shutil.rmtree(tmp_dir)

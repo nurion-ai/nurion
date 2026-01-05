@@ -174,7 +174,6 @@ async def run_workflow_async(
     """
     import ray
     from solstice.runtime import RayJobRunner
-    from solstice.queue import QueueType
 
     from workflows.video_slice_workflow import create_job
 
@@ -211,8 +210,8 @@ async def run_workflow_async(
 
         logger.info(f"Job created with {len(job.stages)} stages")
 
-        # Use new async RayJobRunner API with Tansu queue
-        runner = RayJobRunner(job, queue_type=QueueType.TANSU)
+        # Use new async RayJobRunner API (queue_type is set via JobConfig)
+        runner = RayJobRunner(job)
         await runner.initialize()
 
         logger.info("Starting workflow execution (timeout=1800s)...")

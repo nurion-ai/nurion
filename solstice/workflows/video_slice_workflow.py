@@ -20,7 +20,7 @@ import functools
 import logging
 from typing import Any, Dict
 
-from solstice.core.job import Job
+from solstice.core.job import Job, JobConfig
 from solstice.core.stage import Stage
 from solstice.operators.filter import FilterOperatorConfig
 from solstice.operators.map import MapOperatorConfig
@@ -60,25 +60,38 @@ def create_job(
     min_slice_duration = float(config.get("min_slice_duration", DEFAULT_MIN_SLICE_DURATION))
     scene_threshold = float(config.get("scene_threshold", DEFAULT_SCENE_THRESHOLD))
 
+    # Worker resource configuration (for local testing with limited CPUs)
+    worker_resources = {
+        "num_cpus": config.get("worker_num_cpus", 0.5),
+        "num_gpus": config.get("worker_num_gpus", 0),
+        "memory": int(config.get("worker_memory_mb", 500)) * 1024**2,
+    }
+
+    # Queue and runner configuration
+    tansu_storage_url = config.get("tansu_storage_url", "memory://")
+    queue_type_str = config.get("queue_type", "TANSU")
+    queue_type = QueueType[queue_type_str] if isinstance(queue_type_str, str) else queue_type_str
+
+    job_config = JobConfig(
+        queue_type=queue_type,
+        tansu_storage_url=tansu_storage_url,
+    )
+
     job = Job(
         job_id=job_id,
-        config=config,
+        config=job_config,
     )
 
     # Source stage
     split_size = int(config.get("split_size", 10))
-    tansu_storage_url = config.get("tansu_storage_url", "memory://")
-    queue_type_str = config.get("queue_type", "TANSU")
-    queue_type = QueueType[queue_type_str] if isinstance(queue_type_str, str) else queue_type_str
     source_stage = Stage(
         stage_id="source",
         operator_config=LanceTableSourceConfig(
             dataset_uri=input_path,
             split_size=split_size,
-            queue_type=queue_type,
-            tansu_storage_url=tansu_storage_url,
         ),
         parallelism=1,
+        worker_resources=worker_resources,
     )
 
     # Detect stage
@@ -89,6 +102,7 @@ def create_job(
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("scene_parallelism", (2, 6)),
+        worker_resources=worker_resources,
     )
 
     # Slice stage
@@ -98,6 +112,7 @@ def create_job(
             min_scene_duration=min_slice_duration,
         ),
         parallelism=config.get("slice_parallelism", (2, 4)),
+        worker_resources=worker_resources,
     )
 
     # Filter stage
@@ -107,6 +122,7 @@ def create_job(
             filter_fn=functools.partial(keep_every_n, modulo=filter_modulo),
         ),
         parallelism=config.get("filter_parallelism", 2),
+        worker_resources=worker_resources,
     )
 
     # Hash stage
@@ -116,6 +132,7 @@ def create_job(
             map_fn=attach_slice_hash,
         ),
         parallelism=config.get("hash_parallelism", 2),
+        worker_resources=worker_resources,
     )
 
     output_format = config.get("output_format", "json")
@@ -138,6 +155,7 @@ def create_job(
         stage_id="sink",
         operator_config=sink_config,
         parallelism=1,
+        worker_resources=worker_resources,
     )
 
     job.add_stage(source_stage)
