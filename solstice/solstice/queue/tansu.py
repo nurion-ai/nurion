@@ -74,19 +74,22 @@ def _find_free_port() -> int:
 class _BrokerEventHandler(BrokerEventHandler):
     """Internal event handler for broker lifecycle events."""
 
-    def __init__(self, manager: "TansuBrokerManager"):
+    def __init__(
+        self,
+        manager: "TansuBrokerManager",
+        loop: asyncio.AbstractEventLoop,
+        ready_event: asyncio.Event,
+    ):
         self.manager = manager
         self.logger = manager.logger
+        self._loop = loop
+        self._ready_event = ready_event
 
     def on_started(self, port: int) -> None:
         self.logger.info(f"Tansu broker started on port {port}")
         self.manager._actual_port = port
         self.manager._running = True
-        try:
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(self.manager._ready_event.set)
-        except RuntimeError:
-            self.manager._ready_event.set()
+        self._loop.call_soon_threadsafe(self._ready_event.set)
 
     def on_stopped(self) -> None:
         self.logger.info("Tansu broker stopped")
@@ -98,11 +101,7 @@ class _BrokerEventHandler(BrokerEventHandler):
     def on_fatal(self, error: BrokerError) -> None:
         self.logger.error(f"Tansu broker fatal error: {error.message}")
         self.manager._running = False
-        try:
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(self.manager._ready_event.set)
-        except RuntimeError:
-            pass
+        self._loop.call_soon_threadsafe(self._ready_event.set)
 
 
 class TansuBrokerManager:
@@ -144,7 +143,6 @@ class TansuBrokerManager:
         self._broker: Optional[TansuBroker] = None
         self._running = False
         self._actual_port: Optional[int] = None
-        self._ready_event = asyncio.Event()
 
         self.logger = create_ray_logger(f"TansuBroker:{self.port}")
 
@@ -159,12 +157,15 @@ class TansuBrokerManager:
             advertised_host=self.host,
         )
 
-        handler = _BrokerEventHandler(self)
+        # Create event and pass to handler with current loop for cross-thread signaling
+        loop = asyncio.get_running_loop()
+        ready_event = asyncio.Event()
+        handler = _BrokerEventHandler(self, loop, ready_event)
         self._broker = TansuBroker(config, event_handler=handler)
         self._broker.start()
 
         try:
-            await asyncio.wait_for(self._ready_event.wait(), timeout=self.startup_timeout)
+            await asyncio.wait_for(ready_event.wait(), timeout=self.startup_timeout)
         except asyncio.TimeoutError:
             raise RuntimeError(f"Tansu broker failed to start within {self.startup_timeout}s")
 
