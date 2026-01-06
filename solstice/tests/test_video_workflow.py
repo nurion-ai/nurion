@@ -157,7 +157,7 @@ def test_video_slice_workflow_with_ray(ray_cluster):
                 "worker_memory_mb": 256,  # 256MB per worker
             },
         )
-
+        
         # Ray already initialized by ray_cluster fixture with correct excludes
         # Job config (queue_type, tansu_storage_url) is set in the workflow
         runner = job.create_ray_runner()

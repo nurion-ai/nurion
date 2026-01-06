@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solstice - {% block title %}Debug UI{% endblock %}</title>
+    
+    <!-- Pico CSS (lightweight, semantic) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css">
+    
+    <!-- Custom styles - overrides Pico for compact layout -->
+    <link rel="stylesheet" href="/solstice/static/css/solstice.css">
+    
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    
+    <!-- Alpine.js -->
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- Chart.js (for metrics visualization) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <!-- Navigation -->
+    <nav>
+        <ul>
+            <li><strong>☀️ Solstice</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/solstice/">Overview</a></li>
+            <li><a href="/solstice/running">Running</a></li>
+            <li><a href="/solstice/completed">Completed</a></li>
+        </ul>
+        <ul>
+            <li><a href="http://localhost:8265" target="_blank" rel="noopener">Ray ↗</a></li>
+            <li>
+                <button id="theme-toggle" onclick="toggleTheme()" class="outline small">
+                    <span id="theme-icon">🌙</span>
+                </button>
+            </li>
+        </ul>
+    </nav>
+    
+    <!-- Main content -->
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    
+    <!-- Footer -->
+    <footer>
+        <small>Solstice Debug UI v0.1.0</small>
+    </footer>
+    
+    <script>
+        function toggleTheme() {
+            const html = document.documentElement;
+            const current = html.getAttribute('data-theme');
+            const newTheme = current === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            document.getElementById('theme-icon').textContent = newTheme === 'dark' ? '☀️' : '🌙';
+            localStorage.setItem('solstice-theme', newTheme);
+        }
+        
+        (function() {
+            const saved = localStorage.getItem('solstice-theme');
+            if (saved) {
+                document.documentElement.setAttribute('data-theme', saved);
+                document.getElementById('theme-icon').textContent = saved === 'dark' ? '☀️' : '🌙';
+            }
+        })();
+    </script>
+    
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

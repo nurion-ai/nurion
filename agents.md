@@ -180,9 +180,64 @@ For Solstice integration tests, you need:
 ### Patterns to Avoid
 
 1. **Don't over-engineer**: Keep it simple, only implement current requirements
-2. **Don't break existing APIs**: Maintain backward compatibility
-3. **Don't skip types**: Add appropriate type annotations
-4. **Don't hardcode config**: Use config classes and environment variables
+2. **Don't create unused APIs**: Only implement endpoints that have actual callers
+   - Example: Don't add batch endpoints if the caller only sends single requests
+   - Example: Don't add "nice-to-have" endpoints without confirmed use cases
+3. **Don't worry about backward compatibility (pre-1.0)**: Before version 1.0, breaking changes are acceptable
+   - Focus on getting the design right, not maintaining compatibility
+   - Document breaking changes in commit messages
+   - After 1.0, maintain backward compatibility
+4. **Don't skip types**: Add appropriate type annotations
+5. **Don't hardcode config**: Use config classes and environment variables
+
+### Preferred Patterns
+
+1. **Use Protocols over Abstract Classes**: Prefer `typing.Protocol` for structural subtyping
+   ```python
+   # Good: Protocol (structural)
+   from typing import Protocol
+   
+   class Storage(Protocol):
+       def store(self, key: str, value: bytes) -> None: ...
+       def get(self, key: str) -> Optional[bytes]: ...
+   
+   # Avoid: ABC (nominal)
+   from abc import ABC, abstractmethod
+   
+   class Storage(ABC):
+       @abstractmethod
+       def store(self, key: str, value: bytes) -> None: pass
+   ```
+
+2. **Exception Handling**: Let exceptions propagate in APIs, use specific handling in background tasks
+   ```python
+   # Good: API - let exceptions propagate to FastAPI
+   @router.get("/data/{id}")
+   async def get_data(id: str):
+       data = storage.get(id)  # Let exceptions bubble up
+       if not data:
+           raise HTTPException(status_code=404, detail="Not found")
+       return data
+   
+   # Good: Background task - log and continue
+   async def background_loop():
+       while running:
+           try:
+               await collect_metrics()
+           except Exception:
+               logger.exception("Failed to collect metrics")
+           await asyncio.sleep(1)
+   
+   # Avoid: Empty except that swallows errors
+   try:
+       data = storage.get(id)
+   except Exception:
+       pass  # Bad: Silent failure
+   ```
+
+3. **Dataclasses over Plain Dicts**: Use `@dataclass` for structured data
+4. **Type Hints**: Always include type annotations for better IDE support
+5. **Async by Default**: Use async/await for I/O operations
 
 ## Key Files Reference
 
@@ -198,6 +253,11 @@ For Solstice integration tests, you need:
 | Queue backends | `solstice/solstice/queue/` |
 | Built-in Sources | `solstice/solstice/operators/sources/` |
 | Built-in Sinks | `solstice/solstice/operators/sinks/` |
+| **WebUI Portal** | `solstice/solstice/webui/portal.py` |
+| **WebUI Storage** | `solstice/solstice/webui/storage/` |
+| **WebUI Collectors** | `solstice/solstice/webui/collectors/` |
+| **WebUI API** | `solstice/solstice/webui/api/` |
+| **WebUI Templates** | `solstice/solstice/webui/templates/` |
 | Aether App | `aether/aether/app.py` |
 | Aether Routes | `aether/aether/api/routes/` |
 
@@ -263,12 +323,110 @@ class MyOperator(Operator):
         return SplitPayload(data=table, split_id=split.split_id)
 ```
 
+## WebUI - Debugging Interface
+
+Solstice includes a web-based debugging interface for monitoring and analyzing jobs.
+
+### Key Features
+
+1. **Real-Time Monitoring**: Live metrics, progress tracking, resource usage
+2. **History Server**: View completed jobs for post-mortem analysis
+3. **Multi-Job Support**: Monitor multiple jobs in the same Ray cluster
+4. **Comprehensive Metrics**:
+   - Stage progress, ETA, throughput, queue lag
+   - Partition-level offsets and skew detection
+   - Worker resource usage (CPU/Memory/GPU)
+   - Split lineage and data flow
+   - Exception tracking with root cause hints
+
+### Architecture
+
+**Dual-Mode Design:**
+- **Embedded Mode**: WebUI runs with job via Ray Serve (port 8000)
+- **History Server**: Standalone service for archived jobs
+
+**Storage Strategy:**
+- **Prometheus**: Real-time metrics (1s granularity)
+- **SlateDB**: Historical archives (30s snapshots + events)
+
+**Multi-Job Routing:**
+```
+http://localhost:8000/solstice/          ← Portal (all jobs)
+└── /jobs/{job_id}/                      ← Specific job
+    ├── /stages/{stage_id}
+    ├── /workers/{worker_id}
+    └── /lineage
+```
+
+### Usage
+
+```python
+from solstice.core.job import Job, JobConfig, WebUIConfig
+
+job = Job(
+    job_id="my_job",
+    config=JobConfig(
+        webui=WebUIConfig(
+            enabled=True,
+            storage_path="s3://bucket/solstice-history/",
+            prometheus_enabled=True,
+        ),
+    ),
+)
+
+# Add stages...
+runner = job.create_ray_runner()
+await runner.run()
+
+# Access: http://localhost:8000/solstice/jobs/my_job/
+```
+
+**History Server:**
+```bash
+solstice history-server -s s3://bucket/solstice-history/ -p 8080
+```
+
+### Adding WebUI Features
+
+1. **New API Endpoint**:
+   - Routes go in `solstice/webui/api/`
+   - Use mode-aware pattern (embedded vs history)
+   - Return lightweight data for large datasets
+
+2. **New Collector**:
+   - Inherit from base patterns in `solstice/webui/collectors/`
+   - Store to SlateDB for history
+   - Update at appropriate intervals
+
+3. **New Template**:
+   - Extend `base.html` in `solstice/webui/templates/`
+   - Use HTMX for dynamic updates
+   - Use Alpine.js for interactivity
+
+### Tech Stack
+
+- **Backend**: FastAPI + Ray Serve
+- **Frontend**: HTMX + Alpine.js + Jinja2
+- **Styling**: Pico CSS (10KB, semantic)
+- **Real-Time**: Server-Sent Events (SSE)
+- **Storage**: SlateDB (S3-backed) + Prometheus
+- **Charts**: Chart.js
+
+### Design Principles
+
+- **Simple & Professional**: No flashy animations
+- **High Information Density**: Compact layout for developers
+- **Large Dataset Friendly**: Pagination, fixed headers, virtual scrolling
+- **Easy to Maintain**: Minimal JavaScript, mostly server-side rendering
+
 ## Resources
 
 - **Design Documents**: `solstice/design-docs/`
+- **WebUI Design**: `solstice/design-docs/webui.md`
+- **WebUI Guide**: `solstice/webui/README.md`
 - **README Files**: Root directory and each subproject's README.md
-- **Examples**: `solstice/workflows/`
+- **Examples**: `solstice/workflows/`, `solstice/examples/webui_demo.py`
 
 ---
 
-*Last updated: 2025-12-10*
+*Last updated: 2025-01-05*
