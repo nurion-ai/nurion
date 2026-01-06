@@ -27,6 +27,29 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class WebUIConfig:
+    """Configuration for WebUI debugging interface.
+
+    Attributes:
+        enabled: Whether to enable WebUI
+        storage_path: SlateDB storage path (local or s3://)
+        prometheus_enabled: Whether to export Prometheus metrics
+        prometheus_pushgateway: Optional Prometheus Pushgateway URL
+        metrics_snapshot_interval_s: Interval between SlateDB metrics snapshots
+        archive_on_completion: Whether to archive job data when complete
+        port: Ray Serve port (default 8000)
+    """
+
+    enabled: bool = False
+    storage_path: str = "/tmp/solstice-webui/"
+    prometheus_enabled: bool = True
+    prometheus_pushgateway: Optional[str] = None
+    metrics_snapshot_interval_s: float = 30.0
+    archive_on_completion: bool = True
+    port: int = 8000
+
+
+@dataclass
 class JobConfig:
     """Configuration for a Solstice job.
 
@@ -35,12 +58,14 @@ class JobConfig:
         tansu_storage_url: Storage URL for Tansu backend (memory://, s3://)
         ray_init_kwargs: Arguments to pass to ray.init()
         autoscale_config: Configuration for autoscaling (None to disable)
+        webui: WebUI debugging interface configuration
     """
 
     queue_type: QueueType = QueueType.TANSU
     tansu_storage_url: str = "memory://"
     ray_init_kwargs: Dict[str, Any] = field(default_factory=dict)
     autoscale_config: Optional["AutoscaleConfig"] = None
+    webui: WebUIConfig = field(default_factory=WebUIConfig)
 
 
 class Job:

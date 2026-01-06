@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Checkpoints - {{ job_id }}{% endblock %}
+
+{% block content %}
+<article>
+    <header>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                <li>Checkpoints</li>
+            </ul>
+        </nav>
+        <h1>Checkpoints</h1>
+    </header>
+    
+    <p><em>Checkpoint history coming soon</em></p>
+    
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Trigger Time</th>
+                    <th>Duration</th>
+                    <th>State Size</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Placeholder -->
+                <tr>
+                    <td colspan="5" class="text-center">No checkpoints available</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endblock %}
+

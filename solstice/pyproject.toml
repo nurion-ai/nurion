@@ -22,6 +22,13 @@ dependencies = [
     "py-spy>=0.4.1",
     "pyspark==3.5.6",
     "aiokafka>=0.12.0",
+    # WebUI dependencies
+    "slatedb>=0.8.1",           # S3-backed KV store for history
+    "fastapi>=0.115.0",         # Web framework
+    "jinja2>=3.1.0",            # Template engine
+    "uvicorn>=0.34.0",          # ASGI server
+    "sse-starlette>=1.8.0",     # Server-Sent Events
+    "prometheus-client>=0.20.0", # Prometheus metrics export
 ]
 
 [project.scripts]
@@ -63,7 +70,7 @@ where = ["."]
 include = ["solstice*", "workflows*", "raydp*"]
 
 [tool.setuptools.package-data]
-solstice = ["py.typed"]
+solstice = ["py.typed", "webui/templates/**/*", "webui/static/**/*"]
 raydp = ["jars/*.jar"]
 
 [tool.black]

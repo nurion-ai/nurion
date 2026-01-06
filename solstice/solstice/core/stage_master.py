@@ -1082,8 +1082,10 @@ class StageMaster:
         for worker_id, worker in self._workers.items():
             partitions = self._partition_assignments.get(worker_id, [])
             try:
+                # Ray ObjectRef can be awaited directly in async context
+                obj_ref = worker.update_partitions.remote(partitions)
                 await asyncio.wait_for(
-                    asyncio.wrap_future(worker.update_partitions.remote(partitions)),
+                    asyncio.to_thread(ray.get, obj_ref),
                     timeout=5.0,
                 )
             except Exception as e:
@@ -1442,8 +1444,10 @@ class StageWorker:
             self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
 
         # Delete input payload if it was from store (not source message)
-        if not is_source_message and message.payload_key:
-            self.payload_store.delete(message.payload_key)
+        # FIXME: Disable payload deletion to prevent race conditions in distributed execution
+        # Rely on Ray's object store eviction or end-of-job cleanup
+        # if not is_source_message and message.payload_key:
+        #     self.payload_store.delete(message.payload_key)
 
     def stop(self) -> None:
         """Stop the worker."""

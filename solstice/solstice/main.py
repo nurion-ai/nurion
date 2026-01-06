@@ -78,14 +78,20 @@ def parse_kwargs(ctx, param, value):
     return kwargs
 
 
-@click.command(context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+@click.group()
+def cli():
+    """Solstice - Ray-based streaming data processing framework."""
+    pass
+
+
+@cli.command(name="run", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
 @click.option(
     "--workflow", required=True, type=str, help="Workflow module (e.g., workflows.simple_etl)"
 )
 @click.option("--job-id", required=False, type=str, help="Job ID (auto-generated if not provided)")
 @click.option("--log-level", default="INFO", type=str, help="Logging level")
 @click.pass_context
-def main(
+def run_job(
     ctx,
     workflow: str,
     job_id: Optional[str],
@@ -205,5 +211,61 @@ def main(
         ray.shutdown()
 
 
+@cli.command(name="history-server")
+@click.option(
+    "--storage-path",
+    "-s",
+    required=True,
+    help="SlateDB storage path (e.g., s3://bucket/solstice-history/ or /tmp/solstice-webui/)",
+)
+@click.option(
+    "--host",
+    "-h",
+    default="0.0.0.0",
+    help="Host to bind (default: 0.0.0.0)",
+)
+@click.option(
+    "--port",
+    "-p",
+    default=8080,
+    type=int,
+    help="Port to bind (default: 8080)",
+)
+@click.option(
+    "--reload",
+    is_flag=True,
+    help="Enable auto-reload for development",
+)
+def history_server_cmd(storage_path: str, host: str, port: int, reload: bool):
+    """Start History Server for viewing completed jobs.
+
+    Example:
+        solstice history-server -s s3://my-bucket/solstice-history/ -p 8080
+    """
+    from solstice.webui.history_server import history_server as hs_func
+
+    # Call the actual function (can't use Click command directly)
+    import sys
+
+    sys.argv = [
+        "history-server",
+        "--storage-path",
+        storage_path,
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+    if reload:
+        sys.argv.append("--reload")
+
+    hs_func.callback(storage_path, host, port, reload)
+
+
+def main():
+    """Main entry point (backwards compatibility)."""
+    cli()
+
+
 if __name__ == "__main__":
-    main()
+    cli()

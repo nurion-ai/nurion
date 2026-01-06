@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Stage {{ stage.stage_id }}{% endblock %}
+
+{% block content %}
+<article class="compact">
+    <header>
+        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
+            <ul style="padding: 0; margin: 0;">
+                <li><a href="/solstice/">Jobs</a></li>
+                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                <li>{{ stage.stage_id }}</li>
+            </ul>
+        </nav>
+        <h1 style="margin-top: 0.25rem;">Stage: {{ stage.stage_id }}</h1>
+        <span class="badge badge-{{ 'running' if stage.is_running else 'completed' if stage.is_finished else 'pending' }}">
+            {{ 'RUNNING' if stage.is_running else 'FINISHED' if stage.is_finished else 'PENDING' }}
+        </span>
+    </header>
+    
+    <!-- Metrics -->
+    <section>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value">{{ stage.worker_count|default(0) }}</div>
+                <div class="metric-label">Workers</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ stage.output_queue_size|default(0)|format_number }}</div>
+                <div class="metric-label">Queue Size</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ stage.input_count|default(0)|format_number }}</div>
+                <div class="metric-label">Input Records</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ stage.output_count|default(0)|format_number }}</div>
+                <div class="metric-label">Output Records</div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Back link -->
+    <section>
+        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
+    </section>
+</article>
+{% endblock %}

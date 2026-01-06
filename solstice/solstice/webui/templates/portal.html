@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}All Jobs{% endblock %}
+
+{% block content %}
+<article class="compact">
+    <header>
+        <h1>Solstice Jobs</h1>
+        <p class="text-muted" style="font-size: 0.8rem;">Monitor and debug streaming data pipelines</p>
+    </header>
+    
+    <!-- Running Jobs Section -->
+    <section>
+        <h2>Running Jobs ({{ running_jobs|length }})</h2>
+        
+        {% if running_jobs %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 25%;">Job ID</th>
+                        <th style="width: 18%;">Started</th>
+                        <th style="width: 12%;">Duration</th>
+                        <th style="width: 10%;">Stages</th>
+                        <th style="width: 10%;">Workers</th>
+                        <th style="width: 10%;">Status</th>
+                        <th style="width: 15%;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in running_jobs %}
+                    <tr>
+                        <td class="monospace">
+                            <a href="/solstice/jobs/{{ job.job_id }}/">{{ job.job_id }}</a>
+                        </td>
+                        <td class="timestamp">{{ job.start_time|format_datetime }}</td>
+                        <td>{{ (job.last_update - job.start_time)|format_duration }}</td>
+                        <td class="number">{{ job.stage_count }}</td>
+                        <td class="number">{{ job.worker_count }}</td>
+                        <td>
+                            <span class="badge badge-{{ job.status|lower }}">{{ job.status }}</span>
+                        </td>
+                        <td>
+                            <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p><em>No running jobs</em></p>
+        {% endif %}
+    </section>
+    
+    <!-- Completed Jobs Section -->
+    <section>
+        <h2>Completed Jobs (Recent 20)</h2>
+        
+        {% if completed_jobs %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Started</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th>Records</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in completed_jobs %}
+                    <tr>
+                        <td class="monospace">
+                            <a href="/solstice/jobs/{{ job.job_id }}/">{{ job.job_id }}</a>
+                        </td>
+                        <td class="timestamp">{{ job.start_time|format_datetime }}</td>
+                        <td>{{ (job.duration_ms / 1000)|format_duration }}</td>
+                        <td>
+                            <span class="badge badge-{{ job.status|lower }}">{{ job.status }}</span>
+                        </td>
+                        <td class="number">{{ job.total_records|format_number }}</td>
+                        <td>
+                            <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p><a href="/solstice/completed" style="font-size: 0.8rem;">View all completed jobs →</a></p>
+        {% else %}
+        <p><em>No completed jobs in history</em></p>
+        {% endif %}
+    </section>
+    
+    <!-- External Links -->
+    <section>
+        <h3>Links</h3>
+        <div style="display: flex; gap: 0.3rem;">
+            <a href="{{ ray_dashboard_url }}" target="_blank" rel="noopener" role="button" class="outline small">
+                Ray Dashboard ↗
+            </a>
+        </div>
+    </section>
+</article>
+{% endblock %}

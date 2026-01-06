@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Lineage - {{ job_id }}{% endblock %}
+
+{% block content %}
+<article>
+    <header>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                <li>Lineage</li>
+            </ul>
+        </nav>
+        <h1>Data Lineage</h1>
+    </header>
+    
+    <div class="grid">
+        <!-- Search -->
+        <div>
+            <label for="split-search">Search Split ID</label>
+            <input type="search" id="split-search" placeholder="e.g. split_123..." 
+                   hx-get="/solstice/api/jobs/{{ job_id }}/lineage/search" 
+                   hx-target="#lineage-graph" 
+                   hx-trigger="input changed delay:500ms">
+        </div>
+    </div>
+    
+    <!-- Graph Container -->
+    <div id="lineage-graph" class="dag-container" style="height: 600px; position: relative;">
+        <p class="text-center" style="margin-top: 200px; color: var(--pico-muted-color);">
+            Lineage visualization coming soon (requires D3.js integration)
+        </p>
+    </div>
+</article>
+{% endblock %}
+

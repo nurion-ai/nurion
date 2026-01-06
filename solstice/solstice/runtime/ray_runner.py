@@ -105,6 +105,10 @@ class RayJobRunner:
         self._autoscaler: Optional[SimpleAutoscaler] = None
         self._autoscale_task: Optional[asyncio.Task] = None
 
+        # WebUI
+        self._webui = None
+        self._webui_port: Optional[int] = None
+
         # State
         self._initialized = False
         self._running = False
@@ -173,6 +177,10 @@ class RayJobRunner:
 
         # Wire downstream references for backpressure propagation
         self._wire_downstream_refs()
+
+        # Initialize WebUI if enabled
+        if self.job.config.webui.enabled:
+            await self._initialize_webui()
 
         self._initialized = True
         self.logger.info(f"Initialized {len(self._masters)} stages")
@@ -349,7 +357,8 @@ class RayJobRunner:
             raise
         finally:
             self._running = False
-            await self.stop()
+            # Note: Don't stop WebUI here - let caller decide when to stop
+            # via explicit stop() call after any wait period
 
     async def stop(self) -> None:
         """Stop the pipeline."""
@@ -400,6 +409,9 @@ class RayJobRunner:
             except Exception as e:
                 self.logger.warning(f"Error cleaning up SplitPayloadStore: {e}")
             self._payload_store = None
+
+        # Stop WebUI
+        await self._stop_webui()
 
         self.logger.info("Pipeline stopped")
 
@@ -513,6 +525,104 @@ class RayJobRunner:
         if not self._autoscaler:
             return {"enabled": False, "reason": "autoscaler not configured"}
         return self._autoscaler.get_status()
+
+    # === WebUI Integration ===
+
+    async def _initialize_webui(self) -> None:
+        """Initialize WebUI components.
+
+        - Ensures Portal is running (starts if needed)
+        - Creates JobWebUI instance with isolated storage
+        - Starts collectors
+
+        Storage Architecture:
+        - SlateDB only supports single writer
+        - Each job gets its own storage path: {base_path}/{job_id}/{attempt_id}/
+        - Portal uses base_path for reading historical archives
+        """
+        import uuid
+
+        try:
+            from solstice.webui.job_webui import JobWebUI
+            from solstice.webui.portal import portal_exists, start_portal
+            from solstice.webui.storage import SlateDBStorage
+
+            # Generate attempt_id for this run (timestamp + short random suffix)
+            from datetime import datetime
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            attempt_id = f"{timestamp}_{uuid.uuid4().hex[:4]}"
+
+            # Ensure Portal is running
+            if not portal_exists():
+                self.logger.info("Starting Solstice Portal...")
+                start_portal(
+                    storage_path=self.job.config.webui.storage_path,
+                    port=self.job.config.webui.port,
+                )
+            else:
+                self.logger.info("Portal already running")
+
+            self._webui_port = self.job.config.webui.port
+
+            # Create isolated storage path for this job attempt
+            # This avoids SlateDB single-writer conflicts
+            base_path = self.job.config.webui.storage_path.rstrip("/")
+            job_storage_path = f"{base_path}/{self.job.job_id}/{attempt_id}"
+
+            storage = SlateDBStorage(job_storage_path)
+            self.logger.info(f"WebUI storage at {job_storage_path}")
+
+            # Create JobWebUI with pre-generated attempt_id
+            self._webui = JobWebUI(
+                self,
+                storage,
+                prometheus_enabled=self.job.config.webui.prometheus_enabled,
+                attempt_id=attempt_id,
+            )
+
+            # Start WebUI
+            await self._webui.start()
+
+            self.logger.info(
+                f"WebUI available at Ray Serve port {self._webui_port}, "
+                f"path: /solstice/jobs/{self.job.job_id}/"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize WebUI: {e}")
+            # Don't fail the job if WebUI fails
+            self._webui = None
+
+    async def _stop_webui(self) -> None:
+        """Stop WebUI components."""
+        if self._webui:
+            try:
+                await self._webui.stop()
+                self.logger.info("WebUI stopped")
+            except Exception as e:
+                self.logger.warning(f"Error stopping WebUI: {e}")
+            self._webui = None
+
+    @property
+    def webui_port(self) -> Optional[int]:
+        """Get WebUI port if available.
+
+        Returns:
+            Ray Serve port where WebUI is accessible, or None
+        """
+        return self._webui_port
+
+    @property
+    def webui_path(self) -> Optional[str]:
+        """Get WebUI path if available.
+
+        Returns:
+            WebUI path (e.g., "/solstice/jobs/{job_id}/"), or None
+        """
+        if self._webui_port:
+            return f"/solstice/jobs/{self.job.job_id}/"
+        return None
 
 
 # Convenience function for simple pipeline execution

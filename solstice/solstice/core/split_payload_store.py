@@ -120,9 +120,15 @@ class _RaySplitPayloadStoreActor:
         self._refs: dict[str, ray.ObjectRef] = {}
         self._logger = create_ray_logger("RaySplitPayloadStoreActor")
 
+        # Metrics tracking
+        self._total_stored = 0
+        self._total_deleted = 0
+        self._estimated_bytes = 0
+
     def register(self, key: str, ref_wrapper: dict) -> str:
         """Register an ObjectRef (wrapped in dict to prevent auto-deref) with a key."""
         self._refs[key] = ref_wrapper["ref"]
+        self._total_stored += 1
         self._logger.debug(f"Registered payload for key {key}")
         return key
 
@@ -136,6 +142,7 @@ class _RaySplitPayloadStoreActor:
     def delete(self, key: str) -> bool:
         if key in self._refs:
             del self._refs[key]
+            self._total_deleted += 1
             return True
         return False
 
@@ -144,6 +151,19 @@ class _RaySplitPayloadStoreActor:
         self._refs.clear()
         self._logger.info(f"Cleared {count} payloads")
         return count
+
+    def get_metrics(self) -> dict:
+        """Get storage metrics.
+
+        Returns:
+            Dictionary with storage statistics
+        """
+        return {
+            "total_objects": len(self._refs),
+            "total_stored": self._total_stored,
+            "total_deleted": self._total_deleted,
+            "estimated_bytes": self._estimated_bytes,
+        }
 
 
 class RaySplitPayloadStore(SplitPayloadStore):
@@ -248,3 +268,15 @@ class RaySplitPayloadStore(SplitPayloadStore):
 
     def clear(self) -> int:
         return ray.get(self._actor.clear.remote())
+
+    def get_metrics(self) -> dict:
+        """Get storage metrics for monitoring.
+
+        Returns:
+            Dictionary with:
+            - total_objects: Current number of stored objects
+            - total_stored: Lifetime count of stored objects
+            - total_deleted: Lifetime count of deleted objects
+            - estimated_bytes: Estimated storage size (placeholder)
+        """
+        return ray.get(self._actor.get_metrics.remote())

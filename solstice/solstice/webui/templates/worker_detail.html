@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Worker {{ worker.worker_id }}{% endblock %}
+
+{% block content %}
+<article>
+    <header>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                <li><a href="/solstice/jobs/{{ job_id }}/stages/{{ worker.stage_id }}">{{ worker.stage_id }}</a></li>
+                <li>Worker: {{ worker.worker_id }}</li>
+            </ul>
+        </nav>
+        <div style="margin-top: 0.5rem;">
+            <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
+            <span class="badge" style="background: var(--pico-secondary-background);">PID: {{ worker.pid }}</span>
+            <span class="badge" style="background: var(--pico-secondary-background);">{{ worker.node_id }}</span>
+        </div>
+    </header>
+    
+    <!-- Metrics -->
+    <section>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value">{{ worker.processed_count|format_number }}</div>
+                <div class="metric-label">Processed Records</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ worker.cpu_percent|default(0) }}%</div>
+                <div class="metric-label">CPU Usage</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ worker.memory_mb|default(0)|format_bytes }}</div>
+                <div class="metric-label">Memory Usage</div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Logs -->
+    <section>
+        <h2>Logs</h2>
+        <div class="log-viewer" 
+             x-data="logViewer({ endpoint: '/solstice/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/logs' })"
+             x-init="init()">
+            
+            <div class="log-toolbar">
+                <button class="small" @click="refresh()">Refresh</button>
+                <button class="small outline" @click="autoRefresh = !autoScroll" :class="{ 'primary': autoScroll }">
+                    Auto-refresh
+                </button>
+            </div>
+            
+            <div class="log-content" x-ref="logContainer">
+                <pre x-text="logs"></pre>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Stacktrace -->
+    <section>
+        <h2>Stacktrace</h2>
+        <div style="background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.8rem; overflow-x: auto;">
+            <div hx-get="/solstice/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/stacktrace" 
+                 hx-trigger="load, every 5s">
+                Loading stacktrace...
+            </div>
+        </div>
+    </section>
+
+</article>
+
+<script>
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('logViewer', (config) => ({
+            logs: 'Loading logs...',
+            autoScroll: true,
+            
+            async init() {
+                this.refresh();
+                setInterval(() => {
+                    if (this.autoScroll) this.refresh();
+                }, 2000);
+            },
+            
+            async refresh() {
+                try {
+                    const response = await fetch(config.endpoint);
+                    this.logs = await response.text();
+                    if (this.autoScroll) {
+                        this.$refs.logContainer.scrollTop = this.$refs.logContainer.scrollHeight;
+                    }
+                } catch (e) {
+                    this.logs = 'Error loading logs: ' + e;
+                }
+            }
+        }));
+    });
+</script>
+{% endblock %}
+

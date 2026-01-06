@@ -1,0 +1,44 @@
+# Copyright 2025 nurion team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Exceptions API - error tracking and analysis."""
+
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Query, Request
+
+router = APIRouter(tags=["exceptions"])
+
+
+@router.get("/jobs/{job_id}/exceptions")
+async def list_exceptions(
+    job_id: str,
+    request: Request,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> List[Dict[str, Any]]:
+    """List exceptions for a job.
+
+    Args:
+        job_id: Job identifier
+        limit: Maximum number of exceptions to return
+        offset: Number of exceptions to skip (for pagination)
+
+    Returns:
+        List of exception information
+    """
+    if request.app.state.storage:
+        return request.app.state.storage.list_exceptions(job_id, limit=limit, offset=offset)
+
+    return []

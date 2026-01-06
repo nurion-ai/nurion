@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Exceptions - {{ job_id }}{% endblock %}
+
+{% block content %}
+<article>
+    <header>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                <li>Exceptions</li>
+            </ul>
+        </nav>
+        <h1>Exceptions</h1>
+    </header>
+    
+    {% if exceptions %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Type</th>
+                    <th>Message</th>
+                    <th>Stage</th>
+                    <th>Worker</th>
+                    <th>Count</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for exc in exceptions %}
+                <tr>
+                    <td class="timestamp">{{ exc.timestamp|format_duration }} ago</td>
+                    <td style="color: var(--status-failed); font-weight: 600;">{{ exc.exception_type }}</td>
+                    <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        {{ exc.message }}
+                    </td>
+                    <td>{{ exc.stage_id }}</td>
+                    <td>{{ exc.worker_id }}</td>
+                    <td class="number">{{ exc.occurrence_count }}</td>
+                    <td>
+                        <button class="small outline" onclick="document.getElementById('exc-{{ exc.exception_id }}').showModal()">
+                            Details
+                        </button>
+                    </td>
+                </tr>
+                
+                <!-- Detail Modal -->
+                <dialog id="exc-{{ exc.exception_id }}">
+                    <article style="min-width: 800px;">
+                        <header>
+                            <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+                            <h3>{{ exc.exception_type }}</h3>
+                        </header>
+                        <p><strong>Message:</strong> {{ exc.message }}</p>
+                        <p><strong>Location:</strong> Stage {{ exc.stage_id }}, Worker {{ exc.worker_id }}</p>
+                        
+                        <h4>Stacktrace</h4>
+                        <pre style="background: #1e293b; color: #e2e8f0; padding: 1rem; overflow: auto; max-height: 400px; font-size: 0.8rem;">{{ exc.stacktrace }}</pre>
+                        
+                        {% if exc.root_cause_hint %}
+                        <div style="background: #fef3c7; color: #92400e; padding: 1rem; border-radius: 4px; margin-top: 1rem;">
+                            <strong>💡 Analysis Hint:</strong> {{ exc.root_cause_hint }}
+                        </div>
+                        {% endif %}
+                    </article>
+                </dialog>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p><em>No exceptions recorded</em></p>
+    {% endif %}
+</article>
+{% endblock %}
+
