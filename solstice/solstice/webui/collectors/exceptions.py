@@ -19,7 +19,7 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional
 
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorage
 from solstice.webui.models import ExceptionInfo
 from solstice.utils.logging import create_ray_logger
 
@@ -37,7 +37,7 @@ class ExceptionAggregator:
         aggregator.record_exception(exc, stage_id, worker_id, split_id)
     """
 
-    def __init__(self, job_id: str, storage: SlateDBStorage):
+    def __init__(self, job_id: str, storage: JobStorage):
         """Initialize exception aggregator.
 
         Args:
@@ -86,7 +86,6 @@ class ExceptionAggregator:
 
             # Update in storage
             self.storage.store_exception(
-                self.job_id,
                 exception_id,
                 self._exception_to_dict(cached),
             )
@@ -115,7 +114,6 @@ class ExceptionAggregator:
 
             # Store in SlateDB
             self.storage.store_exception(
-                self.job_id,
                 exception_id,
                 self._exception_to_dict(exc_info),
             )

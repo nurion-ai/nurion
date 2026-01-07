@@ -79,15 +79,24 @@ async def get_worker_detail(
                 if worker_handle:
                     worker_status = ray.get(worker_handle.get_status.remote(), timeout=1)
 
-                    # Get actor info
+                    # Get actor info using Ray State API
                     actor_id = None
                     node_id = None
                     pid = None
-                    actor_info = ray.util.state.get_actor(worker_id)
-                    if actor_info:
-                        actor_id = actor_info.get("actor_id")
-                        node_id = actor_info.get("node_id")
-                        pid = actor_info.get("pid")
+                    ip = None
+                    
+                    try:
+                        # List actors and find by name
+                        from ray.util.state import list_actors
+                        actors = list_actors(filters=[("name", "=", worker_id)])
+                        if actors:
+                            actor = actors[0]
+                            actor_id = actor.get("actor_id")
+                            node_id = actor.get("node_id")
+                            pid = actor.get("pid")
+                            ip = actor.get("node_ip") or actor.get("ip_address")
+                    except Exception:
+                        pass
 
                     return {
                         "worker_id": worker_id,
@@ -95,11 +104,18 @@ async def get_worker_detail(
                         "actor_id": actor_id,
                         "node_id": node_id,
                         "pid": pid,
+                        "ip": ip,
                         "status": "RUNNING" if worker_status.get("running") else "IDLE",
                         "processed_count": worker_status.get("processed_count", 0),
                         "error_count": worker_status.get("error_count", 0),
                         "assigned_partitions": worker_status.get("assigned_partitions", []),
                     }
+
+    # History mode: check storage
+    if request.app.state.storage:
+        events = request.app.state.storage.list_worker_events(job_id, worker_id=worker_id, limit=1)
+        if events:
+            return events[0]
 
     raise HTTPException(status_code=404, detail=f"Worker {worker_id} not found")
 
@@ -125,16 +141,52 @@ async def get_worker_logs(
     if request.app.state.mode != "embedded":
         return PlainTextResponse("Logs only available for running jobs")
 
-    # Get logs from Ray
-    logs = ray.util.state.get_log(
-        actor_id=worker_id,
-        tail=tail,
-    )
-
-    if logs:
-        return PlainTextResponse(logs)
-    else:
-        return PlainTextResponse("No logs available")
+    try:
+        # First, find the actor to get its ID
+        from ray.util.state import list_actors, get_log
+        
+        actors = list_actors(filters=[("name", "=", worker_id)])
+        if not actors:
+            return PlainTextResponse(f"Actor {worker_id} not found")
+        
+        actor = actors[0]
+        actor_id = actor.get("actor_id")
+        
+        if not actor_id:
+            return PlainTextResponse("Could not determine actor ID")
+        
+        # Get logs using actor_id
+        # Note: Ray's get_log API varies by version
+        try:
+            logs = get_log(actor_id=actor_id, tail=tail)
+            if logs:
+                # logs might be a list or iterator
+                if isinstance(logs, (list, tuple)):
+                    return PlainTextResponse("\n".join(logs))
+                return PlainTextResponse(str(logs))
+        except Exception as e:
+            # Fallback: try reading from log files directly
+            node_id = actor.get("node_id")
+            pid = actor.get("pid")
+            
+            if node_id and pid:
+                # Try to get logs from Ray Dashboard API
+                import httpx
+                try:
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(
+                            f"http://localhost:8265/api/v0/logs/file?node_id={node_id}&pid={pid}&lines={tail}",
+                            timeout=5.0
+                        )
+                        if resp.status_code == 200:
+                            return PlainTextResponse(resp.text)
+                except Exception:
+                    pass
+            
+            return PlainTextResponse(f"Could not retrieve logs: {e}\nActor: {actor_id}, Node: {node_id}, PID: {pid}")
+            
+    except Exception as e:
+        return PlainTextResponse(f"Error getting logs: {e}")
 
 
 @router.get("/jobs/{job_id}/workers/{worker_id}/stacktrace")
@@ -164,31 +216,46 @@ async def get_worker_stacktrace(
     for stage_id, master in runner._masters.items():
         worker_handle = master._workers.get(worker_id)
         if worker_handle:
-            # Get actor info to find PID
-            actor_info = ray.util.state.get_actor(worker_id)
-            if not actor_info or "pid" not in actor_info:
-                return PlainTextResponse("Could not determine worker PID")
-
-            pid = actor_info["pid"]
-
-            # Use py-spy to dump stacktrace
+            # Get actor info to find PID using Ray State API
             try:
-                result = subprocess.run(
-                    ["py-spy", "dump", "--pid", str(pid)],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
+                from ray.util.state import list_actors
+                actors = list_actors(filters=[("name", "=", worker_id)])
+                if not actors:
+                    return PlainTextResponse(f"Actor {worker_id} not found")
+                
+                actor = actors[0]
+                pid = actor.get("pid")
+                
+                if not pid:
+                    return PlainTextResponse("Could not determine worker PID")
 
-                if result.returncode == 0:
-                    return PlainTextResponse(result.stdout)
-                else:
-                    return PlainTextResponse(
-                        f"py-spy failed: {result.stderr}\n\n"
-                        f"Make sure py-spy is installed: pip install py-spy"
+                # Use py-spy to dump stacktrace
+                try:
+                    result = subprocess.run(
+                        ["py-spy", "dump", "--pid", str(pid)],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
 
-            except subprocess.TimeoutExpired:
-                raise HTTPException(status_code=504, detail="py-spy timeout")
+                    if result.returncode == 0:
+                        return PlainTextResponse(result.stdout)
+                    else:
+                        return PlainTextResponse(
+                            f"py-spy failed: {result.stderr}\n\n"
+                            f"Make sure py-spy is installed: pip install py-spy"
+                        )
+
+                except FileNotFoundError:
+                    return PlainTextResponse(
+                        "py-spy not found.\n\n"
+                        "Install with: pip install py-spy\n"
+                        f"Worker PID: {pid}"
+                    )
+                except subprocess.TimeoutExpired:
+                    return PlainTextResponse("py-spy timeout after 10 seconds")
+                    
+            except Exception as e:
+                return PlainTextResponse(f"Error getting stacktrace: {e}")
 
     raise HTTPException(status_code=404, detail=f"Worker {worker_id} not found")

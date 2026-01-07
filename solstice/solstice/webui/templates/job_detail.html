@@ -2,8 +2,143 @@
 
 {% block title %}Job {{ job.job_id }}{% endblock %}
 
+{% block extra_head %}
+<!-- D3.js for DAG visualization -->
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/dagre-d3@0.6.4/dist/dagre-d3.min.js"></script>
+<style>
+/* DAG Container */
+.dag-container {
+    background: var(--pico-card-background-color);
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--pico-muted-border-color);
+}
+.dag-container svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* DAG Nodes - use .node (dagre-d3 default class) */
+.node rect {
+    fill: var(--pico-secondary-background);
+    stroke: var(--pico-muted-color);
+    stroke-width: 2px;
+    rx: 8px;
+    ry: 8px;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+}
+.node.running rect {
+    fill: #dcfce7 !important;
+    stroke: #16a34a !important;
+    animation: pulse 2s ease-in-out infinite;
+}
+.node.finished rect {
+    fill: #e0e7ff !important;
+    stroke: #4f46e5 !important;
+}
+.node.failed rect {
+    fill: #fee2e2 !important;
+    stroke: #dc2626 !important;
+}
+.node.pending rect {
+    fill: #f5f5f5 !important;
+    stroke: #9ca3af !important;
+}
+/* Text inside nodes - dark text for light backgrounds */
+.node text {
+    fill: #1f2937 !important;  /* Dark text for light backgrounds */
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+}
+.node text.stage-name {
+    font-size: 13px;
+    font-weight: 600;
+    fill: #111827 !important;
+}
+.node text.stage-metrics {
+    font-size: 10px;
+    fill: #4b5563 !important;  /* Slightly muted dark text */
+}
+
+/* DAG Edges */
+.dag-edge path {
+    fill: none;
+    stroke: var(--pico-muted-color);
+    stroke-width: 2px;
+}
+.dag-edge marker path {
+    fill: var(--pico-muted-color);
+}
+
+/* Pulse animation for running stages */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Legend */
+.dag-legend {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid var(--pico-muted-border-color);
+    background: var(--pico-background-color);
+}
+.dag-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.dag-legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 2px solid;
+}
+.dag-legend-dot.running { background: #dcfce7; border-color: #16a34a; }
+.dag-legend-dot.finished { background: #e0e7ff; border-color: #4f46e5; }
+.dag-legend-dot.failed { background: #fee2e2; border-color: #dc2626; }
+.dag-legend-dot.pending { background: #f5f5f5; border-color: #9ca3af; }
+
+/* Tooltip */
+.dag-tooltip {
+    position: absolute;
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+    pointer-events: none;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    max-width: 280px;
+}
+.dag-tooltip h4 {
+    margin: 0 0 0.25rem 0;
+    font-size: 0.9rem;
+}
+.dag-tooltip .metric {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.dag-tooltip .metric-label {
+    color: var(--pico-muted-color);
+}
+.dag-tooltip .metric-value {
+    font-family: ui-monospace, monospace;
+}
+</style>
+{% endblock %}
+
 {% block content %}
-<article class="compact">
+<article class="compact"
+         hx-get="/solstice/jobs/{{ job.job_id }}/"
+         hx-trigger="every 3s"
+         hx-swap="outerHTML"
+         hx-select="article.compact">
     <header>
         <nav aria-label="breadcrumb" style="font-size: 0.75rem;">
             <ul>
@@ -21,48 +156,83 @@
     <nav style="margin-bottom: 0.5rem;">
         <ul>
             <li><a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="small outline">Overview</a></li>
+            <li><a href="/solstice/jobs/{{ job.job_id }}/workers" role="button" class="small outline">Workers</a></li>
             <li><a href="/solstice/jobs/{{ job.job_id }}/exceptions" role="button" class="small outline">Exceptions</a></li>
-            <li><a href="/solstice/jobs/{{ job.job_id }}/checkpoints" role="button" class="small outline">Checkpoints</a></li>
+            <li><a href="/solstice/jobs/{{ job.job_id }}/configuration" role="button" class="small outline">Config</a></li>
             <li><a href="/solstice/jobs/{{ job.job_id }}/lineage" role="button" class="small outline">Lineage</a></li>
         </ul>
     </nav>
     
-    <!-- Job Metrics -->
+    <!-- Job Metrics Summary -->
     <section>
         <div class="metrics-grid">
             <div class="metric-card">
-                <div class="metric-value">{{ job.stage_count }}</div>
+                <div class="metric-value">{{ job.stage_count|default(stages|length) }}</div>
                 <div class="metric-label">Stages</div>
             </div>
             <div class="metric-card">
-                <div class="metric-value">{{ job.worker_count }}</div>
+                <div class="metric-value">{{ job.worker_count|default(0) }}</div>
                 <div class="metric-label">Workers</div>
             </div>
             <div class="metric-card">
-                <div class="metric-value">{{ (job.last_update - job.start_time)|format_duration }}</div>
+                <div class="metric-value">{{ (job.last_update|default(job.end_time|default(0)) - job.start_time|default(0))|format_duration }}</div>
                 <div class="metric-label">Duration</div>
             </div>
             <div class="metric-card">
-                <div class="metric-value">{{ job.start_time|format_datetime }}</div>
+                <div class="metric-value">{{ job.start_time|default(0)|format_datetime }}</div>
                 <div class="metric-label">Started</div>
             </div>
         </div>
     </section>
     
-    <!-- Stages Table -->
+    <!-- Stage DAG Visualization -->
     <section>
-        <h2>Stages</h2>
+        <h2>Pipeline DAG</h2>
+        {% if stages %}
+        <div class="dag-container">
+            <div id="stage-dag" style="height: 320px; position: relative;">
+                <svg></svg>
+            </div>
+            <div class="dag-legend">
+                <div class="dag-legend-item">
+                    <div class="dag-legend-dot running"></div>
+                    <span>Running</span>
+                </div>
+                <div class="dag-legend-item">
+                    <div class="dag-legend-dot finished"></div>
+                    <span>Completed</span>
+                </div>
+                <div class="dag-legend-item">
+                    <div class="dag-legend-dot failed"></div>
+                    <span>Failed</span>
+                </div>
+                <div class="dag-legend-item">
+                    <div class="dag-legend-dot pending"></div>
+                    <span>Pending</span>
+                </div>
+            </div>
+        </div>
+        <!-- Tooltip -->
+        <div id="dag-tooltip" class="dag-tooltip" style="display: none;"></div>
+        {% else %}
+        <p><em>No stage information available (data collection starting...)</em></p>
+        {% endif %}
+    </section>
+    
+    <!-- Stages Detail Table -->
+    <section>
+        <h2>Stage Details</h2>
         {% if stages %}
         <div class="table-container">
             <table>
                 <thead>
                     <tr>
-                        <th style="width: 30%;">Stage ID</th>
-                        <th style="width: 12%;">Workers</th>
-                        <th style="width: 12%;">Queue</th>
-                        <th style="width: 12%;">In</th>
-                        <th style="width: 12%;">Out</th>
-                        <th style="width: 12%;">Status</th>
+                        <th style="width: 25%;">Stage ID</th>
+                        <th style="width: 10%;">Workers</th>
+                        <th style="width: 10%;">Queue</th>
+                        <th style="width: 15%;">Input</th>
+                        <th style="width: 15%;">Output</th>
+                        <th style="width: 10%;">Status</th>
                         <th style="width: 10%;">Action</th>
                     </tr>
                 </thead>
@@ -72,19 +242,19 @@
                         <td class="monospace">
                             <a href="/solstice/jobs/{{ job.job_id }}/stages/{{ stage.stage_id }}">{{ stage.stage_id }}</a>
                         </td>
-                        <td class="number">{{ stage.worker_count }}</td>
-                        <td class="number">{{ stage.output_queue_size|format_number }}</td>
-                        <td class="number">{{ stage.input_count|default(0)|format_number }}</td>
-                        <td class="number">{{ stage.output_count|default(0)|format_number }}</td>
+                        <td class="number">{{ stage.worker_count|default(0) }}</td>
+                        <td class="number">{{ stage.output_queue_size|default(0)|format_number }}</td>
+                        <td class="number">{{ stage.input_count|default(0)|format_number }} rows</td>
+                        <td class="number">{{ stage.output_count|default(0)|format_number }} rows</td>
                         <td>
                             {% if stage.is_running %}
-                            <span class="badge badge-running">RUN</span>
+                            <span class="badge badge-running">RUNNING</span>
                             {% elif stage.is_finished %}
-                            <span class="badge badge-completed">DONE</span>
+                            <span class="badge badge-completed">COMPLETED</span>
                             {% elif stage.failed %}
-                            <span class="badge badge-failed">FAIL</span>
+                            <span class="badge badge-failed">FAILED</span>
                             {% else %}
-                            <span class="badge badge-pending">WAIT</span>
+                            <span class="badge badge-pending">PENDING</span>
                             {% endif %}
                         </td>
                         <td>
@@ -96,7 +266,7 @@
             </table>
         </div>
         {% else %}
-        <p><em>No stage information available (data collection starting...)</em></p>
+        <p><em>No stage information available</em></p>
         {% endif %}
     </section>
     
@@ -108,4 +278,204 @@
         </div>
     </section>
 </article>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Stage data from server (initial render)
+let stages = {{ stages|tojson|safe }};
+let dagEdges = {{ dag_edges|tojson|safe }};
+const jobId = '{{ job.job_id }}';
+
+// Fetch latest stage data and dag_edges from API
+async function fetchStageData() {
+    try {
+        const response = await fetch(`/solstice/api/jobs/${jobId}/stages`);
+        if (response.ok) {
+            const data = await response.json();
+            stages = data.stages || stages;
+            dagEdges = data.dag_edges || dagEdges;
+            return true;
+        }
+    } catch (e) {
+        console.log('Failed to fetch stage data:', e);
+    }
+    return false;
+}
+
+function formatNumber(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return n.toString();
+}
+
+function renderDag() {
+    if (!stages || stages.length === 0) return;
+    
+    // Create dagre graph
+    const g = new dagreD3.graphlib.Graph().setGraph({
+        rankdir: 'LR',
+        marginx: 30,
+        marginy: 30,
+        ranksep: 80,
+        nodesep: 40,
+        edgesep: 20
+    });
+    
+    // Add nodes - use empty label, we'll add custom SVG text later
+    stages.forEach(stage => {
+        let statusClass = 'pending';
+        if (stage.is_running) statusClass = 'running';
+        else if (stage.is_finished) statusClass = 'finished';
+        else if (stage.failed) statusClass = 'failed';
+        
+        g.setNode(stage.stage_id, {
+            label: '',  // Empty label - we'll add custom text
+            class: statusClass,
+            width: 130,
+            height: 75
+        });
+    });
+    
+    // Add edges from dag_edges
+    for (const [source, targets] of Object.entries(dagEdges)) {
+        for (const target of targets) {
+            g.setEdge(source, target, {
+                curve: d3.curveBasis
+            });
+        }
+    }
+    
+    // If no edges defined, try to infer linear pipeline
+    if (Object.keys(dagEdges).length === 0 && stages.length > 1) {
+        for (let i = 0; i < stages.length - 1; i++) {
+            g.setEdge(stages[i].stage_id, stages[i + 1].stage_id, {
+                curve: d3.curveBasis
+            });
+        }
+    }
+    
+    // Create renderer
+    const render = new dagreD3.render();
+    const svg = d3.select('#stage-dag svg');
+    svg.selectAll('*').remove();
+    
+    const inner = svg.append('g');
+    
+    // Run layout
+    render(inner, g);
+    
+    // Add custom labels to nodes after rendering
+    inner.selectAll('.node').each(function() {
+        const node = d3.select(this);
+        const stageId = node.datum();
+        const stage = stages.find(s => s.stage_id === stageId);
+        
+        if (!stage) return;
+        
+        // Remove any existing label group
+        node.select('.label').remove();
+        
+        const inCount = formatNumber(stage.input_count || 0);
+        const outCount = formatNumber(stage.output_count || 0);
+        
+        // Create new SVG text element in the node
+        const textGroup = node.append('g')
+            .attr('class', 'label')
+            .attr('transform', 'translate(0,0)');
+        
+        // Stage name (top)
+        textGroup.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('y', -15)
+            .attr('class', 'stage-name')
+            .text(stageId);
+        
+        // Input count
+        textGroup.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('y', 5)
+            .attr('class', 'stage-metrics')
+            .text(`In: ${inCount}`);
+        
+        // Output count
+        textGroup.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('y', 22)
+            .attr('class', 'stage-metrics')
+            .text(`Out: ${outCount}`);
+    });
+    
+    // Center and scale
+    const bbox = inner.node().getBBox();
+    const container = document.getElementById('stage-dag');
+    const containerWidth = container.clientWidth;
+    const containerHeight = 320;
+    
+    const scale = Math.min(
+        (containerWidth - 60) / (bbox.width + 40),
+        (containerHeight - 40) / (bbox.height + 40),
+        1.2
+    );
+    
+    const translateX = (containerWidth - bbox.width * scale) / 2;
+    const translateY = (containerHeight - bbox.height * scale) / 2;
+    
+    svg.attr('viewBox', `0 0 ${containerWidth} ${containerHeight}`);
+    inner.attr('transform', `translate(${translateX}, ${translateY}) scale(${scale})`);
+    
+    // Add hover tooltips and click handlers
+    const tooltip = document.getElementById('dag-tooltip');
+    
+    inner.selectAll('.node')
+        .style('cursor', 'pointer')
+        .on('mouseenter', function(event) {
+            const stageId = d3.select(this).datum();
+            const stage = stages.find(s => s.stage_id === stageId);
+            if (!stage) return;
+            
+            let statusText = 'Pending';
+            if (stage.is_running) statusText = 'Running';
+            else if (stage.is_finished) statusText = 'Completed';
+            else if (stage.failed) statusText = 'Failed';
+            
+            tooltip.innerHTML = `
+                <h4>${stage.stage_id}</h4>
+                <div class="metric"><span class="metric-label">Status:</span><span class="metric-value">${statusText}</span></div>
+                <div class="metric"><span class="metric-label">Workers:</span><span class="metric-value">${stage.worker_count || 0}</span></div>
+                <div class="metric"><span class="metric-label">Input:</span><span class="metric-value">${(stage.input_count || 0).toLocaleString()} rows</span></div>
+                <div class="metric"><span class="metric-label">Output:</span><span class="metric-value">${(stage.output_count || 0).toLocaleString()} rows</span></div>
+                <div class="metric"><span class="metric-label">Queue:</span><span class="metric-value">${(stage.output_queue_size || 0).toLocaleString()}</span></div>
+            `;
+            tooltip.style.display = 'block';
+        })
+        .on('mousemove', function(event) {
+            const rect = document.getElementById('stage-dag').getBoundingClientRect();
+            tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
+            tooltip.style.top = (event.clientY - rect.top - 10) + 'px';
+        })
+        .on('mouseleave', function() {
+            tooltip.style.display = 'none';
+        })
+        .on('click', function() {
+            const stageId = d3.select(this).datum();
+            window.location.href = `/solstice/jobs/${jobId}/stages/${stageId}`;
+        });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', async () => {
+    await fetchStageData();
+    renderDag();
+});
+
+// Re-render after HTMX updates
+document.body.addEventListener('htmx:afterSwap', async function(event) {
+    if (event.detail.target.classList.contains('compact')) {
+        await fetchStageData();
+        setTimeout(renderDag, 100);
+    }
+});
+</script>
 {% endblock %}

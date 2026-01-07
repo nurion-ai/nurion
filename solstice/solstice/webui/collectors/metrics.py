@@ -20,8 +20,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import ray
 
-from solstice.webui.registry import get_or_create_registry
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorage
 from solstice.webui.storage.prometheus_exporter import PrometheusMetricsExporter
 from solstice.utils.logging import create_ray_logger
 
@@ -36,7 +35,11 @@ class MetricsCollector:
     1. Poll StageMaster for metrics every second
     2. Export to Prometheus for real-time monitoring
     3. Snapshot to SlateDB every 30 seconds for history
-    4. Calculate derived metrics (rates, ETA)
+    4. Track worker lifecycle and store to SlateDB
+
+    Note: No centralized registry updates. Job metadata is stored in
+    the payload_store actor and metrics are obtained via real-time
+    queries to workers.
 
     Usage:
         collector = MetricsCollector(job_runner, storage, prometheus_enabled=True)
@@ -46,7 +49,7 @@ class MetricsCollector:
     def __init__(
         self,
         job_runner: "RayJobRunner",
-        storage: SlateDBStorage,
+        storage: JobStorage,
         prometheus_enabled: bool = True,
         snapshot_interval_s: float = 30.0,
     ):
@@ -66,9 +69,6 @@ class MetricsCollector:
         self.job_id = job_runner.job.job_id
         self.logger = create_ray_logger(f"MetricsCollector-{self.job_id}")
 
-        # Registry for updating stages info
-        self.registry = get_or_create_registry()
-
         # Prometheus exporter
         self.prometheus: Optional[PrometheusMetricsExporter] = None
         if prometheus_enabled:
@@ -77,11 +77,15 @@ class MetricsCollector:
         # State
         self._running = False
         self._last_snapshot_time = 0.0
-        self._last_registry_update = 0.0
+        self._last_worker_tracking_time = 0.0
+        self._last_worker_snapshot_time = 0.0
 
         # Rate calculation
         self._last_metrics: Dict[str, Dict[str, Any]] = {}
         self._last_poll_time = 0.0
+
+        # Worker tracking
+        self._known_workers: Dict[str, Dict[str, Any]] = {}  # worker_id -> worker_data
 
     async def run_loop(self) -> None:
         """Main collection loop.
@@ -90,6 +94,7 @@ class MetricsCollector:
         - Collect metrics every 1 second
         - Export to Prometheus
         - Snapshot to SlateDB every 30 seconds
+        - Track workers every 2 seconds
         """
         self._running = True
         self.logger.info("Metrics collector started")
@@ -146,7 +151,6 @@ class MetricsCollector:
                 # Snapshot to SlateDB periodically
                 if current_time - self._last_snapshot_time >= self.snapshot_interval_s:
                     self.storage.store_metrics_snapshot(
-                        self.job_id,
                         stage_id,
                         current_time,
                         metrics_dict,
@@ -164,49 +168,106 @@ class MetricsCollector:
 
         self._last_poll_time = current_time
 
-        # Update Registry with stages info (every 2 seconds)
-        if current_time - self._last_registry_update >= 2.0:
-            await self._update_registry()
-            self._last_registry_update = current_time
+        # Track workers every 2 seconds
+        if current_time - self._last_worker_tracking_time >= 2.0:
+            await self._track_workers(current_time)
+            self._last_worker_tracking_time = current_time
 
-    async def _update_registry(self) -> None:
-        """Update the Registry with current stages info."""
-        stages_info = []
-        total_workers = 0
-
+    async def _track_workers(self, current_time: float) -> None:
+        """Track worker lifecycle and metrics."""
         for stage_id, master in self.job_runner._masters.items():
             try:
-                status = master.get_status()
-                stages_info.append(
-                    {
-                        "stage_id": stage_id,
-                        "worker_count": status.worker_count,
-                        "output_queue_size": status.output_queue_size,
-                        "is_running": status.is_running,
-                        "is_finished": status.is_finished,
-                        "failed": False,
-                        "input_count": self._last_metrics.get(stage_id, {}).get("input_records", 0),
-                        "output_count": self._last_metrics.get(stage_id, {}).get(
-                            "output_records", 0
-                        ),
-                    }
-                )
-                total_workers += status.worker_count
-            except Exception as e:
-                self.logger.warning(f"Failed to get status for {stage_id}: {e}")
+                # Track active workers
+                for worker_id, worker_handle in master._workers.items():
+                    try:
+                        # Get worker status and metrics
+                        worker_status = ray.get(worker_handle.get_status.remote(), timeout=0.5)
+                        worker_metrics = ray.get(worker_handle.get_metrics.remote(), timeout=0.5)
 
-        # Update registry
-        try:
-            ray.get(
-                self.registry.update.remote(
-                    self.job_id,
-                    {
-                        "stages": stages_info,
-                        "worker_count": total_workers,
-                        "last_update": time.time(),
-                    },
-                ),
-                timeout=1,
+                        worker_data = {
+                            "worker_id": worker_id,
+                            "stage_id": stage_id,
+                            "status": "RUNNING" if worker_status.get("running") else "IDLE",
+                            "processed_count": worker_status.get("processed_count", 0),
+                            "assigned_partitions": worker_status.get("assigned_partitions", []),
+                            "input_records": worker_metrics.input_records,
+                            "output_records": worker_metrics.output_records,
+                            "processing_time": worker_metrics.processing_time,
+                        }
+
+                        await self._update_worker_history(worker_id, worker_data, current_time)
+
+                    except Exception as e:
+                        self.logger.debug(f"Failed to get worker {worker_id} metrics: {e}")
+
+                # Check for removed workers (completed or failed)
+                await self._check_removed_workers(stage_id, master._workers.keys(), current_time)
+
+            except Exception as e:
+                self.logger.warning(f"Failed to track workers for {stage_id}: {e}")
+
+        # Periodically snapshot worker history to SlateDB (every 10 seconds)
+        if current_time - self._last_worker_snapshot_time >= 10.0:
+            await self._snapshot_worker_history()
+            self._last_worker_snapshot_time = current_time
+
+    async def _update_worker_history(
+        self, worker_id: str, worker_data: Dict[str, Any], current_time: float
+    ) -> None:
+        """Update worker history tracking."""
+        if worker_id not in self._known_workers:
+            # New worker - record start time
+            self._known_workers[worker_id] = {
+                **worker_data,
+                "start_time": current_time,
+                "end_time": None,
+                "processed_splits": [],
+            }
+            # Store worker event: STARTED
+            self.storage.store_worker_event(
+                worker_id,
+                current_time,
+                {"event_type": "STARTED", "stage_id": worker_data.get("stage_id")},
             )
-        except Exception as e:
-            self.logger.warning(f"Failed to update registry: {e}")
+        else:
+            # Update existing worker data
+            self._known_workers[worker_id].update({
+                "status": worker_data.get("status", "UNKNOWN"),
+                "input_records": worker_data.get("input_records", 0),
+                "output_records": worker_data.get("output_records", 0),
+                "processing_time": worker_data.get("processing_time", 0),
+                "processed_count": worker_data.get("processed_count", 0),
+                "assigned_partitions": worker_data.get("assigned_partitions", []),
+            })
+
+    async def _check_removed_workers(
+        self, stage_id: str, current_worker_ids: set, current_time: float
+    ) -> None:
+        """Check for workers that have been removed (completed or failed)."""
+        # Find workers from this stage that are no longer active
+        for worker_id, worker_data in list(self._known_workers.items()):
+            if worker_data.get("stage_id") == stage_id and worker_id not in current_worker_ids:
+                if worker_data.get("end_time") is None:
+                    # Worker has been removed - mark as completed
+                    self._known_workers[worker_id]["status"] = "COMPLETED"
+                    self._known_workers[worker_id]["end_time"] = current_time
+
+                    # Store worker event: COMPLETED
+                    self.storage.store_worker_event(
+                        worker_id,
+                        current_time,
+                        {"event_type": "COMPLETED", "stage_id": stage_id},
+                    )
+
+                    # Immediately store final worker history
+                    self.storage.store_worker_history(
+                        worker_id, self._known_workers[worker_id]
+                    )
+
+    async def _snapshot_worker_history(self) -> None:
+        """Snapshot all known workers to SlateDB."""
+        for worker_id, worker_data in self._known_workers.items():
+            try:
+                self.storage.store_worker_history(worker_id, worker_data)
+            except Exception as e:
+                self.logger.warning(f"Failed to snapshot worker {worker_id}: {e}")

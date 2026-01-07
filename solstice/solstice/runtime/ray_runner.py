@@ -178,6 +178,23 @@ class RayJobRunner:
         # Wire downstream references for backpressure propagation
         self._wire_downstream_refs()
 
+        # Store job metadata in payload_store for WebUI discovery
+        # This replaces the need for a separate JobRegistry
+        self._payload_store.set_job_metadata({
+            "job_id": self.job.job_id,
+            "dag_edges": self.job.dag_edges,
+            "start_time": time.time(),
+            "stages": [
+                {
+                    "stage_id": s.stage_id,
+                    "operator_type": type(s.operator_config).__name__,
+                    "min_parallelism": s.parallelism[0] if isinstance(s.parallelism, tuple) else s.parallelism,
+                    "max_parallelism": s.parallelism[1] if isinstance(s.parallelism, tuple) else s.parallelism,
+                }
+                for s in self.job.stages.values()
+            ],
+        })
+
         # Initialize WebUI if enabled
         if self.job.config.webui.enabled:
             await self._initialize_webui()
@@ -471,6 +488,42 @@ class RayJobRunner:
     def is_initialized(self) -> bool:
         return self._initialized
 
+    # === WebUI API ===
+
+    def get_dag_edges(self) -> Dict[str, List[str]]:
+        """Get the DAG edges for this job."""
+        return self.job.dag_edges
+
+    async def get_stages_for_webui(self) -> List[Dict[str, Any]]:
+        """Get detailed stage info with metrics for the WebUI.
+
+        Returns list of stage dicts with:
+        - stage_id, operator_type, worker_count
+        - input_count, output_count (from workers)
+        - is_running, is_finished, failed
+        - output_queue_size
+        """
+        stages = []
+        for stage_id, master in self._masters.items():
+            status = await master.get_status_async()
+            metrics = await master.collect_metrics()
+
+            stages.append({
+                "stage_id": stage_id,
+                "operator_type": type(master.stage.operator_config).__name__,
+                "worker_count": status.worker_count,
+                "min_parallelism": master.config.min_workers,
+                "max_parallelism": master.config.max_workers,
+                "input_count": metrics.input_records,
+                "output_count": metrics.output_records,
+                "output_queue_size": status.output_queue_size,
+                "is_running": status.is_running,
+                "is_finished": status.is_finished,
+                "failed": status.failed,
+                "backpressure_active": status.backpressure_active,
+            })
+        return stages
+
     # === Autoscaling Manual Intervention API ===
 
     def set_stage_workers(self, stage_id: str, count: int) -> None:
@@ -545,7 +598,7 @@ class RayJobRunner:
         try:
             from solstice.webui.job_webui import JobWebUI
             from solstice.webui.portal import portal_exists, start_portal
-            from solstice.webui.storage import SlateDBStorage
+            from solstice.webui.storage import JobStorage
 
             # Generate attempt_id for this run (timestamp + short random suffix)
             from datetime import datetime
@@ -570,7 +623,7 @@ class RayJobRunner:
             base_path = self.job.config.webui.storage_path.rstrip("/")
             job_storage_path = f"{base_path}/{self.job.job_id}/{attempt_id}"
 
-            storage = SlateDBStorage(job_storage_path)
+            storage = JobStorage(job_storage_path)
             self.logger.info(f"WebUI storage at {job_storage_path}")
 
             # Create JobWebUI with pre-generated attempt_id

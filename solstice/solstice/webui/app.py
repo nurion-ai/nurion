@@ -16,17 +16,13 @@
 
 import os
 from pathlib import Path
-from typing import Literal, Optional, TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorageReader
 from solstice.utils.logging import create_ray_logger
-
-if TYPE_CHECKING:
-    from solstice.runtime.ray_runner import RayJobRunner
 
 
 # Paths
@@ -35,46 +31,32 @@ TEMPLATES_DIR = WEBUI_DIR / "templates"
 STATIC_DIR = WEBUI_DIR / "static"
 
 
-def create_app(
-    mode: Literal["embedded", "history"] = "embedded",
-    storage: Optional[SlateDBStorage] = None,
-    job_runner: Optional["RayJobRunner"] = None,
-) -> FastAPI:
-    """Create WebUI FastAPI application.
+def create_history_app(storage: JobStorageReader) -> FastAPI:
+    """Create History Server FastAPI application.
+
+    This app is for read-only access to historical job data.
+    For running jobs, use the Portal (portal.py).
 
     Args:
-        mode: Running mode
-            - "embedded": Embedded mode, runs with job, can access real-time data
-            - "history": History Server mode, read-only historical data
-        storage: SlateDB storage instance (required for history mode)
-        job_runner: RayJobRunner instance (required for embedded mode)
+        storage: Storage instance for reading historical data (PortalStorage)
 
     Returns:
         FastAPI application
-
-    Raises:
-        ValueError: If required dependencies are missing for the mode
     """
-    logger = create_ray_logger("WebUIApp")
-
-    # Validate mode-specific requirements
-    if mode == "history" and storage is None:
-        raise ValueError("History mode requires storage parameter")
-    if mode == "embedded" and job_runner is None:
-        raise ValueError("Embedded mode requires job_runner parameter")
+    logger = create_ray_logger("HistoryServer")
 
     app = FastAPI(
-        title="Solstice Debug UI",
-        description="Solstice streaming job debugging interface",
+        title="Solstice History Server",
+        description="Solstice job history viewer",
         version="0.1.0",
     )
 
     # Inject state
-    app.state.mode = mode
+    app.state.mode = "history"
     app.state.storage = storage
-    app.state.job_runner = job_runner
+    app.state.job_runner = None  # No runner in history mode
 
-    logger.info(f"Creating WebUI app in {mode} mode")
+    logger.info("Creating History Server app")
 
     # Mount static files (required)
     if not STATIC_DIR.exists():
@@ -87,14 +69,7 @@ def create_app(
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     setup_template_filters(app.state.templates)
 
-    # Register routes based on mode
-    if mode == "embedded":
-        from solstice.webui.api import realtime
-
-        app.include_router(realtime.router, prefix="/api")
-        logger.info("Registered real-time API routes")
-
-    # Shared routes (both modes)
+    # Register API routes
     from solstice.webui.api import (
         overview,
         jobs,
@@ -120,7 +95,7 @@ def create_app(
     # Health check endpoint
     @app.get("/health")
     async def health_check():
-        return {"status": "ok", "mode": mode}
+        return {"status": "ok", "mode": "history"}
 
     # Root redirect
     @app.get("/")

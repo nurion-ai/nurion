@@ -50,7 +50,6 @@ class JobArchive:
     """Complete job archive for History Server."""
 
     job_id: str
-    job_name: str
     status: Literal["COMPLETED", "FAILED", "CANCELLED"]
     start_time: float
     end_time: float
@@ -67,9 +66,8 @@ class JobArchive:
     final_metrics: Dict[str, Any]
 
     # Summary counts
-    total_splits: int = 0
-    total_records: int = 0
-    exception_count: int = 0
+    total_input_records: int = 0
+    total_output_records: int = 0
 
     def to_json(self) -> str:
         """Serialize to JSON."""
@@ -90,7 +88,6 @@ class JobDetail:
     """Detailed job information for WebUI."""
 
     job_id: str
-    job_name: str
     status: Literal["RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
     start_time: float
     end_time: Optional[float]

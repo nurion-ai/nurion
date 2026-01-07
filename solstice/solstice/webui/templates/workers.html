@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+
+{% block title %}Workers - {{ job.job_id }}{% endblock %}
+
+{% block content %}
+<article class="compact"
+         hx-get="/solstice/jobs/{{ job.job_id }}/workers"
+         hx-trigger="every 3s"
+         hx-swap="outerHTML"
+         hx-select="article.compact">
+    <header>
+        <nav aria-label="breadcrumb" style="font-size: 0.75rem;">
+            <ul>
+                <li><a href="/solstice/">Jobs</a></li>
+                <li><a href="/solstice/jobs/{{ job.job_id }}/">{{ job.job_id }}</a></li>
+                <li>Workers</li>
+            </ul>
+        </nav>
+        <h1>All Workers</h1>
+    </header>
+    
+    <!-- Summary -->
+    <section>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value">{{ workers|length }}</div>
+                <div class="metric-label">Total Workers</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ workers|selectattr('status', 'equalto', 'RUNNING')|list|length }}</div>
+                <div class="metric-label">Running</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ workers|selectattr('status', 'equalto', 'COMPLETED')|list|length }}</div>
+                <div class="metric-label">Completed</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ workers|sum(attribute='input_records')|default(0)|format_number }}</div>
+                <div class="metric-label">Total Input</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ workers|sum(attribute='output_records')|default(0)|format_number }}</div>
+                <div class="metric-label">Total Output</div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Workers Table by Stage -->
+    <section>
+        <h2>Workers by Stage</h2>
+        {% for stage in stages %}
+        {% set stage_workers = workers|selectattr('stage_id', 'equalto', stage.stage_id)|list %}
+        {% if stage_workers %}
+        <details open style="margin-bottom: 1rem;">
+            <summary style="cursor: pointer; font-weight: bold;">
+                {{ stage.stage_id }} ({{ stage_workers|length }} workers)
+                {% if stage.is_finished %}
+                <span class="badge badge-completed" style="margin-left: 0.5rem;">COMPLETED</span>
+                {% elif stage.is_running %}
+                <span class="badge badge-running" style="margin-left: 0.5rem;">RUNNING</span>
+                {% endif %}
+            </summary>
+            <div class="table-container" style="margin-top: 0.5rem;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Worker ID</th>
+                            <th>Status</th>
+                            <th>Start Time</th>
+                            <th>Duration</th>
+                            <th>Input</th>
+                            <th>Output</th>
+                            <th>Partitions</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for worker in stage_workers|sort(attribute='start_time', reverse=true) %}
+                        <tr>
+                            <td class="monospace" style="font-size: 0.8rem;">
+                                <a href="/solstice/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}">
+                                    {{ worker.worker_id[:16] }}{% if worker.worker_id|length > 16 %}...{% endif %}
+                                </a>
+                            </td>
+                            <td>
+                                <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
+                            </td>
+                            <td class="number" style="font-size: 0.8rem;">
+                                {% if worker.start_time %}
+                                {{ worker.start_time|format_datetime }}
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td class="number" style="font-size: 0.8rem;">
+                                {% if worker.end_time and worker.start_time %}
+                                {{ (worker.end_time - worker.start_time)|format_duration }}
+                                {% elif worker.start_time %}
+                                <span style="color: var(--pico-primary);">running...</span>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td class="number">{{ worker.input_records|default(0)|format_number }}</td>
+                            <td class="number">{{ worker.output_records|default(0)|format_number }}</td>
+                            <td class="number">{{ worker.assigned_partitions|default([])|length }}</td>
+                            <td>
+                                <a href="/solstice/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}" class="small">View</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+        {% endif %}
+        {% endfor %}
+        
+        {% if not workers %}
+        <p><em>No workers found for this job</em></p>
+        {% endif %}
+    </section>
+    
+    <!-- All Workers Timeline -->
+    {% if workers %}
+    <section>
+        <h2>Workers Timeline</h2>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Worker ID</th>
+                        <th>Stage</th>
+                        <th>Status</th>
+                        <th>Start</th>
+                        <th>End</th>
+                        <th>Processing Time</th>
+                        <th>Records (In/Out)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for worker in workers|sort(attribute='start_time', reverse=true) %}
+                    <tr>
+                        <td class="monospace" style="font-size: 0.75rem;">
+                            <a href="/solstice/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}">
+                                {{ worker.worker_id[:16] }}...
+                            </a>
+                        </td>
+                        <td>
+                            <a href="/solstice/jobs/{{ job.job_id }}/stages/{{ worker.stage_id }}">
+                                {{ worker.stage_id }}
+                            </a>
+                        </td>
+                        <td>
+                            <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
+                        </td>
+                        <td style="font-size: 0.8rem;">
+                            {% if worker.start_time %}
+                            {{ worker.start_time|format_datetime }}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td style="font-size: 0.8rem;">
+                            {% if worker.end_time %}
+                            {{ worker.end_time|format_datetime }}
+                            {% elif worker.status == 'RUNNING' %}
+                            <span style="color: var(--pico-primary);">-</span>
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td class="number">
+                            {% if worker.processing_time %}
+                            {{ "%.2f"|format(worker.processing_time) }}s
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td class="number">
+                            {{ worker.input_records|default(0)|format_number }} / {{ worker.output_records|default(0)|format_number }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {% endif %}
+    
+    <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">← Back to Job</a>
+</article>
+{% endblock %}

@@ -3,7 +3,11 @@
 {% block title %}All Jobs{% endblock %}
 
 {% block content %}
-<article class="compact">
+<article class="compact"
+         hx-get="/solstice/"
+         hx-trigger="every 5s"
+         hx-swap="outerHTML"
+         hx-select="article.compact">
     <header>
         <h1>Solstice Jobs</h1>
         <p class="text-muted" style="font-size: 0.8rem;">Monitor and debug streaming data pipelines</p>
@@ -81,7 +85,7 @@
                         <td>
                             <span class="badge badge-{{ job.status|lower }}">{{ job.status }}</span>
                         </td>
-                        <td class="number">{{ job.total_records|format_number }}</td>
+                        <td class="number">{{ (job.total_output_records or job.total_records or 0)|format_number }}</td>
                         <td>
                             <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
                         </td>

@@ -24,8 +24,8 @@ from fastapi.templating import Jinja2Templates
 from ray import serve
 
 from solstice.webui.app import get_ray_dashboard_url, setup_template_filters
-from solstice.webui.registry import get_or_create_registry
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.ray_state import get_running_job_info, get_running_jobs_from_ray
+from solstice.webui.storage.portal_storage import PortalStorage
 from solstice.utils.logging import create_ray_logger
 
 WEBUI_DIR = Path(__file__).parent
@@ -38,8 +38,11 @@ def create_portal_app(storage_path: str) -> FastAPI:
 
     This function creates and configures the FastAPI app with all routes.
     It's called once when the Portal deployment is created.
+
+    Note: Portal uses PortalStorage (read-only, scans job directories)
+    instead of JobStorage (single job, write-enabled).
     """
-    storage = SlateDBStorage(storage_path)
+    storage = PortalStorage(storage_path)
     logger = create_ray_logger("SolsticePortal")
 
     # Templates (required)
@@ -67,13 +70,8 @@ def create_portal_app(storage_path: str) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def portal_home(request: Request):
         """Portal home page - list all jobs."""
-        running_jobs = []
-        try:
-            registry = get_or_create_registry()
-            jobs_dict = ray.get(registry.list_jobs.remote(), timeout=2)
-            running_jobs = list(jobs_dict.values())
-        except Exception:
-            pass
+        # Get running jobs directly from Ray State API (no registry needed)
+        running_jobs = get_running_jobs_from_ray()
 
         completed_jobs = []
         try:
@@ -94,13 +92,8 @@ def create_portal_app(storage_path: str) -> FastAPI:
     @app.get("/running", response_class=HTMLResponse)
     async def running_jobs_page(request: Request):
         """Running jobs list page."""
-        running_jobs = []
-        try:
-            registry = get_or_create_registry()
-            jobs_dict = ray.get(registry.list_jobs.remote(), timeout=2)
-            running_jobs = list(jobs_dict.values())
-        except Exception:
-            pass
+        # Get running jobs directly from Ray State API (no registry needed)
+        running_jobs = get_running_jobs_from_ray()
 
         return templates.TemplateResponse(
             "running_jobs.html",
@@ -130,17 +123,9 @@ def create_portal_app(storage_path: str) -> FastAPI:
     @app.get("/jobs/{job_id}/", response_class=HTMLResponse)
     async def job_detail_page(job_id: str, request: Request):
         """Job detail page."""
-        job_info = None
-        stages = []
-
-        # Check if job is running
-        try:
-            registry = get_or_create_registry()
-            job_info = ray.get(registry.get_job.remote(job_id), timeout=1)
-            if job_info:
-                stages = job_info.stages if hasattr(job_info, "stages") else []
-        except Exception:
-            pass
+        # Check if job is running (using Ray State API, no registry needed)
+        job_info = get_running_job_info(job_id)
+        stages = job_info.get("stages", []) if job_info else []
 
         if job_info:
             return templates.TemplateResponse(
@@ -181,23 +166,20 @@ def create_portal_app(storage_path: str) -> FastAPI:
 
     @app.get("/jobs/{job_id}/stages/{stage_id}", response_class=HTMLResponse)
     async def stage_detail_page(job_id: str, stage_id: str, request: Request):
-        """Stage detail page."""
+        """Stage detail page with workers and partition metrics."""
         stage_data = None
+        workers = []
+        partition_metrics = []
 
-        # Try running job
-        try:
-            registry = get_or_create_registry()
-            job_reg = ray.get(registry.get_job.remote(job_id), timeout=1)
-            if job_reg and hasattr(job_reg, "stages"):
-                for s in job_reg.stages:
-                    if hasattr(s, "stage_id") and s.stage_id == stage_id:
-                        stage_data = s
-                        break
-                    elif isinstance(s, dict) and s.get("stage_id") == stage_id:
-                        stage_data = s
-                        break
-        except Exception:
-            pass
+        # Try running job (get basic info from Ray State API)
+        job_info = get_running_job_info(job_id)
+        if job_info:
+            for s in job_info.get("stages", []):
+                if s.get("stage_id") == stage_id:
+                    stage_data = s
+                    workers = s.get("workers", [])
+                    partition_metrics = s.get("partition_metrics", [])
+                    break
 
         # Try historical data
         if not stage_data:
@@ -220,18 +202,117 @@ def create_portal_app(storage_path: str) -> FastAPI:
                 "request": request,
                 "job_id": job_id,
                 "stage": stage_data,
+                "workers": workers,
+                "partition_metrics": partition_metrics,
+            },
+        )
+
+    @app.get("/jobs/{job_id}/workers", response_class=HTMLResponse)
+    async def workers_list_page(job_id: str, request: Request):
+        """Workers list page - shows all workers for a job (running + historical)."""
+        job_data = {"job_id": job_id, "status": "UNKNOWN"}
+        stages = []
+        all_workers = []
+        workers_from_history = {}  # worker_id -> worker_data
+
+        # First, get historical workers from storage (includes completed workers)
+        try:
+            historical_workers = storage.list_workers(job_id, limit=500)
+            for w in historical_workers:
+                workers_from_history[w.get("worker_id")] = w
+        except Exception:
+            pass
+
+        # Then get running workers from Ray State API
+        job_info = get_running_job_info(job_id)
+        if job_info:
+            job_data = job_info
+            stages = job_info.get("stages", [])
+            for s in stages:
+                for w in s.get("workers", []):
+                    worker_id = w.get("worker_id")
+                    # Merge with historical data if available
+                    if worker_id in workers_from_history:
+                        merged = workers_from_history[worker_id].copy()
+                        merged.update(w)  # Running data overrides
+                        merged["stage_id"] = s.get("stage_id", "unknown")
+                        workers_from_history[worker_id] = merged
+                    else:
+                        worker = dict(w)
+                        worker["stage_id"] = s.get("stage_id", "unknown")
+                        workers_from_history[worker_id] = worker
+
+        # Fallback to archived job data for stages
+        if not stages:
+            try:
+                job_archive = storage.get_job_archive(job_id)
+                if job_archive:
+                    job_data = job_archive
+                    stages = job_archive.get("stages", [])
+            except Exception:
+                pass
+
+        # Convert workers dict to list
+        all_workers = list(workers_from_history.values())
+
+        return templates.TemplateResponse(
+            "workers.html",
+            {
+                "request": request,
+                "job": job_data,
+                "stages": stages,
+                "workers": all_workers,
             },
         )
 
     @app.get("/jobs/{job_id}/workers/{worker_id}", response_class=HTMLResponse)
     async def worker_detail_page(job_id: str, worker_id: str, request: Request):
-        """Worker detail page."""
-        worker_data = {"worker_id": worker_id, "stage_id": "", "status": "UNKNOWN"}
+        """Worker detail page with full history."""
+        import time as time_module
 
+        worker_data = {"worker_id": worker_id, "stage_id": "", "status": "UNKNOWN"}
+        worker_events = []
+
+        # First try to get historical worker data from storage
         try:
-            events = storage.list_worker_events(job_id, worker_id=worker_id, limit=1)
-            if events:
-                worker_data.update(events[0])
+            historical_data = storage.get_worker_history(job_id, worker_id)
+            if historical_data:
+                worker_data = historical_data
+        except Exception:
+            pass
+
+        # Get worker events
+        try:
+            worker_events = storage.list_worker_events(job_id, worker_id=worker_id, limit=50)
+        except Exception:
+            pass
+
+        # Try to get live worker data from running job via Ray State API
+        job_info = get_running_job_info(job_id)
+        if job_info:
+            for stage in job_info.get("stages", []):
+                for w in stage.get("workers", []):
+                    if w.get("worker_id") == worker_id:
+                        # Merge live data with historical data
+                        worker_data.update(w)
+                        worker_data["stage_id"] = stage.get("stage_id", "")
+                        break
+                if worker_data.get("stage_id"):
+                    break
+
+        # Try to get Ray actor info for additional details
+        try:
+            from ray.util.state import list_actors
+
+            actors = list_actors(
+                filters=[("class_name", "=", "StageWorker"), ("state", "=", "ALIVE")]
+            )
+            for actor in actors:
+                if worker_id in actor.get("name", ""):
+                    worker_data["actor_id"] = actor.get("actor_id")
+                    worker_data["node_id"] = actor.get("node_id")
+                    worker_data["pid"] = actor.get("pid")
+                    break
         except Exception:
             pass
 
@@ -241,6 +322,8 @@ def create_portal_app(storage_path: str) -> FastAPI:
                 "request": request,
                 "job_id": job_id,
                 "worker": worker_data,
+                "worker_events": worker_events,
+                "now": time_module.time(),
             },
         )
 
@@ -286,16 +369,72 @@ def create_portal_app(storage_path: str) -> FastAPI:
             },
         )
 
+    @app.get("/jobs/{job_id}/configuration", response_class=HTMLResponse)
+    async def configuration_page(job_id: str, request: Request):
+        """Configuration page showing job, stage, and environment settings."""
+        import os
+
+        config_data = {
+            "job_config": {},
+            "stage_configs": {},
+            "ray_config": {},
+            "environment": {},
+        }
+
+        # Try to get from running job (using Ray State API, no registry needed)
+        job_info = get_running_job_info(job_id)
+        if job_info:
+            config_data["job_config"] = {
+                "job_id": job_info.get("job_id"),
+                "status": job_info.get("status"),
+            }
+
+            # Get stage configs
+            for stage in job_info.get("stages", []):
+                stage_id = stage.get("stage_id", "")
+                if stage_id:
+                    config_data["stage_configs"][stage_id] = {
+                        "worker_count": stage.get("worker_count"),
+                        "is_running": stage.get("is_running"),
+                    }
+
+            # Ray resources
+            if ray.is_initialized():
+                config_data["ray_config"] = {
+                    "cluster_resources": ray.cluster_resources(),
+                    "available_resources": ray.available_resources(),
+                }
+
+            # Environment
+            config_data["environment"] = {
+                "SOLSTICE_LOG_LEVEL": os.getenv("SOLSTICE_LOG_LEVEL", "INFO"),
+                "RAY_PROMETHEUS_HOST": os.getenv("RAY_PROMETHEUS_HOST"),
+                "SOLSTICE_GRAFANA_URL": os.getenv("SOLSTICE_GRAFANA_URL"),
+            }
+
+        # Fallback to storage
+        if not config_data["job_config"]:
+            try:
+                job_archive = storage.get_job_archive(job_id)
+                if job_archive:
+                    config_data = job_archive.get("config", config_data)
+            except Exception:
+                pass
+
+        return templates.TemplateResponse(
+            "configuration.html",
+            {
+                "request": request,
+                "job_id": job_id,
+                "config": config_data,
+            },
+        )
+
     @app.get("/api/jobs")
     async def api_list_jobs():
         """API endpoint for listing jobs."""
-        running = []
-        try:
-            registry = get_or_create_registry()
-            jobs_dict = ray.get(registry.list_jobs.remote(), timeout=2)
-            running = [j.to_dict() for j in jobs_dict.values()]
-        except Exception:
-            pass
+        # Get running jobs from Ray State API (no registry needed)
+        running = get_running_jobs_from_ray()
 
         completed = []
         try:
@@ -307,6 +446,61 @@ def create_portal_app(storage_path: str) -> FastAPI:
             "running": running,
             "completed": completed,
         }
+
+    @app.get("/api/jobs/{job_id}/stages")
+    async def api_list_stages(job_id: str):
+        """API endpoint for listing stages of a job.
+
+        For running jobs, gets data from Ray State API.
+        For completed jobs, gets data from storage.
+        """
+
+        def transform_stages_for_ui(stages: list) -> list:
+            """Transform stage data to have consistent field names for the UI."""
+            transformed = []
+            for stage in stages:
+                # Extract metrics from final_metrics or direct fields
+                metrics = stage.get("final_metrics", {})
+                transformed.append({
+                    "stage_id": stage.get("stage_id", ""),
+                    "operator_type": stage.get("operator_type", ""),
+                    "worker_count": stage.get("final_worker_count", 0)
+                    or metrics.get("worker_count", 0),
+                    "is_running": not stage.get("is_finished", True),
+                    "is_finished": stage.get("is_finished", False),
+                    "failed": stage.get("failed", False),
+                    "input_count": metrics.get("input_records", 0),
+                    "output_count": metrics.get("output_records", 0),
+                    "output_queue_size": metrics.get("output_buffer_size", 0),
+                })
+            return transformed
+
+        # First check storage for completed jobs (more detailed data)
+        try:
+            job_data = storage.get_job_archive(job_id)
+            if job_data:
+                stages = job_data.get("stages", [])
+                return {
+                    "job_id": job_id,
+                    "stages": transform_stages_for_ui(stages),
+                    "dag_edges": job_data.get("dag_edges", {}),
+                }
+        except Exception:
+            pass
+
+        # For running jobs, get from JobRegistry (updated by MetricsCollector)
+        job_info = get_running_job_info(job_id)
+        if job_info:
+            # Registry stages already have input_count and output_count
+            # DAG edges are stored in the registry since registration
+            return {
+                "job_id": job_id,
+                "stages": job_info.get("stages", []),
+                "dag_edges": job_info.get("dag_edges", {}),
+            }
+
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     @app.get("/health")
     async def health():

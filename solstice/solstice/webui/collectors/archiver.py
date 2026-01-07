@@ -17,7 +17,7 @@
 import time
 from typing import TYPE_CHECKING
 
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorage
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ class JobArchiver:
         await archiver.archive_job(job_runner)
     """
 
-    def __init__(self, storage: SlateDBStorage):
+    def __init__(self, storage: JobStorage):
         """Initialize archiver.
 
         Args:
@@ -97,14 +97,9 @@ class JobArchiver:
                     }
                 )
 
-            # Count worker events and exceptions
-            worker_event_count = len(self.storage.list_worker_events(job_id, limit=10000))
-            exception_count = len(self.storage.list_exceptions(job_id, limit=10000))
-
             # Build archive data
             archive_data = {
                 "job_id": job_id,
-                "job_name": job_id,  # TODO: Support custom job names
                 "status": status,
                 "start_time": final_status.start_time or time.time(),
                 "end_time": time.time(),
@@ -121,21 +116,16 @@ class JobArchiver:
                 "final_metrics": {
                     "stages": {s["stage_id"]: s["final_metrics"] for s in stages},
                 },
-                # Summary
-                "total_splits": sum(s["final_metrics"].get("input_records", 0) for s in stages),
-                "total_records": sum(s["final_metrics"].get("output_records", 0) for s in stages),
-                "exception_count": exception_count,
-                "worker_event_count": worker_event_count,
+                # Summary (input/output totals from final stage metrics)
+                "total_input_records": sum(s["final_metrics"].get("input_records", 0) for s in stages),
+                "total_output_records": sum(s["final_metrics"].get("output_records", 0) for s in stages),
                 # Error
                 "error": final_status.error,
             }
 
             # Store archive
-            self.storage.store_job_archive(job_id, archive_data)
-            self.logger.info(
-                f"Archived job {job_id} with status {status}, "
-                f"{len(stages)} stages, {exception_count} exceptions"
-            )
+            self.storage.store_job_archive(archive_data)
+            self.logger.info(f"Archived job {job_id} with status {status}, {len(stages)} stages")
 
         except Exception as e:
             self.logger.error(f"Failed to archive job {job_id}: {e}")

@@ -23,7 +23,7 @@ Reference: https://docs.ray.io/en/latest/ray-observability/user-guides/ray-event
 import time
 from typing import Any, Dict, List, Optional
 
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorage
 from solstice.utils.logging import create_ray_logger
 
 
@@ -57,7 +57,7 @@ class EventCollector:
         events = collector.get_events(limit=100)
     """
 
-    def __init__(self, job_id: str, storage: SlateDBStorage):
+    def __init__(self, job_id: str, storage: JobStorage):
         """Initialize event collector.
 
         Args:
@@ -96,7 +96,7 @@ class EventCollector:
         }
 
         # Store in SlateDB
-        self.storage.store_ray_event(self.job_id, event_id, tagged_event)
+        self.storage.store_ray_event(event_id, tagged_event)
 
         self._event_count += 1
 

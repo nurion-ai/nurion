@@ -2,35 +2,274 @@
 
 {% block title %}Lineage - {{ job_id }}{% endblock %}
 
+{% block extra_head %}
+<!-- D3.js for DAG visualization -->
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/dagre-d3@0.6.4/dist/dagre-d3.min.js"></script>
+<style>
+.dag-container {
+    background: var(--pico-card-background-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.dag-container svg {
+    width: 100%;
+    height: 100%;
+}
+.dag-node rect {
+    fill: var(--pico-secondary-background);
+    stroke: var(--pico-primary);
+    stroke-width: 2px;
+    rx: 6px;
+    ry: 6px;
+}
+.dag-node.running rect {
+    fill: #dcfce7;
+    stroke: #16a34a;
+}
+.dag-node.finished rect {
+    fill: #e0e7ff;
+    stroke: #4f46e5;
+}
+.dag-node.failed rect {
+    fill: #fee2e2;
+    stroke: #dc2626;
+}
+.dag-node text {
+    fill: var(--pico-color);
+    font-size: 12px;
+}
+.dag-edge path {
+    fill: none;
+    stroke: var(--pico-muted-color);
+    stroke-width: 2px;
+}
+.dag-edge marker path {
+    fill: var(--pico-muted-color);
+}
+</style>
+{% endblock %}
+
 {% block content %}
-<article>
+<article class="compact">
     <header>
-        <nav aria-label="breadcrumb">
-            <ul>
+        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
+            <ul style="padding: 0; margin: 0;">
+                <li><a href="/solstice/">Jobs</a></li>
                 <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
                 <li>Lineage</li>
             </ul>
         </nav>
-        <h1>Data Lineage</h1>
+        <h1 style="margin-top: 0.25rem;">Data Lineage</h1>
     </header>
     
-    <div class="grid">
-        <!-- Search -->
-        <div>
-            <label for="split-search">Search Split ID</label>
-            <input type="search" id="split-search" placeholder="e.g. split_123..." 
-                   hx-get="/solstice/api/jobs/{{ job_id }}/lineage/search" 
-                   hx-target="#lineage-graph" 
-                   hx-trigger="input changed delay:500ms">
+    <!-- Stage DAG -->
+    <section>
+        <h2>Stage DAG</h2>
+        <div id="stage-dag" class="dag-container" style="height: 400px; position: relative;">
+            <svg></svg>
         </div>
-    </div>
+    </section>
     
-    <!-- Graph Container -->
-    <div id="lineage-graph" class="dag-container" style="height: 600px; position: relative;">
-        <p class="text-center" style="margin-top: 200px; color: var(--pico-muted-color);">
-            Lineage visualization coming soon (requires D3.js integration)
-        </p>
-    </div>
+    <!-- Split Lineage Search -->
+    <section>
+        <h2>Split Lineage</h2>
+        <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+            <input type="search" id="split-search" placeholder="Enter split ID to trace..." style="flex: 1;">
+            <button class="outline" onclick="searchSplit()">Search</button>
+        </div>
+        
+        <div id="split-lineage" style="min-height: 200px; background: var(--pico-card-background-color); border-radius: 8px; padding: 1rem;">
+            <p class="text-center" style="color: var(--pico-muted-color);">
+                Enter a split ID above to view its lineage and processing history.
+            </p>
+        </div>
+    </section>
+    
+    <!-- Lineage Stats -->
+    <section>
+        <h2>Summary</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value" id="total-splits">-</div>
+                <div class="metric-label">Total Splits</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="processed-splits">-</div>
+                <div class="metric-label">Processed</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="avg-time">-</div>
+                <div class="metric-label">Avg Processing Time</div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Back link -->
+    <section>
+        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
+    </section>
 </article>
 {% endblock %}
 
+{% block extra_scripts %}
+<script>
+// Stage DAG data (will be populated from API)
+const jobId = '{{ job_id }}';
+
+// Fetch stages and render DAG
+async function renderStageDag() {
+    try {
+        const response = await fetch(`/solstice/api/jobs/${jobId}/stages`);
+        if (!response.ok) return;
+        
+        const data = await response.json();
+        const stages = data.stages || [];
+        const edges = data.dag_edges || {};
+        
+        // Create dagre graph
+        const g = new dagreD3.graphlib.Graph().setGraph({
+            rankdir: 'LR',
+            marginx: 20,
+            marginy: 20,
+            ranksep: 80,
+            nodesep: 40
+        });
+        
+        // Add nodes
+        stages.forEach(stage => {
+            let statusClass = 'pending';
+            if (stage.is_running) statusClass = 'running';
+            else if (stage.is_finished) statusClass = 'finished';
+            else if (stage.failed) statusClass = 'failed';
+            
+            g.setNode(stage.stage_id, {
+                label: `${stage.stage_id}\n(${stage.worker_count} workers)`,
+                class: statusClass,
+                width: 140,
+                height: 50
+            });
+        });
+        
+        // Add edges
+        for (const [source, targets] of Object.entries(edges)) {
+            for (const target of targets) {
+                g.setEdge(source, target, {
+                    curve: d3.curveBasis
+                });
+            }
+        }
+        
+        // Create renderer
+        const render = new dagreD3.render();
+        const svg = d3.select('#stage-dag svg');
+        const inner = svg.append('g');
+        
+        // Run layout
+        render(inner, g);
+        
+        // Center and scale
+        const bbox = inner.node().getBBox();
+        const containerWidth = document.getElementById('stage-dag').clientWidth;
+        const containerHeight = 400;
+        
+        const scale = Math.min(
+            containerWidth / (bbox.width + 40),
+            containerHeight / (bbox.height + 40),
+            1.5
+        );
+        
+        const translateX = (containerWidth - bbox.width * scale) / 2;
+        const translateY = (containerHeight - bbox.height * scale) / 2;
+        
+        svg.attr('viewBox', `0 0 ${containerWidth} ${containerHeight}`);
+        inner.attr('transform', `translate(${translateX}, ${translateY}) scale(${scale})`);
+        
+        // Add click handlers
+        svg.selectAll('.dag-node').on('click', function(event, d) {
+            window.location.href = `/solstice/jobs/${jobId}/stages/${d}`;
+        }).style('cursor', 'pointer');
+        
+    } catch (e) {
+        console.error('Failed to render DAG:', e);
+        document.getElementById('stage-dag').innerHTML = `
+            <p class="text-center" style="margin-top: 150px; color: var(--pico-muted-color);">
+                Failed to load stage DAG
+            </p>
+        `;
+    }
+}
+
+// Search for split lineage
+async function searchSplit() {
+    const splitId = document.getElementById('split-search').value.trim();
+    if (!splitId) return;
+    
+    const container = document.getElementById('split-lineage');
+    container.innerHTML = '<p>Searching...</p>';
+    
+    try {
+        const response = await fetch(`/solstice/api/jobs/${jobId}/lineage/${splitId}`);
+        if (response.ok) {
+            const data = await response.json();
+            container.innerHTML = `
+                <h4>Split: ${data.split_id}</h4>
+                <table>
+                    <tr><td><strong>Stage:</strong></td><td>${data.stage_id || 'N/A'}</td></tr>
+                    <tr><td><strong>Worker:</strong></td><td><code>${data.worker_id || 'N/A'}</code></td></tr>
+                    <tr><td><strong>Processing Time:</strong></td><td>${data.processing_time ? data.processing_time.toFixed(3) + 's' : 'N/A'}</td></tr>
+                    <tr><td><strong>Input Records:</strong></td><td>${data.input_records || 0}</td></tr>
+                    <tr><td><strong>Output Records:</strong></td><td>${data.output_records || 0}</td></tr>
+                    <tr><td><strong>Parent Splits:</strong></td><td>${(data.parent_ids || []).join(', ') || 'None (source)'}</td></tr>
+                </table>
+            `;
+        } else {
+            container.innerHTML = `
+                <p style="color: var(--pico-warning);">
+                    Split "${splitId}" not found in lineage data.
+                </p>
+                <p style="font-size: 0.85rem; color: var(--pico-muted-color);">
+                    Note: Split-level lineage tracking requires additional instrumentation.
+                    Currently showing stage-level DAG only.
+                </p>
+            `;
+        }
+    } catch (e) {
+        container.innerHTML = `<p style="color: var(--pico-danger);">Error: ${e.message}</p>`;
+    }
+}
+
+// Load lineage stats
+async function loadLineageStats() {
+    try {
+        const response = await fetch(`/solstice/api/jobs/${jobId}/lineage`);
+        if (response.ok) {
+            const data = await response.json();
+            const nodes = data.nodes || [];
+            
+            document.getElementById('total-splits').textContent = nodes.length || '0';
+            
+            // Calculate stats
+            const processed = nodes.filter(n => n.worker_id).length;
+            document.getElementById('processed-splits').textContent = processed;
+            
+            // This would need actual timing data
+            document.getElementById('avg-time').textContent = 'N/A';
+        }
+    } catch (e) {
+        console.log('Failed to load lineage stats:', e);
+    }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    renderStageDag();
+    loadLineageStats();
+    
+    // Allow Enter key to search
+    document.getElementById('split-search').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') searchSplit();
+    });
+});
+</script>
+{% endblock %}

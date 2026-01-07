@@ -758,14 +758,36 @@ class StageMaster:
         partition_metrics = await self.get_partition_metrics()
         skew_detected, skew_ratio, partition_lags = await self._detect_partition_skew()
 
-        # Calculate total input lag
+        # Aggregate metrics from all workers
+        total_input_records = 0
+        total_output_records = 0
+        total_processing_time = 0.0
+
+        if self._workers:
+            # Collect metrics from all workers in parallel
+            # Use ray.get with timeout to avoid blocking indefinitely
+            import ray
+
+            try:
+                for worker in self._workers.values():
+                    try:
+                        # Use ray.get with a short timeout
+                        wm = ray.get(worker.get_metrics.remote(), timeout=1.0)
+                        total_input_records += wm.input_records
+                        total_output_records += wm.output_records
+                        total_processing_time += wm.processing_time
+                    except Exception:
+                        # Worker might be busy or method not available
+                        continue
+            except Exception as e:
+                self.logger.debug(f"Failed to collect worker metrics: {e}")
 
         return StageMetrics(
             stage_id=self.stage_id,
             worker_count=len(self._workers),
-            input_records=0,  # TODO: Aggregate from workers
-            output_records=0,  # TODO: Aggregate from workers
-            total_processing_time=0.0,  # TODO: Aggregate from workers
+            input_records=total_input_records,
+            output_records=total_output_records,
+            total_processing_time=total_processing_time,
             pending_splits=0,  # Not applicable in queue-based model
             inflight_results=0,  # Not applicable in queue-based model
             output_buffer_size=0,  # Not applicable in queue-based model

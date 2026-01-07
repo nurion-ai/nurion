@@ -1,41 +1,231 @@
 {% extends "base.html" %}
 
-{% block title %}Worker {{ worker.worker_id }}{% endblock %}
+{% block title %}Worker {{ worker.worker_id[:16] }}{% endblock %}
 
 {% block content %}
-<article>
+<article class="compact"
+         hx-get="/solstice/jobs/{{ job_id }}/workers/{{ worker.worker_id }}"
+         hx-trigger="every 5s"
+         hx-swap="outerHTML"
+         hx-select="article.compact">
     <header>
-        <nav aria-label="breadcrumb">
-            <ul>
+        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
+            <ul style="padding: 0; margin: 0;">
+                <li><a href="/solstice/">Jobs</a></li>
                 <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                {% if worker.stage_id %}
                 <li><a href="/solstice/jobs/{{ job_id }}/stages/{{ worker.stage_id }}">{{ worker.stage_id }}</a></li>
-                <li>Worker: {{ worker.worker_id }}</li>
+                {% endif %}
+                <li>Worker</li>
             </ul>
         </nav>
-        <div style="margin-top: 0.5rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+            <h1 style="margin: 0; font-size: 1.2rem;">Worker: <code style="font-size: 0.9rem;">{{ worker.worker_id[:24] }}...</code></h1>
             <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
-            <span class="badge" style="background: var(--pico-secondary-background);">PID: {{ worker.pid }}</span>
-            <span class="badge" style="background: var(--pico-secondary-background);">{{ worker.node_id }}</span>
         </div>
     </header>
     
-    <!-- Metrics -->
+    <!-- Worker Metrics -->
     <section>
         <div class="metrics-grid">
             <div class="metric-card">
-                <div class="metric-value">{{ worker.processed_count|format_number }}</div>
-                <div class="metric-label">Processed Records</div>
+                <div class="metric-value">{{ worker.input_records|default(0)|format_number }}</div>
+                <div class="metric-label">Input Records</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ worker.output_records|default(0)|format_number }}</div>
+                <div class="metric-label">Output Records</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{{ worker.processed_count|default(0)|format_number }}</div>
+                <div class="metric-label">Splits Processed</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">
+                    {% if worker.processing_time %}
+                    {{ "%.2f"|format(worker.processing_time) }}s
+                    {% else %}
+                    -
+                    {% endif %}
+                </div>
+                <div class="metric-label">Processing Time</div>
             </div>
             <div class="metric-card">
                 <div class="metric-value">{{ worker.cpu_percent|default(0) }}%</div>
-                <div class="metric-label">CPU Usage</div>
+                <div class="metric-label">CPU</div>
             </div>
             <div class="metric-card">
-                <div class="metric-value">{{ worker.memory_mb|default(0)|format_bytes }}</div>
-                <div class="metric-label">Memory Usage</div>
+                <div class="metric-value">{{ worker.memory_mb|default(0)|int }} MB</div>
+                <div class="metric-label">Memory</div>
             </div>
         </div>
     </section>
+    
+    <!-- Lifecycle Info -->
+    <section>
+        <details open>
+            <summary>Lifecycle</summary>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; font-size: 0.85rem;">
+                <strong>Status:</strong>
+                <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
+                
+                <strong>Start Time:</strong>
+                <span>
+                    {% if worker.start_time %}
+                    {{ worker.start_time|format_datetime }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </span>
+                
+                <strong>End Time:</strong>
+                <span>
+                    {% if worker.end_time %}
+                    {{ worker.end_time|format_datetime }}
+                    {% elif worker.status == 'RUNNING' %}
+                    <em style="color: var(--pico-primary);">Still running...</em>
+                    {% else %}
+                    -
+                    {% endif %}
+                </span>
+                
+                <strong>Duration:</strong>
+                <span>
+                    {% if worker.end_time and worker.start_time %}
+                    {{ (worker.end_time - worker.start_time)|format_duration }}
+                    {% elif worker.start_time %}
+                    <em>{{ (now - worker.start_time)|format_duration }}</em> (ongoing)
+                    {% else %}
+                    -
+                    {% endif %}
+                </span>
+            </div>
+        </details>
+    </section>
+    
+    <!-- System Info -->
+    <section>
+        <details open>
+            <summary>System Information</summary>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; font-size: 0.85rem;">
+                <strong>Worker ID:</strong> <code style="font-size: 0.75rem;">{{ worker.worker_id }}</code>
+                <strong>Stage:</strong> <span>{{ worker.stage_id|default('N/A') }}</span>
+                {% if worker.actor_id %}
+                <strong>Actor ID:</strong> 
+                <span>
+                    <code style="font-size: 0.75rem;">{{ worker.actor_id }}</code>
+                    <a href="http://localhost:8265/#/actors/{{ worker.actor_id }}" target="_blank" class="small">Ray ↗</a>
+                </span>
+                {% endif %}
+                {% if worker.node_id %}
+                <strong>Node ID:</strong> 
+                <span>
+                    <code style="font-size: 0.75rem;">{{ worker.node_id[:24] }}...</code>
+                    <a href="http://localhost:8265/#/node/{{ worker.node_id }}" target="_blank" class="small">Ray ↗</a>
+                </span>
+                {% endif %}
+                {% if worker.pid %}
+                <strong>PID:</strong> <span>{{ worker.pid }}</span>
+                {% endif %}
+                {% if worker.ip %}
+                <strong>IP:</strong> <span>{{ worker.ip }}</span>
+                {% endif %}
+            </div>
+        </details>
+    </section>
+    
+    <!-- Processing Stats -->
+    <section>
+        <details open>
+            <summary>Processing Statistics</summary>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; font-size: 0.85rem;">
+                <strong>Input Records:</strong> <span>{{ worker.input_records|default(0)|format_number }}</span>
+                <strong>Output Records:</strong> <span>{{ worker.output_records|default(0)|format_number }}</span>
+                <strong>Processing Time:</strong>
+                <span>
+                    {% if worker.processing_time %}
+                    {{ "%.3f"|format(worker.processing_time) }}s
+                    {% else %}
+                    -
+                    {% endif %}
+                </span>
+                {% if worker.processing_time and worker.input_records %}
+                <strong>Throughput:</strong>
+                <span>{{ "%.1f"|format(worker.input_records / worker.processing_time) }} records/s</span>
+                {% endif %}
+            </div>
+        </details>
+    </section>
+    
+    <!-- Assigned Partitions -->
+    {% if worker.assigned_partitions %}
+    <section>
+        <details>
+            <summary>Assigned Partitions ({{ worker.assigned_partitions|length }})</summary>
+            <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                {% for p in worker.assigned_partitions %}
+                <span class="badge" style="background: var(--pico-secondary-background);">{{ p }}</span>
+                {% endfor %}
+            </div>
+        </details>
+    </section>
+    {% endif %}
+    
+    <!-- Processed Splits -->
+    {% if worker.processed_splits %}
+    <section>
+        <details>
+            <summary>Processed Splits ({{ worker.processed_splits|length }})</summary>
+            <div style="max-height: 200px; overflow-y: auto;">
+                <table style="font-size: 0.8rem;">
+                    <thead>
+                        <tr>
+                            <th>Split ID</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for split in worker.processed_splits %}
+                        <tr>
+                            <td class="monospace">{{ split.split_id[:32] }}...</td>
+                            <td>{{ split.timestamp|format_datetime if split.timestamp else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </section>
+    {% endif %}
+    
+    <!-- Worker Events -->
+    {% if worker_events %}
+    <section>
+        <details>
+            <summary>Worker Events ({{ worker_events|length }})</summary>
+            <div style="max-height: 200px; overflow-y: auto;">
+                <table style="font-size: 0.8rem;">
+                    <thead>
+                        <tr>
+                            <th>Event</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for event in worker_events %}
+                        <tr>
+                            <td>
+                                <span class="badge badge-{{ event.event_type|lower }}">{{ event.event_type }}</span>
+                            </td>
+                            <td>{{ event.timestamp|format_datetime }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </section>
+    {% endif %}
     
     <!-- Logs -->
     <section>
@@ -44,58 +234,82 @@
              x-data="logViewer({ endpoint: '/solstice/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/logs' })"
              x-init="init()">
             
-            <div class="log-toolbar">
-                <button class="small" @click="refresh()">Refresh</button>
-                <button class="small outline" @click="autoRefresh = !autoScroll" :class="{ 'primary': autoScroll }">
-                    Auto-refresh
+            <div class="log-toolbar" style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <button class="small outline" @click="refresh()">Refresh</button>
+                <button class="small" :class="{ 'outline': !autoScroll }" @click="autoScroll = !autoScroll">
+                    Auto-refresh: <span x-text="autoScroll ? 'ON' : 'OFF'"></span>
                 </button>
             </div>
             
-            <div class="log-content" x-ref="logContainer">
-                <pre x-text="logs"></pre>
+            <div class="log-content" x-ref="logContainer" 
+                 style="background: #1e293b; color: #e2e8f0; padding: 0.75rem; border-radius: 4px; font-family: monospace; font-size: 0.75rem; max-height: 400px; overflow: auto;">
+                <pre x-text="logs" style="margin: 0; white-space: pre-wrap; word-break: break-all;"></pre>
             </div>
         </div>
     </section>
     
-    <!-- Stacktrace -->
+    <!-- Stacktrace (only for running workers) -->
+    {% if worker.status == 'RUNNING' %}
     <section>
-        <h2>Stacktrace</h2>
-        <div style="background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.8rem; overflow-x: auto;">
+        <h3>Live Stacktrace (py-spy)</h3>
+        <div style="background: #1e293b; color: #e2e8f0; padding: 0.75rem; border-radius: 4px; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow: auto;">
             <div hx-get="/solstice/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/stacktrace" 
-                 hx-trigger="load, every 5s">
-                Loading stacktrace...
+                 hx-trigger="load, every 10s"
+                 hx-swap="innerHTML">
+                <em>Loading stacktrace... (requires py-spy installed)</em>
             </div>
         </div>
     </section>
-
+    {% endif %}
+    
+    <!-- Back link -->
+    <section style="margin-top: 1rem;">
+        <a href="/solstice/jobs/{{ job_id }}/workers" role="button" class="outline small">← All Workers</a>
+        {% if worker.stage_id %}
+        <a href="/solstice/jobs/{{ job_id }}/stages/{{ worker.stage_id }}" role="button" class="outline small">← Stage</a>
+        {% endif %}
+        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Job</a>
+    </section>
 </article>
-
-<script>
-    document.addEventListener('alpine:init', () => {
-        Alpine.data('logViewer', (config) => ({
-            logs: 'Loading logs...',
-            autoScroll: true,
-            
-            async init() {
-                this.refresh();
-                setInterval(() => {
-                    if (this.autoScroll) this.refresh();
-                }, 2000);
-            },
-            
-            async refresh() {
-                try {
-                    const response = await fetch(config.endpoint);
-                    this.logs = await response.text();
-                    if (this.autoScroll) {
-                        this.$refs.logContainer.scrollTop = this.$refs.logContainer.scrollHeight;
-                    }
-                } catch (e) {
-                    this.logs = 'Error loading logs: ' + e;
-                }
-            }
-        }));
-    });
-</script>
 {% endblock %}
 
+{% block extra_scripts %}
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('logViewer', (config) => ({
+        logs: 'Loading logs...',
+        autoScroll: true,
+        intervalId: null,
+        
+        init() {
+            this.refresh();
+            this.intervalId = setInterval(() => {
+                if (this.autoScroll) this.refresh();
+            }, 3000);
+        },
+        
+        async refresh() {
+            try {
+                const response = await fetch(config.endpoint + '?tail=200');
+                if (response.ok) {
+                    this.logs = await response.text();
+                    if (this.autoScroll) {
+                        this.$nextTick(() => {
+                            this.$refs.logContainer.scrollTop = this.$refs.logContainer.scrollHeight;
+                        });
+                    }
+                } else {
+                    this.logs = 'Error: ' + response.status + ' ' + response.statusText;
+                }
+            } catch (e) {
+                this.logs = 'Error loading logs: ' + e.message;
+            }
+        },
+        
+        destroy() {
+            if (this.intervalId) clearInterval(this.intervalId);
+        }
+    }));
+});
+</script>
+{% endblock %}

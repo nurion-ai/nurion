@@ -15,29 +15,32 @@
 """SlateDB storage backend for WebUI data persistence."""
 
 import json
-import time
 from typing import Any, Dict, List, Optional
 
-from solstice.webui.storage.base import StorageBackend
 from solstice.utils.logging import create_ray_logger
 
 
-class SlateDBStorage(StorageBackend):
-    """SlateDB-backed storage for WebUI historical data.
+class JobStorage:
+    """Per-job SlateDB storage for writing WebUI data.
 
-    Supports S3-backed storage for History Server scenarios.
-    Storage path can be:
-    - Local: /tmp/solstice-webui/
-    - S3: s3://bucket/solstice-history/
+    Each running job creates its own JobStorage instance to write metrics,
+    events, and archives. This ensures SlateDB's single-writer constraint
+    is satisfied.
 
-    Key schema:
-    - job:{job_id} -> JobArchive JSON
-    - jobs_by_time:{timestamp}:{job_id} -> job_id (index)
-    - jobs_by_status:{status}:{job_id} -> job_id (index)
-    - metrics:{job_id}:{stage_id}:{timestamp} -> Metrics JSON
-    - exception:{job_id}:{exception_id} -> Exception JSON
-    - lineage:{job_id}:{split_id} -> Lineage JSON
-    - worker_event:{job_id}:{worker_id}:{timestamp} -> Event JSON
+    Storage path format: {base_path}/{job_id}/{attempt_id}/
+    - Local: /tmp/solstice-webui/my_job/20250101_120000_abc1/
+    - S3: s3://bucket/solstice/my_job/20250101_120000_abc1/
+
+    Key schema (no job_id in keys since path already contains job_id):
+    - job -> JobArchive JSON (single entry per SlateDB instance)
+    - metrics:{stage_id}:{timestamp} -> Metrics JSON
+    - exception:{exception_id} -> Exception JSON
+    - lineage:{split_id} -> Lineage JSON
+    - worker:{worker_id} -> Worker history JSON
+    - worker_event:{worker_id}:{timestamp} -> Event JSON
+    - ray_event:{event_id} -> Ray event JSON
+
+    See also: PortalStorage for read-only access across all jobs.
     """
 
     def __init__(self, path: str = "/tmp/solstice-webui/"):
@@ -48,95 +51,47 @@ class SlateDBStorage(StorageBackend):
                 - Local: /tmp/solstice-webui/
                 - S3: s3://bucket/path/
         """
-        import os
         from pathlib import Path
 
         self.path = path
-        self.logger = create_ray_logger("SlateDBStorage")
+        self.logger = create_ray_logger("JobStorage")
 
         from slatedb import SlateDB
 
         # Configure SlateDB based on path
         if path.startswith("s3://"):
-            # S3 storage
-            os.environ.setdefault("CLOUD_PROVIDER", "aws")
-            # S3 credentials should be in environment (AWS_ACCESS_KEY_ID, etc.)
+            # S3 storage - use the path directly as URL
+            self.db = SlateDB("db", url=path)
         else:
-            # Local filesystem storage - ensure directory exists
+            # Local filesystem storage
+            # Ensure directory exists
             Path(path).mkdir(parents=True, exist_ok=True)
-            os.environ.setdefault("CLOUD_PROVIDER", "local")
-            os.environ.setdefault("LOCAL_PATH", path)
-
-        self.db = SlateDB(path)
+            # Use file:// URL for local storage
+            url = f"file://{path}/"
+            self.db = SlateDB("db", url=url)
         self.logger.info(f"Initialized SlateDB storage at {path}")
 
     # === Job Archive ===
 
-    def store_job_archive(self, job_id: str, archive_data: Dict[str, Any]) -> None:
-        """Store archived job data with indexing."""
-        # Main data
-        key = f"job:{job_id}"
+    def store_job_archive(self, archive_data: Dict[str, Any]) -> None:
+        """Store archived job data."""
+        key = "job"
         self.db.put(key.encode(), json.dumps(archive_data).encode())
 
-        # Time-based index (for sorting)
-        end_time = archive_data.get("end_time", time.time())
-        time_key = f"jobs_by_time:{int(end_time)}:{job_id}"
-        self.db.put(time_key.encode(), job_id.encode())
+        # Flush to ensure data is persisted to disk
+        self.db.flush()
 
-        # Status-based index (for filtering)
         status = archive_data.get("status", "UNKNOWN")
-        status_key = f"jobs_by_status:{status}:{job_id}"
-        self.db.put(status_key.encode(), job_id.encode())
-
+        job_id = archive_data.get("job_id", "unknown")
         self.logger.info(f"Archived job {job_id} with status {status}")
 
-    def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve archived job data."""
-        key = f"job:{job_id}"
-        try:
-            data = self.db.get(key.encode())
-            if data:
-                return json.loads(data.decode())
-        except Exception as e:
-            self.logger.warning(f"Failed to get job archive {job_id}: {e}")
+    def get_job_archive(self) -> Optional[Dict[str, Any]]:
+        """Retrieve archived job data from this storage."""
+        key = "job"
+        data = self.db.get(key.encode())
+        if data:
+            return json.loads(data.decode())
         return None
-
-    def list_jobs(
-        self,
-        status: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> List[Dict[str, Any]]:
-        """List archived jobs."""
-        jobs = []
-
-        try:
-            if status:
-                prefix = f"jobs_by_status:{status}:"
-            else:
-                prefix = "job:"
-
-            # Scan with prefix
-            # Note: SlateDB scan API may vary, this is a placeholder
-            # We'll need to check the actual API when slatedb is available
-            results = self._scan_prefix(prefix.encode(), limit=limit + offset)
-
-            # Skip offset and take limit
-            for key, value in results[offset : offset + limit]:
-                if status:
-                    # Index key, need to fetch actual job
-                    job_id = value.decode()
-                    job_data = self.get_job_archive(job_id)
-                    if job_data:
-                        jobs.append(job_data)
-                else:
-                    # Direct job data
-                    jobs.append(json.loads(value.decode()))
-
-        except Exception as e:
-            self.logger.warning(f"Failed to list jobs: {e}")
-
-        return jobs
 
     def _scan_prefix(self, prefix: bytes, limit: int = 1000) -> List[tuple]:
         """Scan keys with prefix using SlateDB scan API.
@@ -149,239 +104,254 @@ class SlateDBStorage(StorageBackend):
             List of (key, value) tuples
         """
         results = []
-        try:
-            # SlateDB.scan returns iterator of (key, value) tuples
-            for key, value in self.db.scan(prefix):
-                results.append((key, value))
-                if len(results) >= limit:
-                    break
-            return results
-        except Exception as e:
-            self.logger.warning(f"Failed to scan prefix {prefix}: {e}")
-            return []
+        for key, value in self.db.scan(prefix):
+            results.append((key, value))
+            if len(results) >= limit:
+                break
+        return results
 
     # === Metrics Snapshots ===
 
     def store_metrics_snapshot(
         self,
-        job_id: str,
         stage_id: str,
         timestamp: float,
         metrics: Dict[str, Any],
     ) -> None:
         """Store a metrics snapshot."""
-        key = f"metrics:{job_id}:{stage_id}:{int(timestamp)}"
+        key = f"metrics:{stage_id}:{int(timestamp)}"
         self.db.put(key.encode(), json.dumps(metrics).encode())
-        self.logger.debug(f"Stored metrics snapshot for {job_id}/{stage_id}")
+        self.logger.debug(f"Stored metrics snapshot for {stage_id}")
 
     def get_metrics_history(
         self,
-        job_id: str,
         stage_id: str,
         start_time: float,
         end_time: float,
     ) -> List[Dict[str, Any]]:
-        """Query metrics history."""
-        prefix = f"metrics:{job_id}:{stage_id}:"
+        """Query metrics history for a stage."""
+        prefix = f"metrics:{stage_id}:"
+        results = self._scan_prefix(prefix.encode())
 
-        try:
-            results = self._scan_prefix(prefix.encode())
+        # Filter by time range and parse
+        metrics_list = []
+        for key, value in results:
+            # Extract timestamp from key: metrics:{stage_id}:{timestamp}
+            parts = key.decode().split(":")
+            if len(parts) >= 3:
+                ts = float(parts[2])
+                if start_time <= ts <= end_time:
+                    metrics_list.append(json.loads(value.decode()))
 
-            # Filter by time range and parse
-            metrics_list = []
-            for key, value in results:
-                # Extract timestamp from key
-                parts = key.decode().split(":")
-                if len(parts) >= 4:
-                    ts = float(parts[3])
-                    if start_time <= ts <= end_time:
-                        metrics_list.append(json.loads(value.decode()))
-
-            return sorted(metrics_list, key=lambda x: x.get("timestamp", 0))
-        except Exception as e:
-            self.logger.warning(f"Failed to get metrics history: {e}")
-            return []
+        return sorted(metrics_list, key=lambda x: x.get("timestamp", 0))
 
     # === Exceptions ===
 
     def store_exception(
         self,
-        job_id: str,
         exception_id: str,
         exception_data: Dict[str, Any],
     ) -> None:
         """Store exception data."""
-        key = f"exception:{job_id}:{exception_id}"
+        key = f"exception:{exception_id}"
         self.db.put(key.encode(), json.dumps(exception_data).encode())
-        self.logger.debug(f"Stored exception {exception_id} for job {job_id}")
+        self.logger.debug(f"Stored exception {exception_id}")
 
     def list_exceptions(
         self,
-        job_id: str,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List exceptions for a job."""
-        prefix = f"exception:{job_id}:"
-
-        try:
-            results = self._scan_prefix(prefix.encode(), limit=limit + offset)
-            # Apply offset
-            results = results[offset : offset + limit]
-            return [json.loads(value.decode()) for _, value in results]
-        except Exception as e:
-            self.logger.warning(f"Failed to list exceptions: {e}")
-            return []
+        """List exceptions in this storage."""
+        prefix = b"exception:"
+        results = self._scan_prefix(prefix, limit=limit + offset)
+        # Apply offset
+        results = results[offset : offset + limit]
+        return [json.loads(value.decode()) for _, value in results]
 
     # === Split Lineage ===
 
     def store_split_lineage(
         self,
-        job_id: str,
         split_id: str,
         lineage_data: Dict[str, Any],
     ) -> None:
         """Store split lineage data."""
-        key = f"lineage:{job_id}:{split_id}"
+        key = f"lineage:{split_id}"
         self.db.put(key.encode(), json.dumps(lineage_data).encode())
         self.logger.debug(f"Stored lineage for split {split_id}")
 
-    def get_split_lineage(
-        self,
-        job_id: str,
-        split_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    def get_split_lineage(self, split_id: str) -> Optional[Dict[str, Any]]:
         """Get split lineage data."""
-        key = f"lineage:{job_id}:{split_id}"
-
-        try:
-            data = self.db.get(key.encode())
-            if data:
-                return json.loads(data.decode())
-        except Exception as e:
-            self.logger.warning(f"Failed to get split lineage: {e}")
+        key = f"lineage:{split_id}"
+        data = self.db.get(key.encode())
+        if data:
+            return json.loads(data.decode())
         return None
 
-    def get_lineage_graph(self, job_id: str) -> Dict[str, Any]:
-        """Get complete lineage graph for a job.
+    def get_lineage_graph(self) -> Dict[str, Any]:
+        """Get complete lineage graph.
 
         Returns:
             Graph data with nodes and edges
         """
-        prefix = f"lineage:{job_id}:"
+        prefix = b"lineage:"
+        results = self._scan_prefix(prefix)
 
-        try:
-            results = self._scan_prefix(prefix.encode())
+        nodes = []
+        edges = []
 
-            nodes = []
-            edges = []
+        for _, value in results:
+            lineage = json.loads(value.decode())
+            split_id = lineage["split_id"]
 
-            for _, value in results:
-                lineage = json.loads(value.decode())
-                split_id = lineage["split_id"]
+            # Add node
+            nodes.append(
+                {
+                    "id": split_id,
+                    "split_id": split_id,
+                    "worker_id": lineage.get("worker_id"),
+                    "timestamp": lineage.get("timestamp"),
+                }
+            )
 
-                # Add node
-                nodes.append(
+            # Add edges from parents
+            for parent_id in lineage.get("parent_ids", []):
+                edges.append(
                     {
-                        "id": split_id,
-                        "split_id": split_id,
-                        "worker_id": lineage.get("worker_id"),
-                        "timestamp": lineage.get("timestamp"),
+                        "source": parent_id,
+                        "target": split_id,
                     }
                 )
 
-                # Add edges from parents
-                for parent_id in lineage.get("parent_ids", []):
-                    edges.append(
-                        {
-                            "source": parent_id,
-                            "target": split_id,
-                        }
-                    )
+        return {
+            "nodes": nodes,
+            "edges": edges,
+        }
 
-            return {
-                "nodes": nodes,
-                "edges": edges,
-            }
-        except Exception as e:
-            self.logger.warning(f"Failed to get lineage graph: {e}")
-            return {"nodes": [], "edges": []}
+    # === Worker History ===
+
+    def store_worker_history(
+        self,
+        worker_id: str,
+        worker_data: Dict[str, Any],
+    ) -> None:
+        """Store worker history snapshot.
+
+        Args:
+            worker_id: Worker identifier
+            worker_data: Worker data including:
+                - stage_id: Stage the worker belongs to
+                - status: RUNNING, COMPLETED, FAILED
+                - start_time: When worker started
+                - end_time: When worker finished (if completed)
+                - input_records: Total input records processed
+                - output_records: Total output records produced
+                - processed_splits: List of split IDs processed
+                - actor_id, node_id, pid: Ray actor info
+        """
+        key = f"worker:{worker_id}"
+        self.db.put(key.encode(), json.dumps(worker_data).encode())
+        self.logger.debug(f"Stored worker history for {worker_id}")
+
+    def get_worker_history(self, worker_id: str) -> Optional[Dict[str, Any]]:
+        """Get worker history."""
+        key = f"worker:{worker_id}"
+        data = self.db.get(key.encode())
+        if data:
+            return json.loads(data.decode())
+        return None
+
+    def list_workers(
+        self,
+        stage_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List all workers with optional filtering."""
+        prefix = b"worker:"
+        results = self._scan_prefix(prefix, limit=1000)  # Get all workers
+        workers = [json.loads(value.decode()) for _, value in results]
+
+        # Filter by stage_id if specified
+        if stage_id:
+            workers = [w for w in workers if w.get("stage_id") == stage_id]
+
+        # Filter by status if specified
+        if status:
+            workers = [w for w in workers if w.get("status") == status]
+
+        # Sort by start_time descending (newest first)
+        sorted_workers = sorted(
+            workers, key=lambda x: x.get("start_time", 0), reverse=True
+        )
+
+        return sorted_workers[offset : offset + limit]
 
     # === Worker Events ===
 
     def store_worker_event(
         self,
-        job_id: str,
         worker_id: str,
         timestamp: float,
         event_data: Dict[str, Any],
     ) -> None:
         """Store worker lifecycle event."""
-        key = f"worker_event:{job_id}:{worker_id}:{int(timestamp * 1000)}"
+        key = f"worker_event:{worker_id}:{int(timestamp * 1000)}"
         self.db.put(key.encode(), json.dumps(event_data).encode())
         self.logger.debug(f"Stored worker event for {worker_id}")
 
     def list_worker_events(
         self,
-        job_id: str,
         worker_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """List worker events."""
         if worker_id:
-            prefix = f"worker_event:{job_id}:{worker_id}:"
+            prefix = f"worker_event:{worker_id}:"
         else:
-            prefix = f"worker_event:{job_id}:"
+            prefix = "worker_event:"
 
-        try:
-            results = self._scan_prefix(prefix.encode(), limit=limit + offset)
-            events = [json.loads(value.decode()) for _, value in results]
-            # Sort by timestamp descending (newest first)
-            sorted_events = sorted(events, key=lambda x: x.get("timestamp", 0), reverse=True)
-            # Apply offset and limit
-            return sorted_events[offset : offset + limit]
-        except Exception as e:
-            self.logger.warning(f"Failed to list worker events: {e}")
-            return []
+        results = self._scan_prefix(prefix.encode(), limit=limit + offset)
+        events = [json.loads(value.decode()) for _, value in results]
+        # Sort by timestamp descending (newest first)
+        sorted_events = sorted(events, key=lambda x: x.get("timestamp", 0), reverse=True)
+        # Apply offset and limit
+        return sorted_events[offset : offset + limit]
 
     # === Ray Events ===
 
     def store_ray_event(
         self,
-        job_id: str,
         event_id: str,
         event_data: Dict[str, Any],
     ) -> None:
         """Store Ray event."""
-        key = f"ray_event:{job_id}:{event_id}"
+        key = f"ray_event:{event_id}"
         self.db.put(key.encode(), json.dumps(event_data).encode())
 
     def list_ray_events(
         self,
-        job_id: str,
         event_types: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """List Ray events."""
-        prefix = f"ray_event:{job_id}:"
+        prefix = b"ray_event:"
 
-        try:
-            # Fetch more to account for filtering and offset
-            fetch_limit = (limit + offset) * 2 if event_types else (limit + offset)
-            results = self._scan_prefix(prefix.encode(), limit=fetch_limit)
-            events = [json.loads(value.decode()) for _, value in results]
+        # Fetch more to account for filtering and offset
+        fetch_limit = (limit + offset) * 2 if event_types else (limit + offset)
+        results = self._scan_prefix(prefix, limit=fetch_limit)
+        events = [json.loads(value.decode()) for _, value in results]
 
-            # Filter by event types if specified
-            if event_types:
-                events = [e for e in events if e.get("event_type") in event_types]
+        # Filter by event types if specified
+        if event_types:
+            events = [e for e in events if e.get("event_type") in event_types]
 
-            # Sort by timestamp descending (newest first)
-            sorted_events = sorted(events, key=lambda x: x.get("timestamp", 0), reverse=True)
+        # Sort by timestamp descending (newest first)
+        sorted_events = sorted(events, key=lambda x: x.get("timestamp", 0), reverse=True)
 
-            # Apply offset and limit
-            return sorted_events[offset : offset + limit]
-        except Exception as e:
-            self.logger.warning(f"Failed to list ray events: {e}")
-            return []
+        # Apply offset and limit
+        return sorted_events[offset : offset + limit]

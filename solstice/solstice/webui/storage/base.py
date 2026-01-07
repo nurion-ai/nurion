@@ -12,37 +12,85 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Storage backend protocol for WebUI data."""
+"""Storage backend protocols for WebUI data.
+
+Two separate protocols for different use cases:
+- JobStorageWriter: Per-job writing (path already contains job_id)
+- JobStorageReader: Cross-job reading (needs job_id to locate data)
+"""
 
 from typing import Any, Dict, List, Optional, Protocol
 
 
-class StorageBackend(Protocol):
-    """Protocol for storage backends.
+class JobStorageWriter(Protocol):
+    """Protocol for per-job storage writing.
 
-    All storage implementations must provide methods for storing
-    and retrieving job metadata, metrics, events, and lineage data.
+    Used by JobStorage to write data for a single job.
+    Since the storage path already contains job_id ({base_path}/{job_id}/{attempt_id}/),
+    methods don't need job_id parameter.
     """
 
-    def store_job_archive(self, job_id: str, archive_data: Dict[str, Any]) -> None:
-        """Store archived job data.
-
-        Args:
-            job_id: The job identifier
-            archive_data: Complete job archive data
-        """
+    def store_job_archive(self, archive_data: Dict[str, Any]) -> None:
+        """Store archived job data."""
         ...
 
-    def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve archived job data.
-
-        Args:
-            job_id: The job identifier
-
-        Returns:
-            Job archive data or None if not found
-        """
+    def store_metrics_snapshot(
+        self,
+        stage_id: str,
+        timestamp: float,
+        metrics: Dict[str, Any],
+    ) -> None:
+        """Store a metrics snapshot."""
         ...
+
+    def store_exception(
+        self,
+        exception_id: str,
+        exception_data: Dict[str, Any],
+    ) -> None:
+        """Store exception data."""
+        ...
+
+    def store_split_lineage(
+        self,
+        split_id: str,
+        lineage_data: Dict[str, Any],
+    ) -> None:
+        """Store split lineage data."""
+        ...
+
+    def store_worker_history(
+        self,
+        worker_id: str,
+        worker_data: Dict[str, Any],
+    ) -> None:
+        """Store worker history snapshot."""
+        ...
+
+    def store_worker_event(
+        self,
+        worker_id: str,
+        timestamp: float,
+        event_data: Dict[str, Any],
+    ) -> None:
+        """Store worker lifecycle event."""
+        ...
+
+    def store_ray_event(
+        self,
+        event_id: str,
+        event_data: Dict[str, Any],
+    ) -> None:
+        """Store Ray event."""
+        ...
+
+
+class JobStorageReader(Protocol):
+    """Protocol for cross-job storage reading.
+
+    Used by PortalStorage to read data across multiple jobs.
+    Methods need job_id to locate the correct job's storage.
+    """
 
     def list_jobs(
         self,
@@ -50,33 +98,11 @@ class StorageBackend(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List archived jobs.
-
-        Args:
-            status: Filter by status (COMPLETED, FAILED, etc.)
-            limit: Maximum number of jobs to return
-            offset: Number of jobs to skip
-
-        Returns:
-            List of job metadata
-        """
+        """List archived jobs."""
         ...
 
-    def store_metrics_snapshot(
-        self,
-        job_id: str,
-        stage_id: str,
-        timestamp: float,
-        metrics: Dict[str, Any],
-    ) -> None:
-        """Store a metrics snapshot.
-
-        Args:
-            job_id: The job identifier
-            stage_id: The stage identifier
-            timestamp: Snapshot timestamp
-            metrics: Metrics data
-        """
+    def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve archived job data."""
         ...
 
     def get_metrics_history(
@@ -86,32 +112,7 @@ class StorageBackend(Protocol):
         start_time: float,
         end_time: float,
     ) -> List[Dict[str, Any]]:
-        """Query metrics history.
-
-        Args:
-            job_id: The job identifier
-            stage_id: The stage identifier
-            start_time: Start timestamp
-            end_time: End timestamp
-
-        Returns:
-            List of metrics snapshots
-        """
-        ...
-
-    def store_exception(
-        self,
-        job_id: str,
-        exception_id: str,
-        exception_data: Dict[str, Any],
-    ) -> None:
-        """Store exception data.
-
-        Args:
-            job_id: The job identifier
-            exception_id: Unique exception identifier
-            exception_data: Exception details
-        """
+        """Query metrics history."""
         ...
 
     def list_exceptions(
@@ -120,31 +121,7 @@ class StorageBackend(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List exceptions for a job.
-
-        Args:
-            job_id: The job identifier
-            limit: Maximum number of exceptions to return
-            offset: Number of exceptions to skip
-
-        Returns:
-            List of exception data
-        """
-        ...
-
-    def store_split_lineage(
-        self,
-        job_id: str,
-        split_id: str,
-        lineage_data: Dict[str, Any],
-    ) -> None:
-        """Store split lineage data.
-
-        Args:
-            job_id: The job identifier
-            split_id: The split identifier
-            lineage_data: Lineage information
-        """
+        """List exceptions for a job."""
         ...
 
     def get_split_lineage(
@@ -152,32 +129,30 @@ class StorageBackend(Protocol):
         job_id: str,
         split_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Get split lineage data.
-
-        Args:
-            job_id: The job identifier
-            split_id: The split identifier
-
-        Returns:
-            Lineage data or None if not found
-        """
+        """Get split lineage data."""
         ...
 
-    def store_worker_event(
+    def get_lineage_graph(self, job_id: str) -> Dict[str, Any]:
+        """Get complete lineage graph for a job."""
+        ...
+
+    def get_worker_history(
         self,
         job_id: str,
         worker_id: str,
-        timestamp: float,
-        event_data: Dict[str, Any],
-    ) -> None:
-        """Store worker lifecycle event.
+    ) -> Optional[Dict[str, Any]]:
+        """Get worker history."""
+        ...
 
-        Args:
-            job_id: The job identifier
-            worker_id: The worker identifier
-            timestamp: Event timestamp
-            event_data: Event details
-        """
+    def list_workers(
+        self,
+        job_id: str,
+        stage_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List all workers for a job."""
         ...
 
     def list_worker_events(
@@ -187,15 +162,5 @@ class StorageBackend(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List worker events.
-
-        Args:
-            job_id: The job identifier
-            worker_id: Optional worker filter
-            limit: Maximum number of events to return
-            offset: Number of events to skip
-
-        Returns:
-            List of worker events
-        """
+        """List worker events."""
         ...

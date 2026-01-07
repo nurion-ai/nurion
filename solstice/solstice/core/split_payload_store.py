@@ -110,10 +110,13 @@ class SplitPayloadStore(ABC):
 
 @ray.remote
 class _RaySplitPayloadStoreActor:
-    """Internal Ray actor that manages ObjectRef mappings.
+    """Internal Ray actor that manages ObjectRef mappings and job metadata.
 
     This actor stores key -> ObjectRef mappings. The actual objects are put
     by callers with _owner=actor to prevent GC when original workers exit.
+
+    Also stores job metadata (DAG edges, start time) for WebUI discovery,
+    eliminating the need for a separate JobRegistry.
     """
 
     def __init__(self):
@@ -124,6 +127,9 @@ class _RaySplitPayloadStoreActor:
         self._total_stored = 0
         self._total_deleted = 0
         self._estimated_bytes = 0
+
+        # Job metadata (for WebUI)
+        self._job_metadata: dict = {}
 
     def register(self, key: str, ref_wrapper: dict) -> str:
         """Register an ObjectRef (wrapped in dict to prevent auto-deref) with a key."""
@@ -164,6 +170,34 @@ class _RaySplitPayloadStoreActor:
             "total_deleted": self._total_deleted,
             "estimated_bytes": self._estimated_bytes,
         }
+
+    # Job metadata methods (for WebUI)
+
+    def set_job_metadata(self, metadata: dict) -> None:
+        """Set job metadata for WebUI discovery.
+
+        Args:
+            metadata: Dict with keys like 'job_id', 'dag_edges', 'start_time', 'stages'
+        """
+        self._job_metadata = metadata
+        self._logger.debug(f"Set job metadata: {list(metadata.keys())}")
+
+    def get_job_metadata(self) -> dict:
+        """Get job metadata.
+
+        Returns:
+            Job metadata dict or empty dict if not set
+        """
+        return self._job_metadata
+
+    def update_job_metadata(self, updates: dict) -> None:
+        """Update specific fields in job metadata.
+
+        Args:
+            updates: Fields to update
+        """
+        self._job_metadata.update(updates)
+        self._logger.debug(f"Updated job metadata: {list(updates.keys())}")
 
 
 class RaySplitPayloadStore(SplitPayloadStore):
@@ -280,3 +314,29 @@ class RaySplitPayloadStore(SplitPayloadStore):
             - estimated_bytes: Estimated storage size (placeholder)
         """
         return ray.get(self._actor.get_metrics.remote())
+
+    # Job metadata methods (for WebUI)
+
+    def set_job_metadata(self, metadata: dict) -> None:
+        """Set job metadata for WebUI discovery.
+
+        Args:
+            metadata: Dict with keys like 'job_id', 'dag_edges', 'start_time', 'stages'
+        """
+        ray.get(self._actor.set_job_metadata.remote(metadata))
+
+    def get_job_metadata(self) -> dict:
+        """Get job metadata.
+
+        Returns:
+            Job metadata dict or empty dict if not set
+        """
+        return ray.get(self._actor.get_job_metadata.remote())
+
+    def update_job_metadata(self, updates: dict) -> None:
+        """Update specific fields in job metadata.
+
+        Args:
+            updates: Fields to update
+        """
+        ray.get(self._actor.update_job_metadata.remote(updates))

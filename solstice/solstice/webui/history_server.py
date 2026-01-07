@@ -17,8 +17,8 @@
 import click
 import uvicorn
 
-from solstice.webui.app import create_app
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.app import create_history_app
+from solstice.webui.storage import PortalStorage
 
 
 @click.command()
@@ -67,20 +67,16 @@ def history_server(storage_path: str, host: str, port: int, reload: bool):
     click.echo("Press Ctrl+C to stop")
     click.echo()
 
-    # Initialize storage
+    # Initialize storage (read-only, scans all job directories)
     try:
-        storage = SlateDBStorage(storage_path)
-        click.echo("✓ Connected to SlateDB storage")
+        storage = PortalStorage(storage_path)
+        click.echo("✓ Connected to storage (read-only)")
     except Exception as e:
         click.echo(f"✗ Failed to initialize storage: {e}", err=True)
         raise click.Abort()
 
-    # Create app in history mode
-    app = create_app(
-        mode="history",
-        storage=storage,
-        job_runner=None,
-    )
+    # Create history server app
+    app = create_history_app(storage)
 
     # Run server
     uvicorn.run(

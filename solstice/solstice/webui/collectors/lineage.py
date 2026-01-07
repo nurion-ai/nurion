@@ -17,7 +17,7 @@
 import time
 from typing import TYPE_CHECKING
 
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorage
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ class LineageTracker:
         tracker.record_split_processed(split, worker_id, processing_time)
     """
 
-    def __init__(self, job_id: str, storage: SlateDBStorage):
+    def __init__(self, job_id: str, storage: JobStorage):
         """Initialize lineage tracker.
 
         Args:
@@ -77,7 +77,6 @@ class LineageTracker:
             }
 
             self.storage.store_split_lineage(
-                self.job_id,
                 split.split_id,
                 lineage_data,
             )

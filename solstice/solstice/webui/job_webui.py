@@ -15,17 +15,13 @@
 """Job WebUI - per-job WebUI instance."""
 
 import asyncio
-import time
 from typing import TYPE_CHECKING
-
-import ray
 
 from solstice.webui.collectors.archiver import JobArchiver
 from solstice.webui.collectors.exceptions import ExceptionAggregator
 from solstice.webui.collectors.lineage import LineageTracker
 from solstice.webui.collectors.metrics import MetricsCollector
-from solstice.webui.registry import JobRegistration, get_or_create_registry
-from solstice.webui.storage import SlateDBStorage
+from solstice.webui.storage import JobStorage
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -36,10 +32,11 @@ class JobWebUI:
     """WebUI instance for a single Solstice job.
 
     This component:
-    1. Registers the job with the global JobRegistry
-    2. Starts data collectors (metrics, events, lineage, exceptions)
-    3. Provides methods for the Portal to query job data
-    4. Archives job data when complete
+    1. Starts data collectors (metrics, lineage, exceptions)
+    2. Archives job data when complete
+
+    Job metadata (dag_edges, start_time) is stored in the payload_store actor
+    by RayJobRunner, eliminating the need for a centralized registry.
 
     Not a Ray Serve deployment - runs as part of RayJobRunner.
     """
@@ -47,7 +44,7 @@ class JobWebUI:
     def __init__(
         self,
         job_runner: "RayJobRunner",
-        storage: SlateDBStorage,
+        storage: JobStorage,
         attempt_id: str,
         prometheus_enabled: bool = True,
     ):
@@ -66,9 +63,6 @@ class JobWebUI:
 
         self.logger = create_ray_logger(f"JobWebUI-{self.job_id}")
 
-        # Registry
-        self.registry = get_or_create_registry()
-
         # Collectors
         self.metrics_collector = MetricsCollector(
             job_runner,
@@ -79,9 +73,6 @@ class JobWebUI:
         self.exception_aggregator = ExceptionAggregator(self.job_id, storage)
         self.archiver = JobArchiver(storage)
 
-        # Note: EventCollector is passive - it receives events via HTTP endpoint
-        # No background task needed
-
         # Background tasks
         self._collector_tasks = []
 
@@ -90,31 +81,10 @@ class JobWebUI:
     async def start(self) -> None:
         """Start the WebUI components.
 
-        - Registers job with global registry
-        - Starts background collector tasks
+        Starts background collector tasks for metrics gathering.
         """
-        # Register with global registry
-        registration = JobRegistration(
-            job_id=self.job_id,
-            job_name=self.job_id,  # TODO: Support custom job names
-            start_time=time.time(),
-            status="INITIALIZING",
-            stage_count=len(self.job_runner.job.stages),
-            worker_count=0,
-            runner_actor_name=f"jobwebui_{self.job_id}",
-            attempt_id=self.attempt_id,
-        )
-
-        ray.get(self.registry.register.remote(self.job_id, registration))
-        self.logger.info(f"Registered job {self.job_id} with global registry")
-
         # Start collectors
         self._collector_tasks.append(asyncio.create_task(self.metrics_collector.run_loop()))
-
-        # EventCollector is passive (receives events via HTTP), no background task
-
-        # Update status to RUNNING
-        ray.get(self.registry.update.remote(self.job_id, {"status": "RUNNING"}))
 
         self.logger.info("Job WebUI started")
 
@@ -123,7 +93,6 @@ class JobWebUI:
 
         - Stops collector tasks
         - Archives job data
-        - Unregisters from registry
         """
         self.logger.info("Stopping Job WebUI")
 
@@ -147,22 +116,3 @@ class JobWebUI:
             self.logger.info("Job archived successfully")
         except Exception:
             self.logger.exception("Failed to archive job")
-
-        # Unregister from registry (best effort)
-        try:
-            ray.get(self.registry.unregister.remote(self.job_id), timeout=5)
-            self.logger.info("Unregistered from global registry")
-        except Exception:
-            self.logger.exception("Failed to unregister from registry")
-
-    def update_worker_count(self, count: int) -> None:
-        """Update worker count in registry (best effort).
-
-        Args:
-            count: New worker count
-        """
-        try:
-            ray.get(self.registry.update.remote(self.job_id, {"worker_count": count}), timeout=1)
-        except Exception:
-            # Non-critical update, silently ignore failures
-            pass

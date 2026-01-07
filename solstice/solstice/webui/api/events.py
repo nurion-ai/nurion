@@ -12,96 +12,195 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Events API - Ray Event Export endpoint and query."""
+"""Events API - Ray cluster events via State API.
+
+This module provides events from Ray State API instead of Event Export.
+Ray State API is available without cluster-level configuration.
+"""
 
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 
-from solstice.webui.collectors.events import EventCollector
-
 router = APIRouter(tags=["events"])
-
-
-def _get_event_collector(request: Request) -> EventCollector:
-    """Get or create EventCollector for the current request.
-
-    EventCollector is stateless for ingestion, so we create ephemeral instances.
-    For running jobs, we could cache the collector in app.state.
-    """
-    # Extract job_id from event (will be passed by caller)
-    # For now, use "global" collector for all events
-    if not hasattr(request.app.state, "event_collector"):
-        request.app.state.event_collector = EventCollector(
-            job_id="global",  # Will be overridden per event
-            storage=request.app.state.storage,
-        )
-    return request.app.state.event_collector
-
-
-@router.post("/events/ingest")
-async def ingest_ray_event(event: Dict[str, Any], request: Request) -> Dict[str, str]:
-    """Ingest Ray Event Export events (CLUSTER-LEVEL endpoint).
-
-    This endpoint receives ALL events from the Ray cluster, for ALL jobs.
-    Ray Event Export is configured once per cluster, not per job.
-
-    **No Conflicts**: Multiple Solstice jobs in the same cluster share this endpoint.
-    Events are tagged with job_id and stored separately in SlateDB.
-
-    Configure Ray cluster (ONCE) to export events:
-        RAY_EVENT_EXPORT_ENABLED=1
-        RAY_EVENT_EXPORT_HTTP_URL=http://<host>:<port>/solstice/api/events/ingest
-
-    Event format: https://docs.ray.io/en/latest/ray-observability/user-guides/ray-event-export.html
-
-    Args:
-        event: Ray event data (JSON)
-            - eventId: Unique event ID
-            - sourceType: GCS, CORE_WORKER
-            - eventType: TASK_DEFINITION_EVENT, ACTOR_LIFECYCLE_EVENT, etc.
-            - timestamp: ISO 8601 timestamp
-            - severity: INFO, WARNING, ERROR
-            - sessionName: Ray session ID
-
-    Returns:
-        Success status
-    """
-    if not request.app.state.storage:
-        return {"status": "error", "message": "Storage not configured"}
-
-    collector = _get_event_collector(request)
-    collector.ingest_event(event)
-
-    return {"status": "ok", "event_id": event.get("eventId")}
 
 
 @router.get("/jobs/{job_id}/events")
 async def list_job_events(
     job_id: str,
     request: Request,
-    event_types: Optional[List[str]] = Query(None),
+    event_type: Optional[str] = Query(None, description="Filter by type: actors, tasks"),
     limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
 ) -> List[Dict[str, Any]]:
-    """List Ray events for a job.
+    """List events for a job using Ray State API.
+
+    This endpoint queries Ray State API to get events related to the job.
+    Available event types:
+    - actors: Actor lifecycle events (created, running, dead)
+    - tasks: Task execution events
 
     Args:
-        job_id: Job identifier
-        event_types: Optional filter by event type
+        job_id: Job identifier (used to filter by actor/task name prefix)
+        event_type: Filter by event type
         limit: Maximum number of events to return
-        offset: Number of events to skip
 
     Returns:
-        List of Ray events
+        List of events with type, timestamp, and details
     """
-    if not request.app.state.storage:
+    import ray
+
+    if not ray.is_initialized():
         return []
 
-    # Use EventCollector for consistent API
-    collector = EventCollector(job_id, request.app.state.storage)
-    return collector.get_events(
-        event_types=event_types,
-        limit=limit,
-        offset=offset,
+    events = []
+
+    try:
+        from ray.util.state import list_actors, list_tasks
+
+        # Get actor events
+        if event_type is None or event_type == "actors":
+            try:
+                actors = list_actors(limit=limit)
+                for actor in actors:
+                    actor_name = actor.get("name", "")
+                    # Filter by job_id in name (workers are named with job_id prefix)
+                    if job_id in actor_name or not job_id:
+                        events.append({
+                            "event_type": "ACTOR",
+                            "name": actor_name,
+                            "actor_id": actor.get("actor_id"),
+                            "state": actor.get("state"),
+                            "node_id": actor.get("node_id"),
+                            "pid": actor.get("pid"),
+                            "timestamp": None,  # Ray State API doesn't provide creation time
+                            "details": {
+                                "class_name": actor.get("class_name"),
+                                "resources": actor.get("required_resources"),
+                            }
+                        })
+            except Exception as e:
+                events.append({
+                    "event_type": "ERROR",
+                    "name": "list_actors",
+                    "details": str(e),
+                })
+
+        # Get task events
+        if event_type is None or event_type == "tasks":
+            try:
+                tasks = list_tasks(limit=limit)
+                for task in tasks:
+                    task_name = task.get("name", "")
+                    func_name = task.get("func_or_class_name", "")
+                    # Filter by job_id
+                    if job_id in task_name or job_id in func_name or not job_id:
+                        events.append({
+                            "event_type": "TASK",
+                            "name": task_name or func_name,
+                            "task_id": task.get("task_id"),
+                            "state": task.get("state"),
+                            "node_id": task.get("node_id"),
+                            "timestamp": None,
+                            "details": {
+                                "func_name": func_name,
+                                "actor_id": task.get("actor_id"),
+                            }
+                        })
+            except Exception as e:
+                events.append({
+                    "event_type": "ERROR",
+                    "name": "list_tasks",
+                    "details": str(e),
+                })
+
+    except ImportError:
+        return [{"event_type": "ERROR", "details": "ray.util.state not available"}]
+
+    return events[:limit]
+
+
+@router.get("/cluster/events")
+async def list_cluster_events(
+    request: Request,
+    limit: int = Query(50, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Get cluster-wide event summary.
+
+    Returns:
+        Summary of actors and tasks across the cluster
+    """
+    import ray
+
+    if not ray.is_initialized():
+        return {"error": "Ray not initialized"}
+
+    try:
+        from ray.util.state import list_actors, list_tasks, list_nodes
+
+        actors = list_actors(limit=limit)
+        tasks = list_tasks(limit=limit)
+
+        # Count by state
+        actor_states = {}
+        for a in actors:
+            state = a.get("state", "UNKNOWN")
+            actor_states[state] = actor_states.get(state, 0) + 1
+
+        task_states = {}
+        for t in tasks:
+            state = t.get("state", "UNKNOWN")
+            task_states[state] = task_states.get(state, 0) + 1
+
+        # Get nodes
+        nodes = []
+        try:
+            node_list = list_nodes()
+            for n in node_list:
+                nodes.append({
+                    "node_id": n.get("node_id"),
+                    "state": n.get("state"),
+                    "node_ip": n.get("node_ip"),
+                    "resources": n.get("resources_total"),
+                })
+        except Exception:
+            pass
+
+        return {
+            "actors": {
+                "total": len(actors),
+                "by_state": actor_states,
+            },
+            "tasks": {
+                "total": len(tasks),
+                "by_state": task_states,
+            },
+            "nodes": nodes,
+        }
+
+    except ImportError:
+        return {"error": "ray.util.state not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# Legacy endpoint for Event Export compatibility
+@router.post("/events/ingest")
+async def ingest_ray_event(event: Dict[str, Any], request: Request) -> Dict[str, str]:
+    """Ingest Ray Event Export events (legacy endpoint).
+
+    This endpoint is kept for backwards compatibility with Ray Event Export.
+    New deployments should use the /jobs/{job_id}/events endpoint instead.
+    """
+    if not request.app.state.storage:
+        return {"status": "error", "message": "Storage not configured"}
+
+    from solstice.webui.collectors.events import EventCollector
+
+    # Create ephemeral collector
+    collector = EventCollector(
+        job_id=event.get("solstice_job_id", "global"),
+        storage=request.app.state.storage,
     )
+    collector.ingest_event(event)
+
+    return {"status": "ok", "event_id": event.get("eventId")}

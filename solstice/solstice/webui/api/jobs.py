@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 import ray
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from solstice.webui.registry import get_or_create_registry
+from solstice.webui.ray_state import get_running_job_info, get_running_jobs_from_ray
 
 router = APIRouter(tags=["jobs"])
 
@@ -45,11 +45,9 @@ async def list_all_jobs(
     running_jobs = []
     completed_jobs = []
 
-    # Get running jobs from registry
-    if ray.is_initialized():
-        registry = get_or_create_registry()
-        jobs_dict = ray.get(registry.list_jobs.remote())
-        running_jobs = [j.to_dict() for j in jobs_dict.values()]
+    # Get running jobs from Ray State API (no registry needed)
+    if ray.is_initialized() and status != "COMPLETED" and status != "FAILED":
+        running_jobs = get_running_jobs_from_ray()
 
         # Filter by status if specified
         if status == "RUNNING":
@@ -83,42 +81,23 @@ async def get_job_detail(job_id: str, request: Request) -> Dict[str, Any]:
     Raises:
         HTTPException: If job not found
     """
-    # Check if it's a running job
+    # Check if it's a running job (query payload_store actor directly)
     if ray.is_initialized():
-        registry = get_or_create_registry()
-        job_info = ray.get(registry.get_job.remote(job_id))
+        job_info = get_running_job_info(job_id)
 
-        if job_info and request.app.state.mode == "embedded":
-            # Get real-time data from runner
-            runner = request.app.state.job_runner
-            if runner and runner.job.job_id == job_id:
-                status = runner.get_status()
-
-                # Build stage info
-                stages = []
-                for stage_id, stage_status in status.stages.items():
-                    stages.append(
-                        {
-                            "stage_id": stage_id,
-                            "worker_count": stage_status["worker_count"],
-                            "output_queue_size": stage_status["output_queue_size"],
-                            "is_running": stage_status["is_running"],
-                            "is_finished": stage_status["is_finished"],
-                            "failed": stage_status["failed"],
-                        }
-                    )
-
-                return {
-                    "job_id": job_id,
-                    "job_name": runner.job.job_id,
-                    "status": "RUNNING" if status.is_running else "COMPLETED",
-                    "start_time": status.start_time or time.time(),
-                    "end_time": None,
-                    "duration_ms": int(status.elapsed_time * 1000),
-                    "stages": stages,
-                    "dag_edges": runner.job.dag_edges,
-                    "error": status.error,
-                }
+        if job_info:
+            return {
+                "job_id": job_id,
+                "status": "RUNNING",
+                "start_time": job_info.get("start_time", time.time()),
+                "end_time": None,
+                "duration_ms": int((time.time() - job_info.get("start_time", time.time())) * 1000),
+                "stages": job_info.get("stages", []),
+                "dag_edges": job_info.get("dag_edges", {}),
+                "stage_count": job_info.get("stage_count", 0),
+                "worker_count": job_info.get("worker_count", 0),
+                "error": None,
+            }
 
     # Check historical data
     if request.app.state.storage:

@@ -209,9 +209,17 @@ For Solstice integration tests, you need:
        def store(self, key: str, value: bytes) -> None: pass
    ```
 
-2. **Exception Handling**: Let exceptions propagate in APIs, use specific handling in background tasks
+2. **Exception Handling**: The lower the layer, the less you should catch exceptions
    ```python
-   # Good: API - let exceptions propagate to FastAPI
+   # Good: Low-level storage - NEVER swallow exceptions
+   class JobStorage:
+       def get(self, key: str) -> bytes:
+           return self.db.get(key)  # Let exceptions propagate
+       
+       def put(self, key: str, value: bytes) -> None:
+           self.db.put(key, value)  # No try/except here
+   
+   # Good: API layer - let exceptions propagate to FastAPI
    @router.get("/data/{id}")
    async def get_data(id: str):
        data = storage.get(id)  # Let exceptions bubble up
@@ -219,7 +227,7 @@ For Solstice integration tests, you need:
            raise HTTPException(status_code=404, detail="Not found")
        return data
    
-   # Good: Background task - log and continue
+   # Good: Background task (top-level loop) - log and continue
    async def background_loop():
        while running:
            try:
@@ -228,12 +236,16 @@ For Solstice integration tests, you need:
                logger.exception("Failed to collect metrics")
            await asyncio.sleep(1)
    
-   # Avoid: Empty except that swallows errors
-   try:
-       data = storage.get(id)
-   except Exception:
-       pass  # Bad: Silent failure
+   # Avoid: Swallowing exceptions in low-level code
+   class BadStorage:
+       def get(self, key: str) -> Optional[bytes]:
+           try:
+               return self.db.get(key)
+           except Exception:
+               return None  # Bad: Caller can't tell error from missing key
    ```
+   
+   **Rule of thumb**: Only catch exceptions at the boundary where you can meaningfully handle them (e.g., top-level loops, HTTP handlers). Low-level code should let errors propagate.
 
 3. **Dataclasses over Plain Dicts**: Use `@dataclass` for structured data
 4. **Type Hints**: Always include type annotations for better IDE support

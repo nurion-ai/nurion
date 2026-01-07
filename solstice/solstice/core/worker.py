@@ -191,6 +191,26 @@ class StageWorker:
             output_records=self.total_output_records,
         )
 
+    def get_status(self) -> dict:
+        """Return current worker status for WebUI.
+
+        Returns:
+            Dictionary with worker status information:
+            - running: Whether the worker is currently processing
+            - processed_count: Total number of splits processed
+            - assigned_partitions: List of assigned partition IDs
+            - input_records: Total input records processed
+            - output_records: Total output records produced
+        """
+        return {
+            "running": True,  # If this method is callable, worker is alive
+            "processed_count": self.total_input_records,  # Using input records as proxy
+            "assigned_partitions": [],  # Could be extended to track partitions
+            "input_records": self.total_input_records,
+            "output_records": self.total_output_records,
+            "processing_time": self.total_processing_time,
+        }
+
     def health_check(self) -> bool:
         """Ray health check hook."""
         return True

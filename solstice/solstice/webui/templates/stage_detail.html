@@ -3,7 +3,11 @@
 {% block title %}Stage {{ stage.stage_id }}{% endblock %}
 
 {% block content %}
-<article class="compact">
+<article class="compact" 
+         hx-get="/solstice/jobs/{{ job_id }}/stages/{{ stage.stage_id }}" 
+         hx-trigger="every 3s"
+         hx-swap="outerHTML"
+         hx-select="article.compact">
     <header>
         <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
             <ul style="padding: 0; margin: 0;">
@@ -12,18 +16,24 @@
                 <li>{{ stage.stage_id }}</li>
             </ul>
         </nav>
-        <h1 style="margin-top: 0.25rem;">Stage: {{ stage.stage_id }}</h1>
-        <span class="badge badge-{{ 'running' if stage.is_running else 'completed' if stage.is_finished else 'pending' }}">
-            {{ 'RUNNING' if stage.is_running else 'FINISHED' if stage.is_finished else 'PENDING' }}
-        </span>
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+            <h1 style="margin: 0;">Stage: {{ stage.stage_id }}</h1>
+            <span class="badge badge-{{ 'running' if stage.is_running else 'completed' if stage.is_finished else 'pending' }}">
+                {{ 'RUNNING' if stage.is_running else 'COMPLETED' if stage.is_finished else 'PENDING' }}
+            </span>
+            {% if stage.backpressure_active %}
+            <span class="badge" style="background: var(--pico-warning);">BACKPRESSURE</span>
+            {% endif %}
+        </div>
     </header>
     
-    <!-- Metrics -->
+    <!-- Metrics Overview -->
     <section>
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-value">{{ stage.worker_count|default(0) }}</div>
                 <div class="metric-label">Workers</div>
+                <div class="metric-sublabel">{{ stage.min_parallelism|default('?') }}-{{ stage.max_parallelism|default('?') }}</div>
             </div>
             <div class="metric-card">
                 <div class="metric-value">{{ stage.output_queue_size|default(0)|format_number }}</div>
@@ -40,9 +50,206 @@
         </div>
     </section>
     
+    <!-- Stage Configuration -->
+    <section>
+        <details>
+            <summary>Configuration</summary>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; font-size: 0.85rem;">
+                <strong>Operator:</strong> <code>{{ stage.operator_type|default('Unknown') }}</code>
+                <strong>Parallelism:</strong> <span>{{ stage.min_parallelism|default('?') }} - {{ stage.max_parallelism|default('?') }}</span>
+                {% if stage.num_cpus %}
+                <strong>CPUs:</strong> <span>{{ stage.num_cpus }}</span>
+                {% endif %}
+                {% if stage.num_gpus %}
+                <strong>GPUs:</strong> <span>{{ stage.num_gpus }}</span>
+                {% endif %}
+                {% if stage.memory_mb %}
+                <strong>Memory:</strong> <span>{{ stage.memory_mb }} MB</span>
+                {% endif %}
+            </div>
+        </details>
+    </section>
+    
+    <!-- Workers Table -->
+    <section>
+        <h2>Workers ({{ workers|default([])|length }})</h2>
+        {% if workers %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 30%;">Worker ID</th>
+                        <th style="width: 12%;">Status</th>
+                        <th style="width: 15%;">Processed</th>
+                        <th style="width: 15%;">Partitions</th>
+                        <th style="width: 18%;">Links</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for worker in workers %}
+                    <tr>
+                        <td class="monospace" style="font-size: 0.75rem;">
+                            <a href="/solstice/jobs/{{ job_id }}/workers/{{ worker.worker_id }}">
+                                {{ worker.worker_id[:16] }}...
+                            </a>
+                        </td>
+                        <td>
+                            <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
+                        </td>
+                        <td class="number">{{ worker.processed_count|default(0)|format_number }}</td>
+                        <td class="number">{{ worker.assigned_partitions|default([])|length }}</td>
+                        <td>
+                            {% if worker.actor_id %}
+                            <a href="http://localhost:8265/#/actors/{{ worker.actor_id }}" target="_blank" class="small">Ray Actor ↗</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p><em>No workers currently running</em></p>
+        {% endif %}
+    </section>
+    
+    <!-- Partition Metrics -->
+    {% if partition_metrics %}
+    <section>
+        <details>
+            <summary>Partition Metrics ({{ partition_metrics|length }})</summary>
+            <div class="table-container" style="max-height: 300px; overflow-y: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Partition</th>
+                            <th>Offset</th>
+                            <th>Lag</th>
+                            <th>Assigned Worker</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pm in partition_metrics %}
+                        <tr>
+                            <td>{{ pm.partition_id }}</td>
+                            <td class="number">{{ pm.offset|default(0)|format_number }}</td>
+                            <td class="number">{{ pm.lag|default(0)|format_number }}</td>
+                            <td class="monospace" style="font-size: 0.75rem;">{{ (pm.assigned_worker|default('-'))[:12] }}{% if pm.assigned_worker and pm.assigned_worker|length > 12 %}...{% endif %}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </section>
+    {% endif %}
+    
+    <!-- Queue History Chart -->
+    <section>
+        <h3>Queue Size History</h3>
+        <div style="height: 200px; position: relative;">
+            <canvas id="queueChart"></canvas>
+        </div>
+    </section>
+    
     <!-- Back link -->
     <section>
         <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
     </section>
 </article>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+    // Queue history data (will be updated via API)
+    let queueData = {
+        labels: [],
+        datasets: [{
+            label: 'Queue Size',
+            data: [],
+            borderColor: 'rgb(75, 192, 192)',
+            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+            fill: true,
+            tension: 0.3
+        }]
+    };
+    
+    // Initialize chart
+    const ctx = document.getElementById('queueChart');
+    if (ctx) {
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: queueData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: { 
+                        display: true,
+                        title: { display: false }
+                    },
+                    y: { 
+                        beginAtZero: true,
+                        title: { display: true, text: 'Records' }
+                    }
+                },
+                animation: { duration: 0 }
+            }
+        });
+        
+        // Fetch metrics history
+        async function fetchMetricsHistory() {
+            try {
+                const endTime = Date.now() / 1000;
+                const startTime = endTime - 300; // Last 5 minutes
+                const response = await fetch(`/solstice/api/jobs/{{ job_id }}/stages/{{ stage.stage_id }}/metrics?start_time=${startTime}&end_time=${endTime}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && data.length > 0) {
+                        queueData.labels = data.map(d => {
+                            const date = new Date(d.timestamp * 1000);
+                            return date.toLocaleTimeString();
+                        });
+                        queueData.datasets[0].data = data.map(d => d.output_queue_size || 0);
+                        chart.update();
+                    }
+                }
+            } catch (e) {
+                console.log('Failed to fetch metrics:', e);
+            }
+        }
+        
+        // Also add current value to chart on each poll
+        let currentQueueSize = {{ stage.output_queue_size|default(0) }};
+        
+        // Poll for updates
+        setInterval(() => {
+            const now = new Date().toLocaleTimeString();
+            if (queueData.labels.length > 60) {
+                queueData.labels.shift();
+                queueData.datasets[0].data.shift();
+            }
+            queueData.labels.push(now);
+            queueData.datasets[0].data.push(currentQueueSize);
+            chart.update();
+        }, 3000);
+        
+        // Initial fetch
+        fetchMetricsHistory();
+        
+        // Update current value when HTMX refreshes
+        document.body.addEventListener('htmx:afterSwap', function(e) {
+            const metricCard = document.querySelector('.metric-value');
+            if (metricCard) {
+                const text = metricCard.textContent.replace(/[^\d]/g, '');
+                currentQueueSize = parseInt(text) || 0;
+            }
+        });
+    }
+})();
+</script>
 {% endblock %}

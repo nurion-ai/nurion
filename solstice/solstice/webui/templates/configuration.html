@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Configuration - {{ job_id }}{% endblock %}
+
+{% block content %}
+<article class="compact">
+    <header>
+        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
+            <ul style="padding: 0; margin: 0;">
+                <li><a href="/solstice/">Jobs</a></li>
+                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+                <li>Configuration</li>
+            </ul>
+        </nav>
+        <h1 style="margin-top: 0.25rem;">Job Configuration</h1>
+    </header>
+    
+    <!-- Job Config -->
+    <section>
+        <h2>Job Settings</h2>
+        <div class="table-container">
+            <table>
+                <tbody>
+                    {% if config.job_config %}
+                    {% for key, value in config.job_config.items() %}
+                    <tr>
+                        <td style="width: 30%;"><strong>{{ key }}</strong></td>
+                        <td><code>{{ value }}</code></td>
+                    </tr>
+                    {% endfor %}
+                    {% else %}
+                    <tr><td colspan="2"><em>No job configuration available</em></td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    
+    <!-- Stage Configs -->
+    <section>
+        <h2>Stage Configurations</h2>
+        {% if config.stage_configs %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Stage</th>
+                        <th>Operator</th>
+                        <th>Parallelism</th>
+                        <th>CPUs</th>
+                        <th>GPUs</th>
+                        <th>Memory</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stage_id, stage_config in config.stage_configs.items() %}
+                    <tr>
+                        <td><a href="/solstice/jobs/{{ job_id }}/stages/{{ stage_id }}">{{ stage_id }}</a></td>
+                        <td><code>{{ stage_config.operator_type|default('N/A') }}</code></td>
+                        <td>{{ stage_config.min_parallelism|default('?') }} - {{ stage_config.max_parallelism|default('?') }}</td>
+                        <td>{{ stage_config.num_cpus|default(1) }}</td>
+                        <td>{{ stage_config.num_gpus|default(0) }}</td>
+                        <td>{{ stage_config.memory_mb|default(0) }} MB</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p><em>No stage configurations available</em></p>
+        {% endif %}
+    </section>
+    
+    <!-- Ray Cluster Resources -->
+    {% if config.ray_config %}
+    <section>
+        <h2>Ray Cluster Resources</h2>
+        <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div>
+                <h4>Total Resources</h4>
+                <div class="table-container">
+                    <table>
+                        <tbody>
+                            {% for key, value in config.ray_config.get('cluster_resources', {}).items() %}
+                            <tr>
+                                <td><strong>{{ key }}</strong></td>
+                                <td>{{ value|round(2) if value is number else value }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div>
+                <h4>Available Resources</h4>
+                <div class="table-container">
+                    <table>
+                        <tbody>
+                            {% for key, value in config.ray_config.get('available_resources', {}).items() %}
+                            <tr>
+                                <td><strong>{{ key }}</strong></td>
+                                <td>{{ value|round(2) if value is number else value }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+    {% endif %}
+    
+    <!-- Environment Variables -->
+    <section>
+        <h2>Environment Variables</h2>
+        <div class="table-container">
+            <table>
+                <tbody>
+                    {% if config.environment %}
+                    {% for key, value in config.environment.items() %}
+                    <tr>
+                        <td style="width: 40%;"><strong>{{ key }}</strong></td>
+                        <td><code>{{ value if value else '(not set)' }}</code></td>
+                    </tr>
+                    {% endfor %}
+                    {% else %}
+                    <tr><td colspan="2"><em>No environment variables configured</em></td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    
+    <!-- Back link -->
+    <section>
+        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
+    </section>
+</article>
+{% endblock %}
+

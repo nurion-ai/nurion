@@ -12,9 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Storage backends for WebUI data persistence."""
+"""Storage backends for WebUI data persistence.
 
-from solstice.webui.storage.base import StorageBackend
-from solstice.webui.storage.slatedb_storage import SlateDBStorage
+Protocols:
+- JobStorageWriter: Per-job writing (path contains job_id, no job_id in methods)
+- JobStorageReader: Cross-job reading (needs job_id to locate data)
 
-__all__ = ["StorageBackend", "SlateDBStorage"]
+Implementations:
+- JobStorage: Per-job write storage (implements JobStorageWriter)
+- PortalStorage: Read-only storage for Portal (implements JobStorageReader)
+"""
+
+from solstice.webui.storage.base import JobStorageReader, JobStorageWriter
+from solstice.webui.storage.portal_storage import PortalStorage
+from solstice.webui.storage.slatedb_storage import JobStorage
+
+# Backward compatibility alias
+SlateDBStorage = JobStorage
+
+__all__ = [
+    "JobStorageWriter",
+    "JobStorageReader",
+    "PortalStorage",
+    "JobStorage",
+    "SlateDBStorage",
+]

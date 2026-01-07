@@ -207,3 +207,4 @@ class TestPartitionRebalance:
 
         await master.stop()
 
+
