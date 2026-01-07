@@ -40,7 +40,6 @@ class StatePushConfig:
 
     enabled: bool = False
     storage_url: str = "memory://state/"
-    webui_storage_path: Optional[str] = None
 
 
 class StatePushManager:
@@ -97,8 +96,12 @@ class StatePushManager:
         """JobStateManager instance (for WebUI queries)."""
         return self._state_manager
 
-    async def start(self) -> None:
-        """Start state push infrastructure."""
+    async def start(self, storage: Optional[Any] = None) -> None:
+        """Start state push infrastructure.
+
+        Args:
+            storage: Optional JobStorageWriter for persisting state snapshots
+        """
         if not self.config.enabled:
             self.logger.debug("State push disabled")
             return
@@ -111,6 +114,9 @@ class StatePushManager:
             from solstice.core.stage_master import QueueEndpoint
             from solstice.webui.state.producer import StateProducer
             from solstice.webui.state.manager import JobStateManager
+
+            # Store the storage instance passed from caller
+            self._storage = storage
 
             # Create and start broker
             self._broker = TansuBrokerManager(storage_url=self.config.storage_url)
@@ -143,20 +149,13 @@ class StatePushManager:
             await self._producer.start()
 
             # Create state manager (consumer)
-            storage = None
-            if self.config.webui_storage_path:
-                from solstice.webui.storage import JobStorage
-
-                storage = JobStorage(
-                    base_path=self.config.webui_storage_path,
-                    job_id=self.job_id,
-                )
-
+            # Note: storage is passed in from caller (RayJobRunner) to ensure
+            # JobWebUI and JobStateManager use the same storage instance
             self._state_manager = JobStateManager(
                 job_id=self.job_id,
                 queue_client=self._queue,
                 state_topic=self.topic,
-                storage=storage,
+                storage=self._storage,
             )
             await self._state_manager.start()
 

@@ -145,10 +145,13 @@ class SparkSourceV2Master(StageMaster):
             )
 
         # Create stage config for queue setup
+        # upstream_endpoint/topic are None for source stages
         stage_config = StageConfig(
             queue_type=QueueType.TANSU,
             min_workers=0,  # No workers needed - JVM writes directly
             max_workers=0,
+            upstream_endpoint=None,
+            upstream_topic=None,
         )
 
         super().__init__(
@@ -156,8 +159,6 @@ class SparkSourceV2Master(StageMaster):
             stage=stage,
             config=stage_config,
             payload_store=payload_store,
-            upstream_endpoint=None,
-            upstream_topic=None,
         )
 
         self._config = operator_cfg

@@ -70,18 +70,48 @@ class JobArchiver:
             else:
                 status = "COMPLETED"
 
+            # Get previously stored job data to use as fallback for metrics
+            # (workers may have already stopped by the time we archive)
+            stored_job = self.storage.get_job_archive()
+            stored_stages_by_id = {}
+            if stored_job:
+                for s in stored_job.get("stages", []):
+                    stored_stages_by_id[s.get("stage_id")] = s
+
             # Collect stage information
             stages = []
             for stage_id, master in job_runner._masters.items():
                 stage_status = await master.get_status_async()
 
-                # Get final metrics
+                # Get final metrics from workers (may fail if workers stopped)
+                metrics_dict = {}
                 try:
                     stage_metrics = await master.collect_metrics()
                     metrics_dict = stage_metrics.to_dict()
                 except Exception as e:
-                    self.logger.warning(f"Failed to collect final metrics for {stage_id}: {e}")
-                    metrics_dict = {}
+                    self.logger.debug(f"Could not collect metrics from workers for {stage_id}: {e}")
+
+                # Use stored metrics as fallback if worker metrics are empty
+                input_records = metrics_dict.get("input_records", 0)
+                output_records = metrics_dict.get("output_records", 0)
+
+                if input_records == 0 and output_records == 0:
+                    # Try latest metrics snapshot first (most accurate)
+                    latest_metrics = self.storage.get_latest_stage_metrics(stage_id)
+                    if latest_metrics:
+                        input_records = latest_metrics.get("input_records", 0)
+                        output_records = latest_metrics.get("output_records", 0)
+
+                    # If still 0, try from previously stored job data
+                    if input_records == 0 and output_records == 0:
+                        stored_stage = stored_stages_by_id.get(stage_id, {})
+                        input_records = stored_stage.get("input_records", 0)
+                        output_records = stored_stage.get("output_records", 0)
+
+                    if input_records or output_records:
+                        self.logger.debug(
+                            f"Using stored metrics for {stage_id}: in={input_records}, out={output_records}"
+                        )
 
                 stages.append(
                     {
@@ -94,6 +124,10 @@ class JobArchiver:
                         "failed": stage_status.failed,
                         "failure_message": stage_status.failure_message,
                         "final_metrics": metrics_dict,
+                        # Store at top level for template compatibility
+                        "input_records": input_records,
+                        "output_records": output_records,
+                        "worker_count": metrics_dict.get("worker_count", stage_status.worker_count),
                     }
                 )
 

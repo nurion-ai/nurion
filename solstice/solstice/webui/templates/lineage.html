@@ -53,10 +53,10 @@
 {% block content %}
 <article class="compact">
     <header>
-        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
-            <ul style="padding: 0; margin: 0;">
-                <li><a href="/solstice/">Jobs</a></li>
-                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="{{ base_path }}/">Jobs</a></li>
+                <li><a href="{{ base_path }}/jobs/{{ job_id }}/">{{ job_id }}</a></li>
                 <li>Lineage</li>
             </ul>
         </nav>
@@ -107,7 +107,7 @@
     
     <!-- Back link -->
     <section>
-        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
+        <a href="{{ base_path }}/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
     </section>
 </article>
 {% endblock %}
@@ -120,7 +120,7 @@ const jobId = '{{ job_id }}';
 // Fetch stages and render DAG
 async function renderStageDag() {
     try {
-        const response = await fetch(`/solstice/api/jobs/${jobId}/stages`);
+        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/stages`);
         if (!response.ok) return;
         
         const data = await response.json();
@@ -187,7 +187,7 @@ async function renderStageDag() {
         
         // Add click handlers
         svg.selectAll('.dag-node').on('click', function(event, d) {
-            window.location.href = `/solstice/jobs/${jobId}/stages/${d}`;
+            window.location.href = `{{ base_path }}/jobs/${jobId}/stages/${d}`;
         }).style('cursor', 'pointer');
         
     } catch (e) {
@@ -209,7 +209,7 @@ async function searchSplit() {
     container.innerHTML = '<p>Searching...</p>';
     
     try {
-        const response = await fetch(`/solstice/api/jobs/${jobId}/lineage/${splitId}`);
+        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/lineage/${splitId}`);
         if (response.ok) {
             const data = await response.json();
             container.innerHTML = `
@@ -242,7 +242,7 @@ async function searchSplit() {
 // Load lineage stats
 async function loadLineageStats() {
     try {
-        const response = await fetch(`/solstice/api/jobs/${jobId}/lineage`);
+        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/lineage`);
         if (response.ok) {
             const data = await response.json();
             const nodes = data.nodes || [];

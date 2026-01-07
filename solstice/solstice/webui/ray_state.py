@@ -126,12 +126,17 @@ def get_running_job_info(job_id: str) -> Optional[Dict[str, Any]]:
         Job info dict with stages and metrics, or None if not found
     """
     try:
+        from ray.util.state import list_actors
+
+        # Get all ALIVE actors first (works across namespaces)
+        actors = list_actors(filters=[("state", "=", "ALIVE")])
+
         # Check if payload_store actor exists to confirm job is running
         actor_name = f"payload_store_{job_id}"
-        try:
-            ray.get_actor(actor_name)
-        except ValueError:
-            # Job not running
+        payload_store_exists = any(
+            a.class_name == "_RaySplitPayloadStoreActor" and a.name == actor_name for a in actors
+        )
+        if not payload_store_exists:
             return None
 
         now = time.time()
@@ -145,11 +150,6 @@ def get_running_job_info(job_id: str) -> Optional[Dict[str, Any]]:
             "stage_count": 0,
             "worker_count": 0,
         }
-
-        # Get stage and worker info from Ray State API
-        from ray.util.state import list_actors
-
-        actors = list_actors(filters=[("state", "=", "ALIVE")])
         stage_workers: Dict[str, List[str]] = {}  # stage_id -> [actor_names]
 
         for a in actors:

@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css">
     
     <!-- Custom styles - overrides Pico for compact layout -->
-    <link rel="stylesheet" href="/solstice/static/css/solstice.css">
+    <link rel="stylesheet" href="{{ base_path }}/static/css/solstice.css">
     
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
@@ -29,12 +29,17 @@
             <li><strong>☀️ Solstice</strong></li>
         </ul>
         <ul>
-            <li><a href="/solstice/">Overview</a></li>
-            <li><a href="/solstice/running">Running</a></li>
-            <li><a href="/solstice/completed">Completed</a></li>
+            <li><a href="{{ base_path }}/">Overview</a></li>
+            <li><a href="{{ base_path }}/running">Running</a></li>
+            <li><a href="{{ base_path }}/completed">Completed</a></li>
         </ul>
         <ul>
             <li><a href="http://localhost:8265" target="_blank" rel="noopener">Ray ↗</a></li>
+            <li>
+                <button id="auto-refresh-toggle" onclick="toggleAutoRefresh()" class="outline small" title="Toggle auto-refresh">
+                    <span id="auto-refresh-icon">⏸️</span>
+                </button>
+            </li>
             <li>
                 <button id="theme-toggle" onclick="toggleTheme()" class="outline small">
                     <span id="theme-icon">🌙</span>
@@ -54,6 +59,49 @@
     </footer>
     
     <script>
+        // Auto-refresh toggle (default: OFF)
+        window.solsticeAutoRefresh = false;
+        
+        function toggleAutoRefresh() {
+            window.solsticeAutoRefresh = !window.solsticeAutoRefresh;
+            localStorage.setItem('solstice-auto-refresh', window.solsticeAutoRefresh ? 'on' : 'off');
+            updateAutoRefreshUI();
+        }
+        
+        function updateAutoRefreshUI() {
+            const icon = document.getElementById('auto-refresh-icon');
+            const btn = document.getElementById('auto-refresh-toggle');
+            if (window.solsticeAutoRefresh) {
+                icon.textContent = '🔄';
+                btn.title = 'Auto-refresh ON (click to pause)';
+                btn.classList.remove('outline');
+            } else {
+                icon.textContent = '⏸️';
+                btn.title = 'Auto-refresh OFF (click to enable)';
+                btn.classList.add('outline');
+            }
+        }
+        
+        // Initialize auto-refresh state (default: OFF)
+        (function() {
+            const saved = localStorage.getItem('solstice-auto-refresh');
+            window.solsticeAutoRefresh = saved === 'on';  // Only 'on' enables it
+            // Defer UI update until DOM is ready
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', updateAutoRefreshUI);
+            } else {
+                updateAutoRefreshUI();
+            }
+        })();
+        
+        // Polling interval for auto-refresh (3 seconds)
+        setInterval(function() {
+            if (window.solsticeAutoRefresh) {
+                htmx.trigger(document.body, 'solstice-poll');
+            }
+        }, 3000);
+        
+        // Theme toggle
         function toggleTheme() {
             const html = document.documentElement;
             const current = html.getAttribute('data-theme');
@@ -67,7 +115,9 @@
             const saved = localStorage.getItem('solstice-theme');
             if (saved) {
                 document.documentElement.setAttribute('data-theme', saved);
-                document.getElementById('theme-icon').textContent = saved === 'dark' ? '☀️' : '🌙';
+                if (document.getElementById('theme-icon')) {
+                    document.getElementById('theme-icon').textContent = saved === 'dark' ? '☀️' : '🌙';
+                }
             }
         })();
     </script>

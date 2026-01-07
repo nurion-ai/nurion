@@ -387,6 +387,10 @@ class JobStateManager:
                             start_time=msg.timestamp,
                         )
 
+                # Immediate snapshot so Portal can see the job right away
+                await self._snapshot_to_storage()
+                self._last_snapshot_time = now
+
             case StateMessageType.JOB_COMPLETED:
                 self._job_state.status = "COMPLETED"
                 self._job_state.end_time = msg.timestamp
@@ -476,6 +480,9 @@ class JobStateManager:
                     state.status = "RUNNING"
                 state.last_update = now
 
+                # Immediately update stage metrics (aggregate all workers for this stage)
+                self._update_stage_metrics_from_workers(stage_id)
+
                 # Add to time window for aggregation
                 self._add_to_window(msg)
 
@@ -502,6 +509,28 @@ class JobStateManager:
                     state.backpressure_active = msg.payload.get("active", False)
                     state.queue_lag = msg.payload.get("queue_lag", 0)
                     state.last_update = now
+
+    def _update_stage_metrics_from_workers(self, stage_id: str) -> None:
+        """Aggregate worker metrics to update stage metrics immediately."""
+        if stage_id not in self._stage_states:
+            return
+
+        stage_state = self._stage_states[stage_id]
+
+        # Sum metrics from all workers belonging to this stage
+        total_input = 0
+        total_output = 0
+        worker_count = 0
+
+        for worker in self._worker_states.values():
+            if worker.stage_id == stage_id:
+                total_input += worker.input_records
+                total_output += worker.output_records
+                worker_count += 1
+
+        stage_state.input_records = total_input
+        stage_state.output_records = total_output
+        stage_state.worker_count = worker_count
 
     def _get_window_start(self, timestamp: float) -> float:
         """Get the start time of the window containing timestamp."""
@@ -558,12 +587,30 @@ class JobStateManager:
                         state.output_records = metrics["output_records"]
 
     async def _snapshot_to_storage(self) -> None:
-        """Snapshot current state to SlateDB."""
+        """Snapshot current state to SlateDB.
+
+        Stores job state, stage metrics, and worker history.
+        This enables Portal to read all job info from storage.
+        """
         if not self.storage:
             return
 
         try:
             now = time.time()
+
+            # Store job state (enables Portal to list running jobs from storage)
+            job_info = self.get_job_info()
+            job_archive = {
+                "job_id": self.job_id,
+                "status": self._job_state.status,
+                "start_time": self._job_state.start_time,
+                "end_time": self._job_state.end_time,
+                "last_update": now,
+                "config": self._job_state.config,
+                "dag_edges": self._job_state.dag_edges,
+                "stages": job_info.get("stages", []),
+            }
+            self.storage.store_job_archive(job_archive)
 
             # Store metrics snapshot for each stage
             for stage_id, state in self._stage_states.items():

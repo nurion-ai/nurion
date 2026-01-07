@@ -82,11 +82,55 @@ class JobWebUI:
         """Start the WebUI components.
 
         Starts background collector tasks for metrics gathering.
+        Stores initial configuration.
         """
+        # Store configuration at job start
+        self._store_configuration()
+
         # Start collectors
         self._collector_tasks.append(asyncio.create_task(self.metrics_collector.run_loop()))
 
         self.logger.info("Job WebUI started")
+
+    def _store_configuration(self) -> None:
+        """Store job configuration to storage."""
+        import os
+
+        try:
+            job_runner = self.job_runner
+
+            # Build stage configs
+            stage_configs = {}
+            for stage_id, master in job_runner._masters.items():
+                stage_configs[stage_id] = {
+                    "operator_type": type(master.stage.operator_config).__name__,
+                    "min_parallelism": master.config.min_workers,
+                    "max_parallelism": master.config.max_workers,
+                    "num_cpus": master.config.num_cpus,
+                    "num_gpus": master.config.num_gpus,
+                    "memory_mb": master.config.memory_mb,
+                }
+
+            config_data = {
+                "job_config": {
+                    "job_id": job_runner.job.job_id,
+                    "queue_type": job_runner.queue_type.value,
+                    "tansu_storage_url": job_runner.tansu_storage_url,
+                },
+                "stage_configs": stage_configs,
+                "dag_edges": job_runner.job.dag_edges,
+                "environment": {
+                    "SOLSTICE_LOG_LEVEL": os.getenv("SOLSTICE_LOG_LEVEL", "INFO"),
+                    "RAY_PROMETHEUS_HOST": os.getenv("RAY_PROMETHEUS_HOST"),
+                    "SOLSTICE_GRAFANA_URL": os.getenv("SOLSTICE_GRAFANA_URL"),
+                },
+            }
+
+            self.storage.store_configuration(config_data)
+            self.logger.debug("Configuration stored")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to store configuration: {e}")
 
     async def stop(self) -> None:
         """Stop the WebUI components.

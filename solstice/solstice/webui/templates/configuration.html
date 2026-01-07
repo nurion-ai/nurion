@@ -5,10 +5,10 @@
 {% block content %}
 <article class="compact">
     <header>
-        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
-            <ul style="padding: 0; margin: 0;">
-                <li><a href="/solstice/">Jobs</a></li>
-                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="{{ base_path }}/">Jobs</a></li>
+                <li><a href="{{ base_path }}/jobs/{{ job_id }}/">{{ job_id }}</a></li>
                 <li>Configuration</li>
             </ul>
         </nav>
@@ -55,7 +55,7 @@
                 <tbody>
                     {% for stage_id, stage_config in config.stage_configs.items() %}
                     <tr>
-                        <td><a href="/solstice/jobs/{{ job_id }}/stages/{{ stage_id }}">{{ stage_id }}</a></td>
+                        <td><a href="{{ base_path }}/jobs/{{ job_id }}/stages/{{ stage_id }}">{{ stage_id }}</a></td>
                         <td><code>{{ stage_config.operator_type|default('N/A') }}</code></td>
                         <td>{{ stage_config.min_parallelism|default('?') }} - {{ stage_config.max_parallelism|default('?') }}</td>
                         <td>{{ stage_config.num_cpus|default(1) }}</td>
@@ -133,7 +133,7 @@
     
     <!-- Back link -->
     <section>
-        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
+        <a href="{{ base_path }}/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
     </section>
 </article>
 {% endblock %}

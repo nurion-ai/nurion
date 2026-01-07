@@ -4,8 +4,8 @@
 
 {% block content %}
 <article class="compact"
-         hx-get="/solstice/"
-         hx-trigger="every 5s"
+         hx-get="{{ base_path }}/"
+         hx-trigger="solstice-poll from:body"
          hx-swap="outerHTML"
          hx-select="article.compact">
     <header>
@@ -35,7 +35,7 @@
                     {% for job in running_jobs %}
                     <tr>
                         <td class="monospace">
-                            <a href="/solstice/jobs/{{ job.job_id }}/">{{ job.job_id }}</a>
+                            <a href="{{ base_path }}/jobs/{{ job.job_id }}/">{{ job.job_id }}</a>
                         </td>
                         <td class="timestamp">{{ job.start_time|format_datetime }}</td>
                         <td>{{ (job.last_update - job.start_time)|format_duration }}</td>
@@ -45,7 +45,7 @@
                             <span class="badge badge-{{ job.status|lower }}">{{ job.status }}</span>
                         </td>
                         <td>
-                            <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
+                            <a href="{{ base_path }}/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
                         </td>
                     </tr>
                     {% endfor %}
@@ -78,7 +78,7 @@
                     {% for job in completed_jobs %}
                     <tr>
                         <td class="monospace">
-                            <a href="/solstice/jobs/{{ job.job_id }}/">{{ job.job_id }}</a>
+                            <a href="{{ base_path }}/jobs/{{ job.job_id }}/">{{ job.job_id }}</a>
                         </td>
                         <td class="timestamp">{{ job.start_time|format_datetime }}</td>
                         <td>{{ (job.duration_ms / 1000)|format_duration }}</td>
@@ -87,14 +87,14 @@
                         </td>
                         <td class="number">{{ (job.total_output_records or job.total_records or 0)|format_number }}</td>
                         <td>
-                            <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
+                            <a href="{{ base_path }}/jobs/{{ job.job_id }}/" role="button" class="outline small">View</a>
                         </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-        <p><a href="/solstice/completed" style="font-size: 0.8rem;">View all completed jobs →</a></p>
+        <p><a href="{{ base_path }}/completed" style="font-size: 0.8rem;">View all completed jobs →</a></p>
         {% else %}
         <p><em>No completed jobs in history</em></p>
         {% endif %}

@@ -17,7 +17,7 @@
 import click
 import uvicorn
 
-from solstice.webui.app import create_history_app
+from solstice.webui.app import create_webui_app
 from solstice.webui.storage import PortalStorage
 
 
@@ -75,8 +75,8 @@ def history_server(storage_path: str, host: str, port: int, reload: bool):
         click.echo(f"✗ Failed to initialize storage: {e}", err=True)
         raise click.Abort()
 
-    # Create history server app
-    app = create_history_app(storage)
+    # Create history server app (no base_path prefix, runs at root)
+    app = create_webui_app(storage, title="Solstice History Server", base_path="")
 
     # Run server
     uvicorn.run(

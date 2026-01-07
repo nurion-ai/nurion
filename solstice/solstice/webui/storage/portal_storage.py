@@ -189,6 +189,11 @@ class PortalStorage:
             return self._get_job_archive_s3(job_id)
         return self._get_job_archive_local(job_id)
 
+    # Alias for API compatibility
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Alias for get_job_archive for API compatibility."""
+        return self.get_job_archive(job_id)
+
     def _get_job_archive_local(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job archive from local filesystem."""
         job_dir = Path(self.base_path) / job_id
@@ -230,6 +235,73 @@ class PortalStorage:
             return None
 
         return latest_attempt
+
+    def get_configuration(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get job configuration from storage.
+
+        Tries to read from dedicated 'config' key first (written by JobWebUI),
+        then falls back to extracting from 'job' archive data.
+
+        Args:
+            job_id: The job identifier
+
+        Returns:
+            Configuration data with job_config, stage_configs, environment
+        """
+        if self._is_s3:
+            return None
+
+        latest_attempt = self._get_latest_attempt_path(job_id)
+        if not latest_attempt:
+            return None
+
+        db = _open_slatedb_reader(str(latest_attempt))
+
+        # Try dedicated config key first
+        config_data = db.get(b"config")
+        if config_data:
+            db.close()
+            return json.loads(config_data.decode())
+
+        # Fallback: extract from job archive
+        job_data = db.get(b"job")
+        db.close()
+
+        if not job_data:
+            return None
+
+        job_archive = json.loads(job_data.decode())
+        return self._extract_config_from_archive(job_archive)
+
+    def _extract_config_from_archive(self, job_archive: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract configuration from job archive data.
+
+        Args:
+            job_archive: Job archive dictionary from SlateDB
+
+        Returns:
+            Configuration in standard format
+        """
+        result: Dict[str, Any] = {
+            "job_config": job_archive.get("config", {}),
+            "stage_configs": {},
+            "environment": {},
+        }
+
+        # Build stage configs from archived stages
+        for stage in job_archive.get("stages", []):
+            stage_id = stage.get("stage_id", "")
+            if stage_id:
+                result["stage_configs"][stage_id] = {
+                    "operator_type": stage.get("operator_type", "N/A"),
+                    "min_parallelism": stage.get("min_parallelism", 1),
+                    "max_parallelism": stage.get("max_parallelism", 1),
+                    "num_cpus": stage.get("num_cpus", 0),
+                    "num_gpus": stage.get("num_gpus", 0),
+                    "memory_mb": stage.get("memory_mb", 0),
+                }
+
+        return result
 
     def list_exceptions(
         self,
@@ -314,9 +386,13 @@ class PortalStorage:
             # Extract timestamp from key: metrics:{stage_id}:{timestamp}
             parts = key.decode().split(":")
             if len(parts) >= 3:
-                ts = float(parts[2])
-                if start_time <= ts <= end_time:
-                    results.append(json.loads(value.decode()))
+                key_ts = float(parts[2])
+                if start_time <= key_ts <= end_time:
+                    data = json.loads(value.decode())
+                    # Ensure timestamp is present (use key timestamp as fallback)
+                    if data.get("timestamp") is None:
+                        data["timestamp"] = key_ts
+                    results.append(data)
 
         db.close()
         return sorted(results, key=lambda x: x.get("timestamp", 0))

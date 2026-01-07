@@ -108,6 +108,8 @@ class RayJobRunner:
         # WebUI
         self._webui = None
         self._webui_port: Optional[int] = None
+        self._webui_storage = None
+        self._webui_attempt_id: Optional[str] = None
 
         # State push manager (encapsulates broker, producer, manager)
         self._state_push = StatePushManager(
@@ -115,7 +117,6 @@ class RayJobRunner:
             config=StatePushConfig(
                 enabled=config.webui.enabled,
                 storage_url=config.tansu_storage_url or "memory://state/",
-                webui_storage_path=config.webui.storage_path,
             ),
         )
 
@@ -145,8 +146,13 @@ class RayJobRunner:
         self._payload_store = RaySplitPayloadStore(name=f"payload_store_{self.job.job_id}")
         self.logger.info(f"Created SplitPayloadStore for job {self.job.job_id}")
 
+        # Create shared storage for WebUI (used by both StatePush and JobWebUI)
+        storage = None
+        if self.job.config.webui.enabled:
+            storage = await self._create_webui_storage()
+
         # Initialize state push infrastructure (if WebUI enabled)
-        await self._state_push.start()
+        await self._state_push.start(storage=storage)
 
         # Build reverse DAG (stage -> its upstreams)
         self._reverse_dag = self.job.build_reverse_dag()
@@ -619,30 +625,42 @@ class RayJobRunner:
 
     # === WebUI Integration ===
 
+    async def _create_webui_storage(self):
+        """Create storage for WebUI (shared between StatePush and JobWebUI).
+
+        Returns:
+            JobStorage instance
+        """
+        import uuid
+        from datetime import datetime
+        from solstice.webui.storage import JobStorage
+
+        # Generate attempt_id for this run (timestamp + short random suffix)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._webui_attempt_id = f"{timestamp}_{uuid.uuid4().hex[:4]}"
+
+        # Create isolated storage path for this job attempt
+        base_path = self.job.config.webui.storage_path.rstrip("/")
+        job_storage_path = f"{base_path}/{self.job.job_id}/{self._webui_attempt_id}"
+
+        self._webui_storage = JobStorage(job_storage_path)
+        self.logger.info(f"WebUI storage at {job_storage_path}")
+
+        return self._webui_storage
+
     async def _initialize_webui(self) -> None:
         """Initialize WebUI components.
 
         - Ensures Portal is running (starts if needed)
-        - Creates JobWebUI instance with isolated storage
+        - Creates JobWebUI instance using pre-created storage
         - Starts collectors
 
-        Storage Architecture:
-        - SlateDB only supports single writer
-        - Each job gets its own storage path: {base_path}/{job_id}/{attempt_id}/
-        - Portal uses base_path for reading historical archives
+        Note: Storage is created earlier in _create_webui_storage() to be
+        shared with StatePushManager.
         """
-        import uuid
-
         try:
             from solstice.webui.job_webui import JobWebUI
             from solstice.webui.portal import portal_exists, start_portal
-            from solstice.webui.storage import JobStorage
-
-            # Generate attempt_id for this run (timestamp + short random suffix)
-            from datetime import datetime
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            attempt_id = f"{timestamp}_{uuid.uuid4().hex[:4]}"
 
             # Ensure Portal is running
             if not portal_exists():
@@ -656,20 +674,12 @@ class RayJobRunner:
 
             self._webui_port = self.job.config.webui.port
 
-            # Create isolated storage path for this job attempt
-            # This avoids SlateDB single-writer conflicts
-            base_path = self.job.config.webui.storage_path.rstrip("/")
-            job_storage_path = f"{base_path}/{self.job.job_id}/{attempt_id}"
-
-            storage = JobStorage(job_storage_path)
-            self.logger.info(f"WebUI storage at {job_storage_path}")
-
-            # Create JobWebUI with pre-generated attempt_id
+            # Create JobWebUI using pre-created storage
             self._webui = JobWebUI(
                 self,
-                storage,
+                self._webui_storage,
                 prometheus_enabled=self.job.config.webui.prometheus_enabled,
-                attempt_id=attempt_id,
+                attempt_id=self._webui_attempt_id,
             )
 
             # Start WebUI

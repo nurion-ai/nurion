@@ -30,6 +30,10 @@ class JobStorageWriter(Protocol):
     methods don't need job_id parameter.
     """
 
+    def store_configuration(self, config_data: Dict[str, Any]) -> None:
+        """Store job configuration (called at job start)."""
+        ...
+
     def store_job_archive(self, archive_data: Dict[str, Any]) -> None:
         """Store archived job data."""
         ...
@@ -103,6 +107,14 @@ class JobStorageReader(Protocol):
 
     def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve archived job data."""
+        ...
+
+    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Alias for get_job_archive."""
+        ...
+
+    def get_configuration(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve job configuration."""
         ...
 
     def get_metrics_history(

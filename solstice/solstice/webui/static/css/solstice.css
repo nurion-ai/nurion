@@ -182,6 +182,12 @@ th {
   position: sticky;
   top: 0;
   z-index: 10;
+  text-align: left;
+}
+
+/* Numeric columns - align both header and cells right */
+th.number, td.number {
+  text-align: right;
 }
 
 [data-theme="dark"] th {
@@ -223,7 +229,6 @@ button.outline, [role="button"].outline {
 }
 
 .number {
-  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
@@ -264,25 +269,40 @@ td a:hover {
 }
 
 /* === Breadcrumb === */
+nav[aria-label="breadcrumb"] {
+  margin-bottom: 0.5rem;
+}
+
 nav[aria-label="breadcrumb"] ul {
   display: flex;
+  align-items: center;
   gap: 0;
   padding: 0;
   margin: 0;
+  font-size: 0.8rem;
 }
 
 nav[aria-label="breadcrumb"] li {
+  display: flex;
+  align-items: center;
   padding: 0;
-}
-
-nav[aria-label="breadcrumb"] li::after {
-  content: " / ";
   color: var(--pico-muted-color);
-  margin: 0 0.25rem;
 }
 
-nav[aria-label="breadcrumb"] li:last-child::after {
-  content: "";
+nav[aria-label="breadcrumb"] li a {
+  color: var(--pico-primary);
+  text-decoration: none;
+}
+
+nav[aria-label="breadcrumb"] li a:hover {
+  text-decoration: underline;
+}
+
+nav[aria-label="breadcrumb"] li:not(:last-child)::after {
+  content: "›";
+  color: var(--pico-muted-color);
+  margin: 0 0.4rem;
+  font-weight: 300;
 }
 
 /* === External links section === */

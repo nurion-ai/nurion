@@ -135,14 +135,14 @@
 
 {% block content %}
 <article class="compact"
-         hx-get="/solstice/jobs/{{ job.job_id }}/"
-         hx-trigger="every 3s"
+         hx-get="{{ base_path }}/jobs/{{ job.job_id }}/"
+         hx-trigger="solstice-poll from:body"
          hx-swap="outerHTML"
          hx-select="article.compact">
     <header>
-        <nav aria-label="breadcrumb" style="font-size: 0.75rem;">
+        <nav aria-label="breadcrumb">
             <ul>
-                <li><a href="/solstice/">Jobs</a></li>
+                <li><a href="{{ base_path }}/">Jobs</a></li>
                 <li>{{ job.job_id }}</li>
             </ul>
         </nav>
@@ -155,11 +155,10 @@
     <!-- Tabs -->
     <nav style="margin-bottom: 0.5rem;">
         <ul>
-            <li><a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="small outline">Overview</a></li>
-            <li><a href="/solstice/jobs/{{ job.job_id }}/workers" role="button" class="small outline">Workers</a></li>
-            <li><a href="/solstice/jobs/{{ job.job_id }}/exceptions" role="button" class="small outline">Exceptions</a></li>
-            <li><a href="/solstice/jobs/{{ job.job_id }}/configuration" role="button" class="small outline">Config</a></li>
-            <li><a href="/solstice/jobs/{{ job.job_id }}/lineage" role="button" class="small outline">Lineage</a></li>
+            <li><a href="{{ base_path }}/jobs/{{ job.job_id }}/" role="button" class="small outline">Overview</a></li>
+            <li><a href="{{ base_path }}/jobs/{{ job.job_id }}/workers" role="button" class="small outline">Workers</a></li>
+            <li><a href="{{ base_path }}/jobs/{{ job.job_id }}/configuration" role="button" class="small outline">Config</a></li>
+            <li><a href="{{ base_path }}/jobs/{{ job.job_id }}/lineage" role="button" class="small outline">Lineage</a></li>
         </ul>
     </nav>
     
@@ -228,10 +227,10 @@
                 <thead>
                     <tr>
                         <th style="width: 25%;">Stage ID</th>
-                        <th style="width: 10%;">Workers</th>
-                        <th style="width: 10%;">Queue</th>
-                        <th style="width: 15%;">Input</th>
-                        <th style="width: 15%;">Output</th>
+                        <th class="number" style="width: 10%;">Workers</th>
+                        <th class="number" style="width: 10%;">Queue</th>
+                        <th class="number" style="width: 15%;">Input</th>
+                        <th class="number" style="width: 15%;">Output</th>
                         <th style="width: 10%;">Status</th>
                         <th style="width: 10%;">Action</th>
                     </tr>
@@ -240,12 +239,12 @@
                     {% for stage in stages %}
                     <tr>
                         <td class="monospace">
-                            <a href="/solstice/jobs/{{ job.job_id }}/stages/{{ stage.stage_id }}">{{ stage.stage_id }}</a>
+                            <a href="{{ base_path }}/jobs/{{ job.job_id }}/stages/{{ stage.stage_id }}">{{ stage.stage_id }}</a>
                         </td>
                         <td class="number">{{ stage.worker_count|default(0) }}</td>
                         <td class="number">{{ stage.output_queue_size|default(0)|format_number }}</td>
-                        <td class="number">{{ stage.input_count|default(0)|format_number }} rows</td>
-                        <td class="number">{{ stage.output_count|default(0)|format_number }} rows</td>
+                        <td class="number">{{ (stage.input_records|default(stage.final_metrics.input_records if stage.final_metrics else none)|default(0))|format_number }} rows</td>
+                        <td class="number">{{ (stage.output_records|default(stage.final_metrics.output_records if stage.final_metrics else none)|default(0))|format_number }} rows</td>
                         <td>
                             {% if stage.is_running %}
                             <span class="badge badge-running">RUNNING</span>
@@ -258,7 +257,7 @@
                             {% endif %}
                         </td>
                         <td>
-                            <a href="/solstice/jobs/{{ job.job_id }}/stages/{{ stage.stage_id }}" class="small">View</a>
+                            <a href="{{ base_path }}/jobs/{{ job.job_id }}/stages/{{ stage.stage_id }}" class="small">View</a>
                         </td>
                     </tr>
                     {% endfor %}
@@ -290,7 +289,7 @@ const jobId = '{{ job.job_id }}';
 // Fetch latest stage data and dag_edges from API
 async function fetchStageData() {
     try {
-        const response = await fetch(`/solstice/api/jobs/${jobId}/stages`);
+        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/stages`);
         if (response.ok) {
             const data = await response.json();
             stages = data.stages || stages;
@@ -377,6 +376,7 @@ function renderDag() {
         // Remove any existing label group
         node.select('.label').remove();
         
+        // API returns input_count/output_count
         const inCount = formatNumber(stage.input_count || 0);
         const outCount = formatNumber(stage.output_count || 0);
         
@@ -460,7 +460,7 @@ function renderDag() {
         })
         .on('click', function() {
             const stageId = d3.select(this).datum();
-            window.location.href = `/solstice/jobs/${jobId}/stages/${stageId}`;
+            window.location.href = `{{ base_path }}/jobs/${jobId}/stages/${stageId}`;
         });
 }
 

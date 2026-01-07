@@ -4,17 +4,17 @@
 
 {% block content %}
 <article class="compact"
-         hx-get="/solstice/jobs/{{ job_id }}/workers/{{ worker.worker_id }}"
-         hx-trigger="every 5s"
+         hx-get="{{ base_path }}/jobs/{{ job_id }}/workers/{{ worker.worker_id }}"
+         hx-trigger="solstice-poll from:body"
          hx-swap="outerHTML"
          hx-select="article.compact">
     <header>
-        <nav aria-label="breadcrumb" style="font-size: 0.8rem;">
-            <ul style="padding: 0; margin: 0;">
-                <li><a href="/solstice/">Jobs</a></li>
-                <li><a href="/solstice/jobs/{{ job_id }}/">{{ job_id }}</a></li>
+        <nav aria-label="breadcrumb">
+            <ul>
+                <li><a href="{{ base_path }}/">Jobs</a></li>
+                <li><a href="{{ base_path }}/jobs/{{ job_id }}/">{{ job_id }}</a></li>
                 {% if worker.stage_id %}
-                <li><a href="/solstice/jobs/{{ job_id }}/stages/{{ worker.stage_id }}">{{ worker.stage_id }}</a></li>
+                <li><a href="{{ base_path }}/jobs/{{ job_id }}/stages/{{ worker.stage_id }}">{{ worker.stage_id }}</a></li>
                 {% endif %}
                 <li>Worker</li>
             </ul>
@@ -231,7 +231,7 @@
     <section>
         <h2>Logs</h2>
         <div class="log-viewer" 
-             x-data="logViewer({ endpoint: '/solstice/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/logs' })"
+             x-data="logViewer({ endpoint: '{{ base_path }}/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/logs' })"
              x-init="init()">
             
             <div class="log-toolbar" style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
@@ -253,8 +253,8 @@
     <section>
         <h3>Live Stacktrace (py-spy)</h3>
         <div style="background: #1e293b; color: #e2e8f0; padding: 0.75rem; border-radius: 4px; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow: auto;">
-            <div hx-get="/solstice/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/stacktrace" 
-                 hx-trigger="load, every 10s"
+            <div hx-get="{{ base_path }}/api/jobs/{{ job_id }}/workers/{{ worker.worker_id }}/stacktrace" 
+                 hx-trigger="load, solstice-poll from:body"
                  hx-swap="innerHTML">
                 <em>Loading stacktrace... (requires py-spy installed)</em>
             </div>
@@ -264,11 +264,11 @@
     
     <!-- Back link -->
     <section style="margin-top: 1rem;">
-        <a href="/solstice/jobs/{{ job_id }}/workers" role="button" class="outline small">← All Workers</a>
+        <a href="{{ base_path }}/jobs/{{ job_id }}/workers" role="button" class="outline small">← All Workers</a>
         {% if worker.stage_id %}
-        <a href="/solstice/jobs/{{ job_id }}/stages/{{ worker.stage_id }}" role="button" class="outline small">← Stage</a>
+        <a href="{{ base_path }}/jobs/{{ job_id }}/stages/{{ worker.stage_id }}" role="button" class="outline small">← Stage</a>
         {% endif %}
-        <a href="/solstice/jobs/{{ job_id }}/" role="button" class="outline small">← Job</a>
+        <a href="{{ base_path }}/jobs/{{ job_id }}/" role="button" class="outline small">← Job</a>
     </section>
 </article>
 {% endblock %}

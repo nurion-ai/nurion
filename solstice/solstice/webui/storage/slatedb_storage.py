@@ -71,6 +71,32 @@ class JobStorage:
             self.db = SlateDB("db", url=url)
         self.logger.info(f"Initialized SlateDB storage at {path}")
 
+    # === Job Configuration ===
+
+    def store_configuration(self, config_data: Dict[str, Any]) -> None:
+        """Store job configuration.
+
+        Should be called at job start with complete configuration.
+
+        Args:
+            config_data: Configuration dictionary with:
+                - job_config: Job-level settings (job_id, queue_type, etc.)
+                - stage_configs: Per-stage settings (operator_type, parallelism, etc.)
+                - environment: Environment variables
+        """
+        key = "config"
+        self.db.put(key.encode(), json.dumps(config_data).encode())
+        self.db.flush()
+        self.logger.debug("Stored job configuration")
+
+    def get_configuration(self) -> Optional[Dict[str, Any]]:
+        """Retrieve job configuration from this storage."""
+        key = "config"
+        data = self.db.get(key.encode())
+        if data:
+            return json.loads(data.decode())
+        return None
+
     # === Job Archive ===
 
     def store_job_archive(self, archive_data: Dict[str, Any]) -> None:
@@ -120,7 +146,9 @@ class JobStorage:
     ) -> None:
         """Store a metrics snapshot."""
         key = f"metrics:{stage_id}:{int(timestamp)}"
-        self.db.put(key.encode(), json.dumps(metrics).encode())
+        # Ensure timestamp is included in the data
+        data = {**metrics, "timestamp": timestamp}
+        self.db.put(key.encode(), json.dumps(data).encode())
         self.logger.debug(f"Stored metrics snapshot for {stage_id}")
 
     def get_metrics_history(
@@ -144,6 +172,34 @@ class JobStorage:
                     metrics_list.append(json.loads(value.decode()))
 
         return sorted(metrics_list, key=lambda x: x.get("timestamp", 0))
+
+    def get_latest_stage_metrics(self, stage_id: str) -> Optional[Dict[str, Any]]:
+        """Get the best metrics snapshot for a stage.
+
+        This returns the snapshot with the highest input_records + output_records,
+        since later snapshots may show 0 after workers stop.
+
+        Returns:
+            Best metrics dict or None if no metrics found
+        """
+        prefix = f"metrics:{stage_id}:"
+        results = self._scan_prefix(prefix.encode())
+
+        if not results:
+            return None
+
+        # Find the snapshot with highest input + output records
+        # (later snapshots may be 0 after workers stop)
+        best = None
+        best_total = -1
+        for key, value in results:
+            metrics = json.loads(value.decode())
+            total = metrics.get("input_records", 0) + metrics.get("output_records", 0)
+            if total > best_total:
+                best_total = total
+                best = metrics
+
+        return best
 
     # === Exceptions ===
 

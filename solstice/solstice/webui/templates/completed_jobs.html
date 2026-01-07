@@ -34,7 +34,7 @@
                     <td>{{ (job.duration_ms / 1000)|format_duration }}</td>
                     <td class="number">{{ (job.total_output_records or job.total_records or 0)|format_number }}</td>
                     <td>
-                        <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">
+                        <a href="{{ base_path }}/jobs/{{ job.job_id }}/" role="button" class="outline small">
                             View
                         </a>
                     </td>

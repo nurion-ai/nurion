@@ -4,15 +4,15 @@
 
 {% block content %}
 <article class="compact"
-         hx-get="/solstice/jobs/{{ job.job_id }}/workers"
-         hx-trigger="every 3s"
+         hx-get="{{ base_path }}/jobs/{{ job.job_id }}/workers"
+         hx-trigger="solstice-poll from:body"
          hx-swap="outerHTML"
          hx-select="article.compact">
     <header>
-        <nav aria-label="breadcrumb" style="font-size: 0.75rem;">
+        <nav aria-label="breadcrumb">
             <ul>
-                <li><a href="/solstice/">Jobs</a></li>
-                <li><a href="/solstice/jobs/{{ job.job_id }}/">{{ job.job_id }}</a></li>
+                <li><a href="{{ base_path }}/">Jobs</a></li>
+                <li><a href="{{ base_path }}/jobs/{{ job.job_id }}/">{{ job.job_id }}</a></li>
                 <li>Workers</li>
             </ul>
         </nav>
@@ -64,21 +64,21 @@
                 <table>
                     <thead>
                         <tr>
-                            <th>Worker ID</th>
-                            <th>Status</th>
-                            <th>Start Time</th>
-                            <th>Duration</th>
-                            <th>Input</th>
-                            <th>Output</th>
-                            <th>Partitions</th>
-                            <th>Action</th>
+                            <th style="width: 20%;">Worker ID</th>
+                            <th style="width: 10%;">Status</th>
+                            <th class="number" style="width: 15%;">Start Time</th>
+                            <th class="number" style="width: 10%;">Duration</th>
+                            <th class="number" style="width: 10%;">Input</th>
+                            <th class="number" style="width: 10%;">Output</th>
+                            <th style="width: 15%;">Partitions</th>
+                            <th style="width: 10%;">Action</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for worker in stage_workers|sort(attribute='start_time', reverse=true) %}
                         <tr>
                             <td class="monospace" style="font-size: 0.8rem;">
-                                <a href="/solstice/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}">
+                                <a href="{{ base_path }}/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}">
                                     {{ worker.worker_id[:16] }}{% if worker.worker_id|length > 16 %}...{% endif %}
                                 </a>
                             </td>
@@ -103,9 +103,15 @@
                             </td>
                             <td class="number">{{ worker.input_records|default(0)|format_number }}</td>
                             <td class="number">{{ worker.output_records|default(0)|format_number }}</td>
-                            <td class="number">{{ worker.assigned_partitions|default([])|length }}</td>
+                            <td class="monospace" style="font-size: 0.75rem;">
+                                {% if worker.assigned_partitions %}
+                                {{ worker.assigned_partitions|join(', ') }}
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
                             <td>
-                                <a href="/solstice/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}" class="small">View</a>
+                                <a href="{{ base_path }}/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}" class="small">View</a>
                             </td>
                         </tr>
                         {% endfor %}
@@ -121,73 +127,6 @@
         {% endif %}
     </section>
     
-    <!-- All Workers Timeline -->
-    {% if workers %}
-    <section>
-        <h2>Workers Timeline</h2>
-        <div style="overflow-x: auto;">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Worker ID</th>
-                        <th>Stage</th>
-                        <th>Status</th>
-                        <th>Start</th>
-                        <th>End</th>
-                        <th>Processing Time</th>
-                        <th>Records (In/Out)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for worker in workers|sort(attribute='start_time', reverse=true) %}
-                    <tr>
-                        <td class="monospace" style="font-size: 0.75rem;">
-                            <a href="/solstice/jobs/{{ job.job_id }}/workers/{{ worker.worker_id }}">
-                                {{ worker.worker_id[:16] }}...
-                            </a>
-                        </td>
-                        <td>
-                            <a href="/solstice/jobs/{{ job.job_id }}/stages/{{ worker.stage_id }}">
-                                {{ worker.stage_id }}
-                            </a>
-                        </td>
-                        <td>
-                            <span class="badge badge-{{ worker.status|lower }}">{{ worker.status }}</span>
-                        </td>
-                        <td style="font-size: 0.8rem;">
-                            {% if worker.start_time %}
-                            {{ worker.start_time|format_datetime }}
-                            {% else %}
-                            -
-                            {% endif %}
-                        </td>
-                        <td style="font-size: 0.8rem;">
-                            {% if worker.end_time %}
-                            {{ worker.end_time|format_datetime }}
-                            {% elif worker.status == 'RUNNING' %}
-                            <span style="color: var(--pico-primary);">-</span>
-                            {% else %}
-                            -
-                            {% endif %}
-                        </td>
-                        <td class="number">
-                            {% if worker.processing_time %}
-                            {{ "%.2f"|format(worker.processing_time) }}s
-                            {% else %}
-                            -
-                            {% endif %}
-                        </td>
-                        <td class="number">
-                            {{ worker.input_records|default(0)|format_number }} / {{ worker.output_records|default(0)|format_number }}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </section>
-    {% endif %}
-    
-    <a href="/solstice/jobs/{{ job.job_id }}/" role="button" class="outline small">← Back to Job</a>
+    <a href="{{ base_path }}/jobs/{{ job.job_id }}/" role="button" class="outline small">← Back to Job</a>
 </article>
 {% endblock %}
