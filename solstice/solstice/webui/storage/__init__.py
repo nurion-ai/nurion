@@ -27,13 +27,9 @@ from solstice.webui.storage.base import JobStorageReader, JobStorageWriter
 from solstice.webui.storage.portal_storage import PortalStorage
 from solstice.webui.storage.slatedb_storage import JobStorage
 
-# Backward compatibility alias
-SlateDBStorage = JobStorage
-
 __all__ = [
     "JobStorageWriter",
     "JobStorageReader",
     "PortalStorage",
     "JobStorage",
-    "SlateDBStorage",
 ]

@@ -128,7 +128,7 @@ class SourceMaster(StageMaster):
         **kwargs,
     ):
         # Source stages use their own source queue as "upstream"
-        # We don't pass upstream_endpoint/topic to parent - we'll create our own
+        # upstream_endpoint/topic are now in StageConfig (set to None for source)
         config = config or SourceConfig()
 
         super().__init__(
@@ -136,8 +136,6 @@ class SourceMaster(StageMaster):
             stage=stage,
             config=config,
             payload_store=payload_store,
-            upstream_endpoint=None,  # Will set after creating source queue
-            upstream_topic=None,
         )
 
         # Source queue (for split metadata, distinct from output queue)

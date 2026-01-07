@@ -41,6 +41,7 @@ from solstice.core.stage_master import (
 from solstice.operators.sources.source import SourceMaster
 from solstice.core.split_payload_store import RaySplitPayloadStore
 from solstice.runtime.autoscaler import SimpleAutoscaler
+from solstice.runtime.state_push import StatePushManager, StatePushConfig
 from solstice.utils.logging import create_ray_logger
 
 
@@ -91,7 +92,7 @@ class RayJobRunner:
         self.tansu_storage_url = config.tansu_storage_url
         self._ray_init_kwargs = config.ray_init_kwargs or {}
 
-        self.logger = create_ray_logger(f"RunnerV2-{job.job_id}")
+        self.logger = create_ray_logger(f"RayJobRunner-{job.job_id}")
 
         # SplitPayloadStore - shared across all stages
         self._payload_store: Optional[RaySplitPayloadStore] = None
@@ -100,14 +101,23 @@ class RayJobRunner:
         self._masters: Dict[str, Union[StageMaster, SourceMaster]] = {}
         self._master_tasks: Dict[str, asyncio.Task] = {}
 
-        # Autoscaler
-        self._autoscale_config = config.autoscale_config
+        # Autoscaler (configured in run())
         self._autoscaler: Optional[SimpleAutoscaler] = None
         self._autoscale_task: Optional[asyncio.Task] = None
 
         # WebUI
         self._webui = None
         self._webui_port: Optional[int] = None
+
+        # State push manager (encapsulates broker, producer, manager)
+        self._state_push = StatePushManager(
+            job_id=job.job_id,
+            config=StatePushConfig(
+                enabled=config.webui.enabled,
+                storage_url=config.tansu_storage_url or "memory://state/",
+                webui_storage_path=config.webui.storage_path,
+            ),
+        )
 
         # State
         self._initialized = False
@@ -135,6 +145,9 @@ class RayJobRunner:
         self._payload_store = RaySplitPayloadStore(name=f"payload_store_{self.job.job_id}")
         self.logger.info(f"Created SplitPayloadStore for job {self.job.job_id}")
 
+        # Initialize state push infrastructure (if WebUI enabled)
+        await self._state_push.start()
+
         # Build reverse DAG (stage -> its upstreams)
         self._reverse_dag = self.job.build_reverse_dag()
 
@@ -148,6 +161,10 @@ class RayJobRunner:
 
             # Build config from stage settings (same for source and regular stages)
             config = self._build_stage_config(stage)
+
+            # Set state push config (for WebUI metrics)
+            config.state_endpoint = self._state_push.endpoint
+            config.state_topic = self._state_push.topic
 
             if is_source:
                 # Source stage: use SourceMaster from operator_config
@@ -164,13 +181,15 @@ class RayJobRunner:
                 if not upstream_master._running:
                     await upstream_master.start()
 
+                # Set upstream queue config
+                config.upstream_endpoint = upstream_master._output_endpoint
+                config.upstream_topic = upstream_master._output_topic
+
                 master = StageMaster(
                     job_id=self.job.job_id,
                     stage=stage,
                     config=config,
                     payload_store=self._payload_store,
-                    upstream_endpoint=upstream_master._output_endpoint,
-                    upstream_topic=upstream_master._output_topic,
                 )
                 self._masters[stage_id] = master
                 self.logger.info(f"Created StageMaster for stage {stage_id}")
@@ -178,22 +197,11 @@ class RayJobRunner:
         # Wire downstream references for backpressure propagation
         self._wire_downstream_refs()
 
-        # Store job metadata in payload_store for WebUI discovery
-        # This replaces the need for a separate JobRegistry
-        self._payload_store.set_job_metadata({
-            "job_id": self.job.job_id,
-            "dag_edges": self.job.dag_edges,
-            "start_time": time.time(),
-            "stages": [
-                {
-                    "stage_id": s.stage_id,
-                    "operator_type": type(s.operator_config).__name__,
-                    "min_parallelism": s.parallelism[0] if isinstance(s.parallelism, tuple) else s.parallelism,
-                    "max_parallelism": s.parallelism[1] if isinstance(s.parallelism, tuple) else s.parallelism,
-                }
-                for s in self.job.stages.values()
-            ],
-        })
+        # Emit JOB_STARTED event
+        await self._state_push.emit_job_started(
+            dag_edges=self.job.dag_edges,
+            stages=[self._stage_info(s) for s in self.job.stages.values()],
+        )
 
         # Initialize WebUI if enabled
         if self.job.config.webui.enabled:
@@ -229,6 +237,16 @@ class RayJobRunner:
             num_gpus=worker_res.get("num_gpus", 0.0),
             memory_mb=int(worker_res.get("memory", 0) / (1024**2)),
         )
+
+    def _stage_info(self, stage: "Stage") -> Dict[str, Any]:
+        """Get stage info dict for state events."""
+        p = stage.parallelism
+        return {
+            "stage_id": stage.stage_id,
+            "operator_type": type(stage.operator_config).__name__,
+            "min_parallelism": p[0] if isinstance(p, tuple) else p,
+            "max_parallelism": p[1] if isinstance(p, tuple) else p,
+        }
 
     def _create_source_master(self, stage: "Stage", config: StageConfig) -> SourceMaster:
         """Create appropriate SourceMaster for a source stage.
@@ -324,13 +342,7 @@ class RayJobRunner:
                     self._master_tasks[stage_id] = task
 
             # Start autoscaler if configured
-            if self._autoscale_config is not None:
-                self._autoscaler = SimpleAutoscaler(self._autoscale_config)
-                self._autoscale_task = asyncio.create_task(
-                    self._autoscaler.run_loop(self._masters),
-                    name="autoscaler",
-                )
-                self.logger.info("Autoscaler started")
+            self._start_autoscaler()
 
             # Track which stages have finished (for upstream completion notification)
             finished_stages = set()
@@ -382,17 +394,7 @@ class RayJobRunner:
         self._running = False
 
         # Stop autoscaler
-        if self._autoscale_task and not self._autoscale_task.done():
-            self._autoscale_task.cancel()
-            try:
-                await self._autoscale_task
-            except asyncio.CancelledError:
-                pass
-            self._autoscale_task = None
-
-        if self._autoscaler:
-            self._autoscaler.stop()
-            self._autoscaler = None
+        await self._stop_autoscaler()
 
         # Cancel all running tasks
         for stage_id, task in list(self._master_tasks.items()):
@@ -427,10 +429,44 @@ class RayJobRunner:
                 self.logger.warning(f"Error cleaning up SplitPayloadStore: {e}")
             self._payload_store = None
 
+        # Emit job completed event before stopping state infrastructure
+        status = "FAILED" if self._error else "COMPLETED"
+        await self._state_push.emit_job_completed(status, self._start_time)
+
+        # Clean up state push infrastructure
+        await self._state_push.stop()
+
         # Stop WebUI
         await self._stop_webui()
 
         self.logger.info("Pipeline stopped")
+
+    def _start_autoscaler(self) -> None:
+        """Start the autoscaler if configured."""
+        autoscale_config = self.job.config.autoscale_config
+        if autoscale_config is None:
+            return
+
+        self._autoscaler = SimpleAutoscaler(autoscale_config)
+        self._autoscale_task = asyncio.create_task(
+            self._autoscaler.run_loop(self._masters),
+            name="autoscaler",
+        )
+        self.logger.info("Autoscaler started")
+
+    async def _stop_autoscaler(self) -> None:
+        """Stop the autoscaler."""
+        if self._autoscale_task and not self._autoscale_task.done():
+            self._autoscale_task.cancel()
+            try:
+                await self._autoscale_task
+            except asyncio.CancelledError:
+                pass
+            self._autoscale_task = None
+
+        if self._autoscaler:
+            self._autoscaler.stop()
+            self._autoscaler = None
 
     def get_status(self) -> JobStatus:
         """Get current pipeline status."""
@@ -508,20 +544,22 @@ class RayJobRunner:
             status = await master.get_status_async()
             metrics = await master.collect_metrics()
 
-            stages.append({
-                "stage_id": stage_id,
-                "operator_type": type(master.stage.operator_config).__name__,
-                "worker_count": status.worker_count,
-                "min_parallelism": master.config.min_workers,
-                "max_parallelism": master.config.max_workers,
-                "input_count": metrics.input_records,
-                "output_count": metrics.output_records,
-                "output_queue_size": status.output_queue_size,
-                "is_running": status.is_running,
-                "is_finished": status.is_finished,
-                "failed": status.failed,
-                "backpressure_active": status.backpressure_active,
-            })
+            stages.append(
+                {
+                    "stage_id": stage_id,
+                    "operator_type": type(master.stage.operator_config).__name__,
+                    "worker_count": status.worker_count,
+                    "min_parallelism": master.config.min_workers,
+                    "max_parallelism": master.config.max_workers,
+                    "input_count": metrics.input_records,
+                    "output_count": metrics.output_records,
+                    "output_queue_size": status.output_queue_size,
+                    "is_running": status.is_running,
+                    "is_finished": status.is_finished,
+                    "failed": status.failed,
+                    "backpressure_active": status.backpressure_active,
+                }
+            )
         return stages
 
     # === Autoscaling Manual Intervention API ===

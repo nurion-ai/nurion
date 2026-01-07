@@ -191,6 +191,52 @@ For Solstice integration tests, you need:
    - After 1.0, maintain backward compatibility
 4. **Don't skip types**: Add appropriate type annotations
 5. **Don't hardcode config**: Use config classes and environment variables
+6. **Don't use uncertain fallback patterns**: Logic should be consistent, not "try A, if not found try B"
+   ```python
+   # Bad: Multiple fallback paths create uncertainty
+   def get_data(id):
+       data = try_source_a(id)
+       if not data:
+           data = try_source_b(id)  # When does this happen?
+       if not data:
+           data = try_source_c(id)  # And this?
+       return data
+   
+   # Good: Clear, deterministic data source selection
+   def get_data(id):
+       if is_running(id):
+           return get_from_live_source(id)
+       return get_from_archive(id)
+   ```
+   
+7. **Minimize instance state (`self._*`)**: State is hard to maintain and debug
+   ```python
+   # Avoid: Too many self._ attributes, especially those only used during init
+   class Runner:
+       def __init__(self, config):
+           self._config = config
+           self._temp_broker = None      # Only used in init
+           self._temp_queue = None       # Only used in init
+           self._temp_topic = "topic"    # Could be computed
+           self._temp_endpoint = None    # Only used in init
+           self._manager = None
+           self._producer = None
+   
+   # Better: Minimize self._, pass values where needed
+   class Runner:
+       def __init__(self, config):
+           self._config = config
+           self._manager = None  # Long-lived, needs cleanup
+   
+       async def _init_infra(self):
+           # Local variables for setup-only values
+           broker = create_broker()
+           topic = f"{self._config.job_id}_state"
+           # Only store what's needed later
+           self._manager = create_manager(broker, topic)
+   ```
+   
+   **Rule of thumb**: If a value is only used during initialization or can be recomputed from config, use local variables instead of `self._` attributes.
 
 ### Preferred Patterns
 
@@ -446,3 +492,7 @@ solstice history-server -s s3://bucket/solstice-history/ -p 8080
 ---
 
 *Last updated: 2025-01-07*
+
+<!-- Changelog:
+- 2025-01-07: Added patterns #6 (no uncertain fallbacks) and #7 (minimize self._ state)
+-->

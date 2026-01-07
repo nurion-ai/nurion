@@ -15,57 +15,65 @@ The Solstice Debug WebUI provides a web-based interface for monitoring, debuggin
 
 ## Architecture
 
-### Dual-Mode Architecture
+### Unified Read-Only Architecture
+
+Portal and History Server share the **same read-only logic**. Both read from JobStorage (SlateDB).
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Embedded Mode                            │
-│  (Runs with Job)                                            │
-│                                                             │
-│  RayJobRunner → JobWebUI → [MetricsCollector]              │
-│                         → [EventCollector]                 │
-│                         → [LineageTracker]                 │
-│                         → [ExceptionAggregator]            │
-│                                                             │
-│  Ray Serve (port 8000)                                      │
-│    └── Portal → JobRegistry (tracks running jobs)           │
-│                                                             │
-│  Storage:                                                   │
-│    - Prometheus (real-time metrics)                         │
-│    - SlateDB (snapshots, events, lineage)                   │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        Ray Cluster                               │
+│                                                                   │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     │
+│  │  JobRunner   │     │  JobRunner   │     │  JobRunner   │     │
+│  │  (Job A)     │     │  (Job B)     │     │  (Job C)     │     │
+│  │              │     │              │     │              │     │
+│  │ StateManager │     │ StateManager │     │ StateManager │     │
+│  │      ↓       │     │      ↓       │     │      ↓       │     │
+│  │ JobStorage   │     │ JobStorage   │     │ JobStorage   │     │
+│  │  (write)     │     │  (write)     │     │  (write)     │     │
+│  └──────┬───────┘     └──────┬───────┘     └──────┬───────┘     │
+│         │                    │                    │              │
+│         └────────────────────┼────────────────────┘              │
+│                              ↓                                   │
+│                    ┌─────────────────┐                           │
+│                    │   SlateDB (S3)  │                           │
+│                    └────────┬────────┘                           │
+│                             ↓                                    │
+│                    ┌─────────────────┐                           │
+│                    │     Portal      │  ← Ray Serve (singleton)  │
+│                    │   (read-only)   │                           │
+│                    └─────────────────┘                           │
+└─────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────┐
-│                    History Server Mode                       │
-│  (Standalone Service)                                       │
-│                                                             │
-│  History Server (port 8080)                                 │
-│    └── Read-only SlateDB access                             │
-│                                                             │
-│  Storage:                                                   │
-│    - SlateDB (archived jobs, metrics snapshots)             │
-└─────────────────────────────────────────────────────────────┘
+History Server (standalone):
+  └── Also read-only SlateDB - SAME CODE as Portal
 ```
+
+**Key Design Principles:**
+
+1. **JobRunner is the ONLY writer** - StateManager consumes Tansu, writes to JobStorage
+2. **Portal is read-only** - Just reads from JobStorage (SlateDB)
+3. **History Server is read-only** - Same code as Portal
+4. **No cross-process state sharing** - Each process only reads/writes its own storage
+5. **Unified code path** - Running and completed jobs use the same read logic
 
 ### Multi-Job Routing
 
 ```
 Ray Serve (port 8000)
 │
-├── Portal (singleton)
+├── Portal (singleton, read-only)
 │   └── /solstice/                    ← Entry point
-│       ├── /                         ← List all jobs
-│       ├── /running                  ← Running jobs
-│       ├── /completed                ← Completed jobs
-│       └── /jobs/{job_id}/           ← Route to specific job
+│       ├── /                         ← List all jobs (from JobStorage)
+│       ├── /running                  ← Running jobs (status=RUNNING in storage)
+│       ├── /completed                ← Completed jobs (status=COMPLETED/FAILED)
+│       └── /jobs/{job_id}/           ← Job details (from JobStorage)
 │
-├── JobRegistry (singleton Ray Actor)
-│   └── Tracks all running jobs
-│
-├── Job A WebUI (RayJobRunner component)
-├── Job B WebUI (RayJobRunner component)
-└── Job C WebUI (RayJobRunner component)
+└── JobStorage (read-only access to SlateDB)
+    └── Queries job data written by JobRunners
 ```
+
+Note: No JobRegistry needed. Portal reads all job info from storage.
 
 ## Storage Strategy
 
@@ -116,38 +124,40 @@ SlateDB only supports **one writer process** at a time. This constraint shapes o
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Embedded Mode: JobWebUI is the ONLY writer                 │
+│  Writer: JobStateManager (inside JobRunner process)         │
 │                                                             │
-│  JobWebUI (per job)                                         │
-│    └── SlateDBStorage                                       │
-│          └── Writes: metrics snapshots, events, archives    │
+│  JobRunner                                                  │
+│    └── StatePushManager                                     │
+│          └── JobStateManager                                │
+│                └── Consumes from Tansu topic                │
+│                └── Aggregates state                         │
+│                └── Writes to SlateDB                        │
 │                                                             │
-│  Portal (Ray Serve)                                         │
-│    └── DO NOT write to SlateDB (read-only mode)             │
-│    └── For running jobs: read from JobRegistry              │
-│    └── For completed jobs: read from SlateDB                │
+│  Each job has its own SlateDB path:                         │
+│    storage_path = f"{base_path}/{job_id}/{attempt_id}/"     │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│  History Server Mode: Read-Only Access                      │
+│  Readers: Portal and History Server (SAME CODE)             │
 │                                                             │
-│  History Server                                             │
-│    └── SlateDBStorage (read-only)                           │
-│          └── Reads archives written by JobWebUI             │
+│  Portal (Ray Serve)                                         │
+│    └── JobStorage (read-only)                               │
+│          └── Reads from SlateDB                             │
+│          └── Lists jobs, gets details, queries metrics      │
 │                                                             │
-│  Note: Original writes come from JobWebUI during execution  │
+│  History Server (standalone)                                │
+│    └── JobStorage (read-only)                               │
+│          └── SAME code as Portal                            │
+│          └── Just different deployment                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **Key Design Decisions:**
 
-1. **Portal reads from JobRegistry, not SlateDB** for running jobs
-2. **JobWebUI is the only writer** during job execution
-3. **History Server is read-only** - it only reads archives written by JobWebUI
-4. **Each job has its own SlateDB path** to avoid writer conflicts:
-   ```python
-   storage_path = f"{base_path}/{job_id}/{attempt_id}/"
-   ```
+1. **JobStateManager is the only writer** - runs inside JobRunner process
+2. **Portal is read-only** - no cross-process state sharing needed
+3. **History Server is read-only** - same code as Portal
+4. **Each job has its own SlateDB path** to avoid writer conflicts
 
 **Attempt Tracking:**
 
@@ -157,9 +167,8 @@ Since the same `job_id` can run multiple times, we track attempts internally:
 - Storage path: `{base_path}/{job_id}/{attempt_id}/`
 - Allows querying historical runs of the same job
 
-**Portal History Access:**
+**Storage Directory Structure:**
 
-Portal reads historical data by scanning the storage directory:
 ```
 {base_path}/
 ├── job_a/
@@ -169,10 +178,10 @@ Portal reads historical data by scanning the storage directory:
     └── ghi789/   ← attempt 1
 ```
 
-For each historical query, Portal:
-1. Lists job directories in base_path
-2. Opens the most recent attempt's SlateDB (read-only)
-3. Queries and returns data
+Portal/History Server reads by:
+1. Listing job directories in base_path
+2. Opening the most recent attempt's SlateDB (read-only)
+3. Querying and returning data
 
 This avoids writer conflicts while supporting multi-attempt history
 
@@ -189,45 +198,40 @@ This avoids writer conflicts while supporting multi-attempt history
 
 ## Component Details
 
-### JobRegistry
-
-Global singleton Ray Actor that tracks all running jobs.
-
-- **Lifetime**: Detached (persists across jobs)
-- **Concurrency**: High (100 concurrent calls)
-- **Operations**: register, unregister, update, list, get
-
 ### Portal
 
-Ray Serve deployment providing global entry point.
+Ray Serve deployment providing global entry point. **Read-only** access to JobStorage.
 
 - **Route Prefix**: `/solstice`
 - **Resources**: 0.1 CPU (lightweight)
-- **Functions**: List jobs, route to job WebUI, external links
+- **Functions**: List jobs, job details, stage/worker info
+- **Data Source**: JobStorage (SlateDB) - read only
+- **Same code as History Server** - just different deployment
 
-### JobWebUI
+### StatePushManager
 
-Per-job component (not a Ray Serve deployment).
+Encapsulates push-based state infrastructure inside JobRunner.
 
 - **Lifecycle**: Starts with job, stops when job completes
-- **Collectors**: Metrics, Events, Lineage, Exceptions
-- **Archiver**: Archives complete state on completion
+- **Components**: Tansu broker, StateProducer, JobStateManager
+- **Fire-and-forget**: Producers don't wait for produce() completion
 
-### MetricsCollector
+### JobStateManager
 
-Background task collecting metrics every second.
+Consumes state messages from Tansu, maintains aggregated state, writes to SlateDB.
 
-- **Prometheus**: Exports metrics immediately
-- **SlateDB**: Snapshots every 30 seconds
-- **Derived Metrics**: Calculates rates, ETA
+- **Input**: Tansu topic (push-based messages from workers/masters)
+- **Processing**: Time-window aggregation, deduplication
+- **Output**: Periodic writes to JobStorage (SlateDB)
+- **Single writer**: Only component that writes to SlateDB for this job
 
-### JobArchiver
+### StateProducer
 
-Archives complete job state when job finishes.
+Helper for producing state messages (used by workers, masters, runner).
 
-- **Triggered**: Automatically on job completion
-- **Stores**: Config, stages, final metrics, exceptions summary
-- **Indexed**: By status and time for efficient queries
+- **Rate-limited**: Workers emit at most once per 500ms
+- **Async**: Fire-and-forget pattern, doesn't block caller
+- **Messages**: WORKER_METRICS, STAGE_METRICS, EXCEPTION, etc.
 
 ## UI Design
 
@@ -262,51 +266,55 @@ Archives complete job state when job finishes.
 
 ### Core Principles
 
-**1. Stateless API Design:**
+**1. Read-Only Portal Design:**
 
-API handlers should be stateless and avoid caching references to Ray actors:
+Portal only reads from JobStorage. No cross-process state sharing.
 
 ```python
-# ❌ BAD: Caching actor reference in __init__
+# ✅ GOOD: Read from storage
 class Portal:
-    def __init__(self):
-        self.registry = get_or_create_registry()  # May become stale
-    
-    async def list_jobs(self):
-        return ray.get(self.registry.list_jobs.remote())  # May fail
+    async def list_jobs(self, request: Request):
+        storage = request.app.state.storage
+        return storage.list_jobs()
 
-# ✅ GOOD: Get fresh reference each time
+# ❌ BAD: Try to query actors or cross-process state
 class Portal:
     async def list_jobs(self):
-        registry = get_or_create_registry()  # Always fresh
-        return ray.get(registry.list_jobs.remote())
+        return ray.get(some_actor.list_jobs.remote())  # Cross-process!
 ```
 
-**2. Minimize `ray.get()` Calls:**
+**2. No Cross-Process State Sharing:**
 
-`ray.get()` is blocking and unpredictable - the target actor may be busy.
-Prefer pushing data to storage rather than pulling from actors.
+Different jobs run in different processes. Module-level variables don't work.
 
 ```python
-# ❌ BAD: Multiple ray.get calls in API handler
-async def get_stage(job_id, stage_id):
-    runner = ray.get(registry.get_runner.remote(job_id))
-    stages = ray.get(runner.get_stages.remote())  # Blocking!
-    return stages[stage_id]
+# ❌ BAD: Module-level registry (only visible in one process)
+_state_managers: Dict[str, Any] = {}  # Other processes can't see this!
 
-# ✅ GOOD: Data pushed to Registry, read from there
-async def get_stage(job_id, stage_id):
-    registry = get_or_create_registry()
-    job = ray.get(registry.get_job.remote(job_id), timeout=2)
-    return next((s for s in job.stages if s['stage_id'] == stage_id), None)
+# ✅ GOOD: Write to storage, read from storage
+# JobRunner writes → SlateDB ← Portal reads
 ```
 
-**3. Short Timeouts:**
+**3. Minimize `ray.get()` Calls:**
 
-Always use timeouts when calling Ray actors to prevent hangs:
+`ray.get()` is blocking and unpredictable. Only use for debugging tools (logs, stacktrace).
 
 ```python
-ray.get(registry.list_jobs.remote(), timeout=2)  # 2 second timeout
+# ❌ BAD: ray.get for regular data
+async def get_stage(job_id, stage_id):
+    return ray.get(runner.get_stages.remote())  # Blocking!
+
+# ✅ GOOD: Read from storage
+async def get_stage(job_id, stage_id, request: Request):
+    storage = request.app.state.storage
+    job = storage.get_job(job_id)
+    return next((s for s in job['stages'] if s['stage_id'] == stage_id), None)
+
+# ✅ OK: ray.get only for live debugging (logs, stacktrace)
+async def get_worker_logs(worker_id):
+    from ray.util.state import list_actors, get_log
+    actors = list_actors(filters=[("name", "=", worker_id)])
+    # This is for live debugging, acceptable to use Ray State API
 ```
 
 ### Standard Patterns
@@ -322,19 +330,19 @@ async def list_splits(
     ...
 ```
 
-**Mode-Aware:**
+**Unified Read Pattern:**
+
+Portal and History Server use the same code - no mode checking needed:
 
 ```python
 @router.get("/jobs/{job_id}/stages/{stage_id}")
 async def get_stage(job_id: str, stage_id: str, request: Request):
-    if request.app.state.mode == "embedded":
-        # Get real-time data from runner
-        runner = request.app.state.job_runner
-        ...
-    else:
-        # Get historical data from storage
-        storage = request.app.state.storage
-        ...
+    # Same code for running and completed jobs
+    storage = request.app.state.storage
+    job = storage.get_job(job_id)
+    if job:
+        return next((s for s in job['stages'] if s['stage_id'] == stage_id), None)
+    raise HTTPException(404, "Job not found")
 ```
 
 **Real-Time Updates:**
@@ -439,6 +447,140 @@ What you can monitor:
 - ✅ Root cause hints
 - ✅ Worker event history (created/destroyed/scaled)
 - ✅ Checkpoint history
+
+## Push-Based Metrics Architecture
+
+### Motivation
+
+The original pull-based metrics collection has scalability issues:
+
+1. **Ray Remote Overhead**: Frequent `ray.get()` calls for metrics create pressure on GCS, metadata, and network
+2. **Worker Interference**: `get_metrics()` calls may block worker processing
+3. **Unpredictable Latency**: Timeouts cause missing data; busy workers cause delays
+4. **Linear Scaling**: O(N) complexity with number of workers
+
+### Event-Driven Architecture
+
+We use Tansu (embedded Kafka) for push-based state management:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Push-Based State Architecture                          │
+│                                                                                  │
+│   PRODUCERS (fire-and-forget)                  TANSU TOPICS                     │
+│   ──────────────────────────                   ────────────                     │
+│                                                                                  │
+│   ┌─────────────┐                              ┌──────────────────┐             │
+│   │ RayJobRunner│ ──JOB_STARTED─────────────▶ │                  │             │
+│   │             │ ──JOB_COMPLETED───────────▶ │  {job}_state     │             │
+│   └─────────────┘                              │                  │             │
+│                                                └────────┬─────────┘             │
+│   ┌─────────────┐                                       │                       │
+│   │ StageMaster │ ──STAGE_STARTED────────────▶        │                       │
+│   │             │ ──STAGE_METRICS────────────▶        │                       │
+│   │             │ ──BACKPRESSURE─────────────▶        │                       │
+│   └─────────────┘                                       │                       │
+│                                                         │                       │
+│   ┌─────────────┐                                       │                       │
+│   │ StageWorker │ ──WORKER_METRICS───────────▶        │                       │
+│   │             │ ──WORKER_STARTED───────────▶        │                       │
+│   │             │ ──WORKER_STOPPED───────────▶        │                       │
+│   │             │ ──EXCEPTION────────────────▶        │                       │
+│   └─────────────┘                                       │                       │
+│                                                         ▼                       │
+│                                                ┌────────────────────┐           │
+│                                                │   JobStateManager  │           │
+│                                                │   (per job)        │           │
+│                                                │                    │           │
+│                                                │ - Consume state    │           │
+│                                                │   topic            │           │
+│                                                │ - Time-window      │           │
+│                                                │   aggregation      │           │
+│                                                │ - In-memory state  │           │
+│                                                │ - Snapshot to      │           │
+│                                                │   SlateDB          │           │
+│                                                │ - Export to        │           │
+│                                                │   Prometheus       │           │
+│                                                └──────────┬─────────┘           │
+│                                                           │                     │
+│                                    ┌──────────────────────┼────────────┐        │
+│                                    │                      │            │        │
+│                                    ▼                      ▼            ▼        │
+│                            ┌────────────┐        ┌─────────────┐ ┌──────────┐  │
+│                            │  REST API  │        │  SSE Stream │ │ SlateDB  │  │
+│                            │ (query)    │        │  (push)     │ │ (history)│  │
+│                            └────────────┘        └─────────────┘ └──────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### State Message Types
+
+```python
+class StateMessageType(str, Enum):
+    # Job lifecycle
+    JOB_STARTED = "job_started"
+    JOB_COMPLETED = "job_completed"
+    JOB_FAILED = "job_failed"
+    
+    # Stage lifecycle
+    STAGE_STARTED = "stage_started"
+    STAGE_COMPLETED = "stage_completed"
+    
+    # Worker lifecycle
+    WORKER_STARTED = "worker_started"
+    WORKER_STOPPED = "worker_stopped"
+    
+    # Metrics (periodic, rate-limited)
+    STAGE_METRICS = "stage_metrics"
+    WORKER_METRICS = "worker_metrics"
+    
+    # Events
+    EXCEPTION = "exception"
+    BACKPRESSURE = "backpressure"
+```
+
+### Time-Window Aggregation
+
+Since push-based metrics have non-aligned timestamps, we use time-window aggregation:
+
+```python
+class TimeWindowAggregator:
+    """Aggregate metrics into fixed time windows.
+    
+    - window_size: 1 second (configurable)
+    - max_lag: 3 seconds (wait for late arrivals)
+    - Strategy: Take latest value per source within window
+    """
+    
+    def _get_window_start(self, timestamp: float) -> float:
+        return math.floor(timestamp / self.window_size) * self.window_size
+    
+    def process_message(self, msg: StateMessage) -> None:
+        window = self._get_window_start(msg.timestamp)
+        # Keep latest value per source_id within window
+        if msg.timestamp > existing.timestamp:
+            self._windows[window][msg.source_id] = msg
+```
+
+### Benefits vs Trade-offs
+
+| Aspect | Pull-Based (Old) | Push-Based (New) |
+|--------|-----------------|------------------|
+| Ray GCS Load | High (N×2 calls/s) | Near zero |
+| Worker Impact | Blocks processing | No impact (async) |
+| Latency | Unpredictable (1-30s) | Predictable (~1.5s) |
+| Consistency | Strong (point-in-time) | Eventual (windowed) |
+| Fault Tolerance | Poor (timeouts) | Good (replay from Tansu) |
+| Scalability | O(N) workers | O(1) consumer |
+| Complexity | Simple | Medium |
+
+### Design Principles
+
+1. **SplitPayloadStore stays pure**: Only stores payloads, no job metadata
+2. **Fire-and-forget producers**: Workers don't wait for produce() completion
+3. **Rate limiting**: Workers emit at most once per 500ms
+4. **Adaptive sampling**: When consumer lags, skip to latest
+5. **Event sourcing**: Can rebuild state by replaying messages
 
 ## Future Work
 

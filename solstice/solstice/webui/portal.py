@@ -461,18 +461,20 @@ def create_portal_app(storage_path: str) -> FastAPI:
             for stage in stages:
                 # Extract metrics from final_metrics or direct fields
                 metrics = stage.get("final_metrics", {})
-                transformed.append({
-                    "stage_id": stage.get("stage_id", ""),
-                    "operator_type": stage.get("operator_type", ""),
-                    "worker_count": stage.get("final_worker_count", 0)
-                    or metrics.get("worker_count", 0),
-                    "is_running": not stage.get("is_finished", True),
-                    "is_finished": stage.get("is_finished", False),
-                    "failed": stage.get("failed", False),
-                    "input_count": metrics.get("input_records", 0),
-                    "output_count": metrics.get("output_records", 0),
-                    "output_queue_size": metrics.get("output_buffer_size", 0),
-                })
+                transformed.append(
+                    {
+                        "stage_id": stage.get("stage_id", ""),
+                        "operator_type": stage.get("operator_type", ""),
+                        "worker_count": stage.get("final_worker_count", 0)
+                        or metrics.get("worker_count", 0),
+                        "is_running": not stage.get("is_finished", True),
+                        "is_finished": stage.get("is_finished", False),
+                        "failed": stage.get("failed", False),
+                        "input_count": metrics.get("input_records", 0),
+                        "output_count": metrics.get("output_records", 0),
+                        "output_queue_size": metrics.get("output_buffer_size", 0),
+                    }
+                )
             return transformed
 
         # First check storage for completed jobs (more detailed data)
@@ -500,6 +502,7 @@ def create_portal_app(storage_path: str) -> FastAPI:
             }
 
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     @app.get("/health")

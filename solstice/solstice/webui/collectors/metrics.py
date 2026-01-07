@@ -231,14 +231,16 @@ class MetricsCollector:
             )
         else:
             # Update existing worker data
-            self._known_workers[worker_id].update({
-                "status": worker_data.get("status", "UNKNOWN"),
-                "input_records": worker_data.get("input_records", 0),
-                "output_records": worker_data.get("output_records", 0),
-                "processing_time": worker_data.get("processing_time", 0),
-                "processed_count": worker_data.get("processed_count", 0),
-                "assigned_partitions": worker_data.get("assigned_partitions", []),
-            })
+            self._known_workers[worker_id].update(
+                {
+                    "status": worker_data.get("status", "UNKNOWN"),
+                    "input_records": worker_data.get("input_records", 0),
+                    "output_records": worker_data.get("output_records", 0),
+                    "processing_time": worker_data.get("processing_time", 0),
+                    "processed_count": worker_data.get("processed_count", 0),
+                    "assigned_partitions": worker_data.get("assigned_partitions", []),
+                }
+            )
 
     async def _check_removed_workers(
         self, stage_id: str, current_worker_ids: set, current_time: float
@@ -260,9 +262,7 @@ class MetricsCollector:
                     )
 
                     # Immediately store final worker history
-                    self.storage.store_worker_history(
-                        worker_id, self._known_workers[worker_id]
-                    )
+                    self.storage.store_worker_history(worker_id, self._known_workers[worker_id])
 
     async def _snapshot_worker_history(self) -> None:
         """Snapshot all known workers to SlateDB."""

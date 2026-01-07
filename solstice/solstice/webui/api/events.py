@@ -65,25 +65,29 @@ async def list_job_events(
                     actor_name = actor.get("name", "")
                     # Filter by job_id in name (workers are named with job_id prefix)
                     if job_id in actor_name or not job_id:
-                        events.append({
-                            "event_type": "ACTOR",
-                            "name": actor_name,
-                            "actor_id": actor.get("actor_id"),
-                            "state": actor.get("state"),
-                            "node_id": actor.get("node_id"),
-                            "pid": actor.get("pid"),
-                            "timestamp": None,  # Ray State API doesn't provide creation time
-                            "details": {
-                                "class_name": actor.get("class_name"),
-                                "resources": actor.get("required_resources"),
+                        events.append(
+                            {
+                                "event_type": "ACTOR",
+                                "name": actor_name,
+                                "actor_id": actor.get("actor_id"),
+                                "state": actor.get("state"),
+                                "node_id": actor.get("node_id"),
+                                "pid": actor.get("pid"),
+                                "timestamp": None,  # Ray State API doesn't provide creation time
+                                "details": {
+                                    "class_name": actor.get("class_name"),
+                                    "resources": actor.get("required_resources"),
+                                },
                             }
-                        })
+                        )
             except Exception as e:
-                events.append({
-                    "event_type": "ERROR",
-                    "name": "list_actors",
-                    "details": str(e),
-                })
+                events.append(
+                    {
+                        "event_type": "ERROR",
+                        "name": "list_actors",
+                        "details": str(e),
+                    }
+                )
 
         # Get task events
         if event_type is None or event_type == "tasks":
@@ -94,24 +98,28 @@ async def list_job_events(
                     func_name = task.get("func_or_class_name", "")
                     # Filter by job_id
                     if job_id in task_name or job_id in func_name or not job_id:
-                        events.append({
-                            "event_type": "TASK",
-                            "name": task_name or func_name,
-                            "task_id": task.get("task_id"),
-                            "state": task.get("state"),
-                            "node_id": task.get("node_id"),
-                            "timestamp": None,
-                            "details": {
-                                "func_name": func_name,
-                                "actor_id": task.get("actor_id"),
+                        events.append(
+                            {
+                                "event_type": "TASK",
+                                "name": task_name or func_name,
+                                "task_id": task.get("task_id"),
+                                "state": task.get("state"),
+                                "node_id": task.get("node_id"),
+                                "timestamp": None,
+                                "details": {
+                                    "func_name": func_name,
+                                    "actor_id": task.get("actor_id"),
+                                },
                             }
-                        })
+                        )
             except Exception as e:
-                events.append({
-                    "event_type": "ERROR",
-                    "name": "list_tasks",
-                    "details": str(e),
-                })
+                events.append(
+                    {
+                        "event_type": "ERROR",
+                        "name": "list_tasks",
+                        "details": str(e),
+                    }
+                )
 
     except ImportError:
         return [{"event_type": "ERROR", "details": "ray.util.state not available"}]
@@ -156,12 +164,14 @@ async def list_cluster_events(
         try:
             node_list = list_nodes()
             for n in node_list:
-                nodes.append({
-                    "node_id": n.get("node_id"),
-                    "state": n.get("state"),
-                    "node_ip": n.get("node_ip"),
-                    "resources": n.get("resources_total"),
-                })
+                nodes.append(
+                    {
+                        "node_id": n.get("node_id"),
+                        "state": n.get("state"),
+                        "node_ip": n.get("node_ip"),
+                        "resources": n.get("resources_total"),
+                    }
+                )
         except Exception:
             pass
 

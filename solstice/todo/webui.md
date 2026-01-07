@@ -6,14 +6,47 @@ Track implementation status of WebUI features against `design-docs/webui.md`.
 
 ---
 
+## 🚀 Unified Read-Only Architecture
+
+Major architectural simplification: Portal and History Server use the same read-only code.
+
+> **Status**: Complete (2025-01-07)
+
+### Key Design Decisions ✅
+- [x] **Portal is read-only** - Only reads from JobStorage (SlateDB)
+- [x] **History Server is read-only** - Same code as Portal
+- [x] **JobRunner is the only writer** - StateManager writes to SlateDB
+- [x] **No cross-process state sharing** - Registry pattern removed
+- [x] **Unified code path** - Running and completed jobs use same logic
+
+### Implementation ✅
+- [x] **Removed registry.py** - Cross-process state doesn't work
+- [x] **Updated API handlers** - Read from `request.app.state.storage` only
+  - `jobs.py`, `stages.py`, `workers.py`
+- [x] **Updated state_push.py** - Removed registry calls
+- [x] **Updated design-docs/webui.md** - Documented unified architecture
+
+### Push-Based Metrics ✅
+- [x] **StateMessage definitions** - `webui/state/messages.py`
+- [x] **JobStateManager** - Consumes Tansu, writes to SlateDB
+- [x] **StateProducer** - Fire-and-forget produce
+- [x] **StatePushManager** - Encapsulates state infrastructure in runner
+
+### Producer Integration ✅
+- [x] **Worker metrics push** - Modified StageWorker
+- [x] **Job lifecycle events** - Modified RayJobRunner
+- [x] **Stage metrics push** - Modified StageMaster
+
+---
+
 ## ✅ Completed
 
 ### Core Architecture
 
-- [x] **Portal Service** - Ray Serve deployment with `/solstice` route prefix
-- [x] **JobWebUI** - Per-job WebUI instance
-- [x] **Dual-Mode Architecture** - Embedded Mode + History Server Mode
-- [x] **No JobRegistry Design** - Uses Ray State API to query actors directly (simpler than design doc)
+- [x] **Portal Service** - Ray Serve deployment with `/solstice` route prefix (read-only)
+- [x] **StatePushManager** - Encapsulates state infrastructure in JobRunner
+- [x] **Unified Architecture** - Portal and History Server use same read-only code
+- [x] **No cross-process state** - Removed broken registry pattern
 
 ### Storage
 
@@ -24,7 +57,7 @@ Track implementation status of WebUI features against `design-docs/webui.md`.
 
 ### Collectors
 
-- [x] **MetricsCollector** - 1s polling, 30s snapshots
+- [x] **MetricsCollector** - 1s polling, 30s snapshots (to be replaced by push-based)
 - [x] **LineageTracker** - Basic implementation
 - [x] **ExceptionAggregator** - Basic implementation
 - [x] **JobArchiver** - Archives job on completion
@@ -126,67 +159,48 @@ Track implementation status of WebUI features against `design-docs/webui.md`.
 
 ## 🔄 Design Changes
 
-Differences from `design-docs/webui.md`:
+Differences from original `design-docs/webui.md`:
 
-### 1. JobRegistry Removed
+### 1. Unified Read-Only Architecture ✅
 
-**Design Doc**:
-```
-JobRegistry (singleton Ray Actor)
-└── Tracks all running jobs
-```
+**Original Design**:
+- Portal queries running jobs via JobRegistry/StateManager
+- History Server reads from SlateDB
+- Different code paths for running vs completed
 
-**Actual Implementation**:
-- No JobRegistry
-- Uses Ray State API (`ray.util.state.list_actors`) for direct queries
-- Identifies running jobs via `_RaySplitPayloadStoreActor`
-- Gets stage/worker info from `StageWorker` actor names
+**Current Implementation**:
+- Portal reads from JobStorage (SlateDB) only
+- History Server uses same code
+- Unified code path for all jobs
+- No cross-process state sharing
 
 **Reason**: 
-- Avoids single point of failure
-- No additional actor maintenance
-- Simpler design
+- Cross-process state doesn't work (module-level dicts are process-local)
+- Simpler architecture
+- Better reliability
 
-**Update design doc**: ✅ Yes
+### 2. No Cross-Process Registry ✅
 
-### 2. EventCollector Not Implemented
+**Original Design**:
+- register_state_manager() / get_state_manager()
+- Module-level dict to track managers
 
-**Design Doc**:
-```
-JobWebUI → [EventCollector]
-         → [LineageTracker]
-         → [ExceptionAggregator]
-```
+**Current Implementation**:
+- Removed registry.py
+- JobRunner writes to storage
+- Portal reads from storage
 
-**Actual Implementation**:
-- `job_webui.py` only initializes: MetricsCollector, LineageTracker, ExceptionAggregator, JobArchiver
-- No EventCollector
+**Reason**:
+- Different jobs run in different processes
+- Module-level variables aren't shared
+
+### 3. EventCollector Not Implemented
 
 **Action Needed**:
 - Decide if EventCollector is needed
 - Or update design doc to remove it
 
-### 3. Alpine.js Not Actually Used
-
-**Design Doc**:
-- Frontend: HTMX + Alpine.js + Jinja2
-
-**Actual Implementation**:
-- Templates don't use Alpine.js
-- Primarily HTMX + Jinja2
-
-**Action Needed**:
-- Decide if Alpine.js is needed
-- If needed, identify use cases (dropdowns, modals)
-
 ### 4. Chart.js Not Integrated
-
-**Design Doc**:
-- Charts: Chart.js
-
-**Actual Implementation**:
-- `static/js/` directory exists but no Chart.js integration
-- No time-series charts
 
 **Action Needed**:
 - Add Chart.js vendor files

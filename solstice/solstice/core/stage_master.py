@@ -94,6 +94,10 @@ class StageConfig:
             If None, automatically set based on max_workers.
             For single worker, uses 1 partition. For multiple workers,
             uses min(max_workers, actual_worker_count) partitions.
+        upstream_endpoint: Queue endpoint for upstream stage (None for source stages)
+        upstream_topic: Topic name for upstream queue (None for source stages)
+        state_endpoint: Queue endpoint for push-based state/metrics (WebUI)
+        state_topic: Topic name for state messages (WebUI)
     """
 
     queue_type: QueueType = QueueType.TANSU  # Default to Tansu for persistence
@@ -121,6 +125,14 @@ class StageConfig:
     worker_ready_timeout_seconds: float = 30.0  # Max time to wait for worker to be ready
     worker_spawn_retry_delay_seconds: float = 2.0  # Delay between spawn retries
 
+    # Upstream queue connection (set by runner for non-source stages)
+    upstream_endpoint: Optional["QueueEndpoint"] = None
+    upstream_topic: Optional[str] = None
+
+    # State push connection (for WebUI metrics)
+    state_endpoint: Optional["QueueEndpoint"] = None
+    state_topic: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "queue_type": self.queue_type.value,
@@ -132,6 +144,8 @@ class StageConfig:
             "partition_count": self.partition_count,
             "backpressure_threshold_lag": self.backpressure_threshold_lag,
             "backpressure_threshold_queue_size": self.backpressure_threshold_queue_size,
+            "upstream_topic": self.upstream_topic,
+            "state_topic": self.state_topic,
         }
 
 
@@ -237,15 +251,19 @@ class StageMaster:
         stage: "Stage",
         config: StageConfig,
         payload_store: SplitPayloadStore,
-        upstream_endpoint: Optional[QueueEndpoint] = None,
-        upstream_topic: Optional[str] = None,
     ):
         self.job_id = job_id
         self.stage_id = stage.stage_id
         self.stage = stage
         self.config = config
-        self.upstream_endpoint = upstream_endpoint
-        self.upstream_topic = upstream_topic
+
+        # Upstream queue connection (from config)
+        self.upstream_endpoint = config.upstream_endpoint
+        self.upstream_topic = config.upstream_topic
+
+        # State push configuration (for WebUI metrics, from config)
+        self.state_endpoint = config.state_endpoint
+        self.state_topic = config.state_topic
 
         self.logger = create_ray_logger(f"Master-{self.stage_id}")
 
@@ -485,6 +503,7 @@ class StageMaster:
             **resources,
         ).remote(
             worker_id=worker_id,
+            job_id=self.job_id,
             stage=self.stage,
             upstream_endpoint=self.upstream_endpoint,
             upstream_topic=self.upstream_topic,
@@ -494,6 +513,8 @@ class StageMaster:
             assigned_partitions=assigned_partitions,
             config=self.config,
             payload_store=self.payload_store,
+            state_endpoint=self.state_endpoint,
+            state_topic=self.state_topic,
         )
 
         self._workers[worker_id] = worker
@@ -1129,11 +1150,16 @@ class StageWorker:
 
     Note: Workers create their own queue connections from endpoints,
     since QueueClient instances contain locks and cannot be serialized.
+
+    Metrics Push:
+    Workers push metrics to a state topic for WebUI monitoring.
+    This replaces the pull-based ray.get() polling approach.
     """
 
     def __init__(
         self,
         worker_id: str,
+        job_id: str,
         stage: "Stage",
         upstream_endpoint: Optional[QueueEndpoint],
         upstream_topic: Optional[str],
@@ -1143,8 +1169,11 @@ class StageWorker:
         assigned_partitions: List[int],
         config: StageConfig,
         payload_store: SplitPayloadStore,
+        state_endpoint: Optional[QueueEndpoint] = None,
+        state_topic: Optional[str] = None,
     ):
         self.worker_id = worker_id
+        self.job_id = job_id
         self.stage_id = stage.stage_id
         self.stage = stage
         self.config = config
@@ -1160,6 +1189,11 @@ class StageWorker:
         self.consumer_group = consumer_group
         self.assigned_partitions = assigned_partitions
 
+        # State push configuration (optional, for WebUI)
+        self.state_endpoint = state_endpoint
+        self.state_topic = state_topic
+        self._state_producer = None  # Created in run() if configured
+
         # Queue connections (created lazily)
         self.upstream_queue: Optional[QueueClient] = None
         self.output_queue: Optional[QueueClient] = None
@@ -1173,7 +1207,11 @@ class StageWorker:
         self._running = False
         self._processed_count = 0
         self._error_count = 0
+        self._total_input_records = 0
+        self._total_output_records = 0
+        self._total_processing_time = 0.0
         self._last_commit_time = time.time()
+        self._last_metrics_emit_time = 0.0
         self._upstream_finished = False
         self._partitions_updated = False  # Flag to signal partition rebalance
 
@@ -1211,8 +1249,17 @@ class StageWorker:
             self.logger.info(f"Connecting to upstream queue: {self.upstream_endpoint}")
             self.upstream_queue = await self._create_queue_from_endpoint(self.upstream_endpoint)
 
+            # Initialize state producer if configured (for WebUI metrics push)
+            await self._init_state_producer()
+
+            # Emit worker started event
+            await self._emit_worker_started()
+
             # Process from upstream queue
             await self._process_from_upstream()
+
+            # Emit worker stopped event
+            await self._emit_worker_stopped(reason="completed")
 
             return {
                 "worker_id": self.worker_id,
@@ -1222,6 +1269,9 @@ class StageWorker:
 
         except Exception as e:
             self.logger.error(f"Worker {self.worker_id} failed: {e}")
+            # Emit exception and worker stopped
+            await self._emit_exception(e)
+            await self._emit_worker_stopped(reason="failed")
             raise
         finally:
             self._running = False
@@ -1232,11 +1282,121 @@ class StageWorker:
             except Exception as e:
                 self.logger.warning(f"Error during operator close: {e}")
 
+            # Stop state producer
+            if self._state_producer:
+                try:
+                    await self._state_producer.stop()
+                except Exception as e:
+                    self.logger.warning(f"Error stopping state producer: {e}")
+
             # Cleanup queue connections
             if self.upstream_queue:
                 await self.upstream_queue.stop()
             if self.output_queue:
                 await self.output_queue.stop()
+
+    async def _init_state_producer(self) -> None:
+        """Initialize state producer for metrics push."""
+        if not self.state_endpoint or not self.state_topic:
+            return
+
+        try:
+            from solstice.webui.state.producer import StateProducer
+
+            state_queue = await self._create_queue_from_endpoint(self.state_endpoint)
+            self._state_producer = StateProducer(
+                job_id=self.job_id,
+                queue_client=state_queue,
+                state_topic=self.state_topic,
+            )
+            await self._state_producer.start()
+            self.logger.debug("State producer initialized")
+        except Exception as e:
+            self.logger.warning(f"Failed to init state producer: {e}")
+            self._state_producer = None
+
+    async def _emit_worker_started(self) -> None:
+        """Emit WORKER_STARTED event."""
+        if not self._state_producer:
+            return
+
+        try:
+            from solstice.webui.state.messages import worker_started_message
+
+            msg = worker_started_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                worker_id=self.worker_id,
+                assigned_partitions=self.assigned_partitions,
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit worker started: {e}")
+
+    async def _emit_worker_stopped(self, reason: str = "completed") -> None:
+        """Emit WORKER_STOPPED event."""
+        if not self._state_producer:
+            return
+
+        try:
+            from solstice.webui.state.messages import worker_stopped_message
+
+            msg = worker_stopped_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                worker_id=self.worker_id,
+                reason=reason,
+                processed_count=self._processed_count,
+                error_count=self._error_count,
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit worker stopped: {e}")
+
+    async def _emit_worker_metrics(self) -> None:
+        """Emit WORKER_METRICS event (rate limited)."""
+        if not self._state_producer:
+            return
+
+        try:
+            from solstice.webui.state.messages import worker_metrics_message
+
+            msg = worker_metrics_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                worker_id=self.worker_id,
+                input_records=self._total_input_records,
+                output_records=self._total_output_records,
+                processing_time=self._total_processing_time,
+                processed_count=self._processed_count,
+                assigned_partitions=self.assigned_partitions,
+                is_running=self._running,
+            )
+            # Use rate-limited produce
+            await self._state_producer.produce_rate_limited(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit worker metrics: {e}")
+
+    async def _emit_exception(self, exception: Exception) -> None:
+        """Emit EXCEPTION event."""
+        if not self._state_producer:
+            return
+
+        try:
+            import traceback
+            from solstice.webui.state.messages import exception_message
+
+            msg = exception_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                worker_id=self.worker_id,
+                exception_type=type(exception).__name__,
+                message=str(exception),
+                stacktrace=traceback.format_exc(),
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit exception: {e}")
 
     def notify_upstream_finished(self) -> None:
         """Called by master when upstream stage(s) have finished."""
@@ -1440,7 +1600,16 @@ class StageWorker:
             )
 
         # Process with operator
+        start_time = time.time()
         output_payload = self.operator.process_split(split, payload)
+        processing_time = time.time() - start_time
+
+        # Update metrics
+        input_records = len(payload) if payload else 0
+        output_records = len(output_payload) if output_payload else 0
+        self._total_input_records += input_records
+        self._total_output_records += output_records
+        self._total_processing_time += processing_time
 
         if output_payload:
             # Generate unique key for this payload
@@ -1464,6 +1633,9 @@ class StageWorker:
             self.logger.debug(f"Produced output for {message.split_id} at offset {offset}")
         else:
             self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
+
+        # Emit metrics periodically (rate limited by StateProducer)
+        await self._emit_worker_metrics()
 
         # Delete input payload if it was from store (not source message)
         # FIXME: Disable payload deletion to prevent race conditions in distributed execution
@@ -1511,3 +1683,19 @@ class StageWorker:
             "processed_count": self._processed_count,
             "error_count": self._error_count,
         }
+
+    def get_metrics(self):
+        """Get worker metrics for WebUI.
+
+        Returns:
+            WorkerMetrics dataclass with current metrics
+        """
+        from solstice.core.models import WorkerMetrics
+
+        return WorkerMetrics(
+            worker_id=self.worker_id,
+            stage_id=self.stage_id,
+            input_records=self._total_input_records,
+            output_records=self._total_output_records,
+            processing_time=self._total_processing_time,
+        )

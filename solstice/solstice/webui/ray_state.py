@@ -14,13 +14,11 @@
 
 """Ray State API utilities for querying running Solstice jobs.
 
-This module encapsulates all Ray State API interactions for the WebUI,
-providing a clean interface for discovering and querying running jobs.
+This module provides direct Ray State API queries for discovering jobs
+by inspecting Ray actors. Used by the Portal for job discovery.
 
-Key design: No centralized state (JobRegistry). All information is obtained
-by querying Ray actors directly:
-- _RaySplitPayloadStoreActor: job metadata (dag_edges, start_time, stages config)
-- StageWorker: real-time metrics (input/output counts)
+Note: For running jobs with push-based metrics enabled, prefer using
+the registry functions in solstice.webui.state.registry instead.
 """
 
 import time
@@ -51,7 +49,6 @@ def get_running_jobs_from_ray() -> List[Dict[str, Any]]:
 
         # Map job_id -> job info
         jobs_map: Dict[str, Dict[str, Any]] = {}
-        payload_store_actors: Dict[str, str] = {}  # job_id -> actor_name
         actors = list_actors(filters=[("state", "=", "ALIVE")])
 
         # First pass: find jobs by payload_store actors
@@ -62,11 +59,10 @@ def get_running_jobs_from_ray() -> List[Dict[str, Any]]:
                 if len(parts) >= 3:
                     job_id = parts[2]
                     if job_id not in jobs_map:
-                        payload_store_actors[job_id] = actor.name
                         jobs_map[job_id] = {
                             "job_id": job_id,
                             "status": "RUNNING",
-                            "start_time": now,  # Will be updated from metadata
+                            "start_time": now,  # Approximate; use JobStateManager for accurate time
                             "last_update": now,
                             "stage_count": 0,
                             "worker_count": 0,
@@ -88,11 +84,13 @@ def get_running_jobs_from_ray() -> List[Dict[str, Any]]:
 
                         if stage_id not in stages_seen[job_id]:
                             stages_seen[job_id].add(stage_id)
-                            jobs_map[job_id]["stages"].append({
-                                "stage_id": stage_id,
-                                "worker_count": 1,
-                                "is_running": True,
-                            })
+                            jobs_map[job_id]["stages"].append(
+                                {
+                                    "stage_id": stage_id,
+                                    "worker_count": 1,
+                                    "is_running": True,
+                                }
+                            )
                             jobs_map[job_id]["stage_count"] += 1
                         else:
                             for s in jobs_map[job_id]["stages"]:
@@ -103,16 +101,8 @@ def get_running_jobs_from_ray() -> List[Dict[str, Any]]:
                         jobs_map[job_id]["worker_count"] += 1
                         break
 
-        # Third pass: get metadata from payload_store actors
-        for job_id, actor_name in payload_store_actors.items():
-            try:
-                actor = ray.get_actor(actor_name)
-                metadata = ray.get(actor.get_job_metadata.remote(), timeout=2)
-                if metadata:
-                    jobs_map[job_id]["dag_edges"] = metadata.get("dag_edges", {})
-                    jobs_map[job_id]["start_time"] = metadata.get("start_time", now)
-            except Exception:
-                pass  # Keep defaults
+        # Note: Metadata (dag_edges, start_time) is now managed by JobStateManager
+        # via push-based events. Legacy payload_store no longer stores metadata.
 
         return list(jobs_map.values())
     except Exception:
@@ -122,36 +112,35 @@ def get_running_jobs_from_ray() -> List[Dict[str, Any]]:
 def get_running_job_info(job_id: str) -> Optional[Dict[str, Any]]:
     """Get detailed info for a specific running job.
 
-    Queries the job's payload_store actor for metadata, then enriches
-    with real-time worker metrics from StageWorker actors.
+    Checks if the job's payload_store actor exists to confirm running status,
+    then enriches with real-time worker metrics from StageWorker actors.
+
+    Note: Detailed metadata (dag_edges, start_time) is now managed by
+    JobStateManager via push-based events. Use get_running_job_info_from_state_manager()
+    for complete job info when available.
 
     Args:
         job_id: The job identifier
 
     Returns:
-        Job info dict with dag_edges, stages, metrics, or None if not found
+        Job info dict with stages and metrics, or None if not found
     """
     try:
-        # Get payload_store actor for this job
+        # Check if payload_store actor exists to confirm job is running
         actor_name = f"payload_store_{job_id}"
         try:
-            actor = ray.get_actor(actor_name)
+            ray.get_actor(actor_name)
         except ValueError:
             # Job not running
             return None
-
-        # Get base metadata
-        metadata = ray.get(actor.get_job_metadata.remote(), timeout=2)
-        if not metadata:
-            metadata = {}
 
         now = time.time()
         result = {
             "job_id": job_id,
             "status": "RUNNING",
-            "start_time": metadata.get("start_time", now),
+            "start_time": now,  # Approximate; use JobStateManager for accurate time
             "last_update": now,
-            "dag_edges": metadata.get("dag_edges", {}),
+            "dag_edges": {},  # Use JobStateManager for dag_edges
             "stages": [],
             "stage_count": 0,
             "worker_count": 0,

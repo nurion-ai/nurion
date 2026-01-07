@@ -117,8 +117,12 @@ class JobArchiver:
                     "stages": {s["stage_id"]: s["final_metrics"] for s in stages},
                 },
                 # Summary (input/output totals from final stage metrics)
-                "total_input_records": sum(s["final_metrics"].get("input_records", 0) for s in stages),
-                "total_output_records": sum(s["final_metrics"].get("output_records", 0) for s in stages),
+                "total_input_records": sum(
+                    s["final_metrics"].get("input_records", 0) for s in stages
+                ),
+                "total_output_records": sum(
+                    s["final_metrics"].get("output_records", 0) for s in stages
+                ),
                 # Error
                 "error": final_status.error,
             }

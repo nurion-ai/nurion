@@ -283,9 +283,7 @@ class JobStorage:
             workers = [w for w in workers if w.get("status") == status]
 
         # Sort by start_time descending (newest first)
-        sorted_workers = sorted(
-            workers, key=lambda x: x.get("start_time", 0), reverse=True
-        )
+        sorted_workers = sorted(workers, key=lambda x: x.get("start_time", 0), reverse=True)
 
         return sorted_workers[offset : offset + limit]
 

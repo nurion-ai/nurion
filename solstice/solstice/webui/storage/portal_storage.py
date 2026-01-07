@@ -410,9 +410,7 @@ class PortalStorage:
             workers.append(worker)
 
         db.close()
-        sorted_workers = sorted(
-            workers, key=lambda x: x.get("start_time", 0), reverse=True
-        )
+        sorted_workers = sorted(workers, key=lambda x: x.get("start_time", 0), reverse=True)
         return sorted_workers[offset : offset + limit]
 
     def get_worker_history(
