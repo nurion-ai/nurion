@@ -51,7 +51,8 @@ nurion/
 │   ├── java/                # Spark Java/Scala components
 │   ├── workflows/           # Example workflows
 │   ├── tests/
-│   └── design-docs/         # Design documents
+│   ├── design-docs/         # Design documents (architecture decisions)
+│   └── todo/                # Feature tracking (implementation status)
 │
 └── scripts/                 # CI/dev scripts
 ```
@@ -151,8 +152,9 @@ For Solstice integration tests, you need:
 ### When Understanding Code
 
 1. **Design Docs**: Check `/solstice/design-docs/` for architecture decisions
-2. **Core Abstractions**: Start with `solstice/core/` to understand the framework
-3. **Example Workflows**: Reference `solstice/workflows/`
+2. **TODO Tracking**: Check `/solstice/todo/` for implementation status and pending work
+3. **Core Abstractions**: Start with `solstice/core/` to understand the framework
+4. **Example Workflows**: Reference `solstice/workflows/`
 
 ### When Adding Features
 
@@ -433,12 +435,14 @@ solstice history-server -s s3://bucket/solstice-history/ -p 8080
 
 ## Resources
 
-- **Design Documents**: `solstice/design-docs/`
+- **Design Documents**: `solstice/design-docs/` (architecture decisions, "how it should work")
+- **TODO Tracking**: `solstice/todo/` (implementation status, "what's done and pending")
 - **WebUI Design**: `solstice/design-docs/webui.md`
+- **WebUI TODO**: `solstice/todo/webui.md`
 - **WebUI Guide**: `solstice/webui/README.md`
 - **README Files**: Root directory and each subproject's README.md
 - **Examples**: `solstice/workflows/`, `solstice/examples/webui_demo.py`
 
 ---
 
-*Last updated: 2025-01-05*
+*Last updated: 2025-01-07*
