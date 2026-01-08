@@ -18,8 +18,9 @@
         </nav>
         <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
             <h1 style="margin: 0;">Stage: {{ stage.stage_id }}</h1>
-            <span class="badge badge-{{ 'running' if stage.is_running else 'completed' if stage.is_finished else 'pending' }}">
-                {{ 'RUNNING' if stage.is_running else 'COMPLETED' if stage.is_finished else 'PENDING' }}
+            {% set status = stage.status|default('PENDING') %}
+            <span class="badge badge-{{ 'running' if status == 'RUNNING' else 'completed' if status == 'COMPLETED' else 'failed' if status == 'FAILED' else 'pending' }}">
+                {{ status }}
             </span>
             {% if stage.backpressure_active %}
             <span class="badge" style="background: var(--pico-warning);">BACKPRESSURE</span>

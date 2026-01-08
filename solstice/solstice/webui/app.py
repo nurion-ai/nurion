@@ -255,6 +255,11 @@ def create_webui_app(
     # API Routes
     # =========================================================================
 
+    # Include lineage API router
+    from solstice.webui.api.lineage import router as lineage_router
+
+    app.include_router(lineage_router, prefix="/api")
+
     @app.get("/api/jobs")
     async def api_list_jobs():
         """API: List all jobs."""
@@ -276,14 +281,13 @@ def create_webui_app(
         transformed = []
         for stage in stages:
             metrics = stage.get("final_metrics", {})
+            # Only return status - client derives is_running/is_finished/failed from it
             transformed.append(
                 {
                     "stage_id": stage.get("stage_id", ""),
                     "operator_type": stage.get("operator_type", ""),
+                    "status": stage.get("status", "PENDING"),
                     "worker_count": stage.get("worker_count", 0) or metrics.get("worker_count", 0),
-                    "is_running": stage.get("status") == "RUNNING",
-                    "is_finished": stage.get("is_finished", False),
-                    "failed": stage.get("failed", False),
                     "input_count": stage.get("input_records", 0) or metrics.get("input_records", 0),
                     "output_count": stage.get("output_records", 0)
                     or metrics.get("output_records", 0),

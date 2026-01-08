@@ -198,7 +198,7 @@ class JobStateManager:
         job_id: str,
         queue_client: "QueueClient",
         state_topic: str,
-        storage: Optional["JobStorage"] = None,
+        storage: "JobStorage",
         window_size_s: float = 1.0,
         max_lag_s: float = 3.0,
         snapshot_interval_s: float = 30.0,
@@ -209,7 +209,7 @@ class JobStateManager:
             job_id: Job identifier
             queue_client: Tansu queue client for consuming
             state_topic: Topic name to consume from
-            storage: Optional SlateDB storage for snapshots
+            storage: SlateDB storage for snapshots
             window_size_s: Time window size for aggregation
             max_lag_s: Maximum wait time for late arrivals
             snapshot_interval_s: Interval for SlateDB snapshots
@@ -264,8 +264,7 @@ class JobStateManager:
             self._consume_task = None
 
         # Final snapshot
-        if self.storage:
-            await self._snapshot_to_storage()
+        await self._snapshot_to_storage()
 
         self.logger.info("JobStateManager stopped")
 
@@ -353,8 +352,7 @@ class JobStateManager:
                 # Periodic snapshot
                 now = time.time()
                 if now - self._last_snapshot_time >= self.snapshot_interval_s:
-                    if self.storage:
-                        await self._snapshot_to_storage()
+                    await self._snapshot_to_storage()
                     self._last_snapshot_time = now
 
             except asyncio.CancelledError:
@@ -429,14 +427,8 @@ class JobStateManager:
 
                 state = self._stage_states[stage_id]
                 state.worker_count = msg.payload.get("worker_count", 0)
-                state.input_records = msg.payload.get("input_records", 0)
-                state.output_records = msg.payload.get("output_records", 0)
-                state.input_throughput = msg.payload.get("input_throughput", 0.0)
-                state.output_throughput = msg.payload.get("output_throughput", 0.0)
-                state.queue_lag = msg.payload.get("queue_lag", 0)
-                state.backpressure_active = msg.payload.get("backpressure_active", False)
-                state.partition_metrics = msg.payload.get("partition_metrics", {})
                 state.last_update = now
+                # Note: input_records/output_records are aggregated from WORKER_METRICS
 
             case StateMessageType.WORKER_STARTED:
                 worker_id = msg.source_id
@@ -453,12 +445,23 @@ class JobStateManager:
 
             case StateMessageType.WORKER_STOPPED:
                 worker_id = msg.source_id
+                stage_id = msg.payload.get("stage_id", "")
                 if worker_id in self._worker_states:
                     state = self._worker_states[worker_id]
                     state.status = "STOPPED"
                     state.end_time = msg.timestamp
                     state.processed_count = msg.payload.get("processed_count", 0)
+                    # Use final metrics from WORKER_STOPPED (more accurate than rate-limited WORKER_METRICS)
+                    state.input_records = msg.payload.get("input_records", state.input_records)
+                    state.output_records = msg.payload.get("output_records", state.output_records)
+                    state.processing_time = msg.payload.get(
+                        "processing_time", state.processing_time
+                    )
                     state.last_update = now
+
+                    # Update stage metrics with final worker values
+                    if stage_id:
+                        self._update_stage_metrics_from_workers(stage_id)
 
             case StateMessageType.WORKER_METRICS:
                 worker_id = msg.source_id
@@ -509,6 +512,38 @@ class JobStateManager:
                     state.backpressure_active = msg.payload.get("active", False)
                     state.queue_lag = msg.payload.get("queue_lag", 0)
                     state.last_update = now
+
+            case StateMessageType.SPLIT_PROCESSED:
+                # Handle split lineage tracking
+                split_id = msg.payload.get("split_id")
+                if split_id:
+                    lineage_data = {
+                        "split_id": split_id,
+                        "stage_id": msg.payload.get("stage_id"),
+                        "worker_id": msg.source_id,
+                        "partition_id": msg.payload.get("partition_id", -1),
+                        "parent_split_ids": msg.payload.get("parent_split_ids", []),
+                        # Timing
+                        "enqueue_time": msg.payload.get("enqueue_time"),
+                        "dequeue_time": msg.payload.get("dequeue_time"),
+                        "complete_time": msg.payload.get("complete_time"),
+                        "queue_wait_time_ms": msg.payload.get("queue_wait_time_ms"),
+                        "processing_time_ms": msg.payload.get("processing_time_ms"),
+                        # Data
+                        "input_records": msg.payload.get("input_records", 0),
+                        "output_records": msg.payload.get("output_records", 0),
+                        "input_bytes": msg.payload.get("input_bytes", 0),
+                        "output_bytes": msg.payload.get("output_bytes", 0),
+                        # Payload reference
+                        "payload_store_key": msg.payload.get("payload_store_key", ""),
+                        "payload_storage_path": msg.payload.get("payload_storage_path"),
+                        # Status
+                        "status": "completed",
+                        "timestamp": msg.timestamp,
+                    }
+
+                    # Store lineage record with parent→child index atomically
+                    self.storage.store_split_lineage_with_children(split_id, lineage_data)
 
     def _update_stage_metrics_from_workers(self, stage_id: str) -> None:
         """Aggregate worker metrics to update stage metrics immediately."""
@@ -592,11 +627,12 @@ class JobStateManager:
         Stores job state, stage metrics, and worker history.
         This enables Portal to read all job info from storage.
         """
-        if not self.storage:
-            return
-
         try:
             now = time.time()
+
+            # Force re-aggregate stage metrics from workers before snapshot
+            for stage_id in self._stage_states:
+                self._update_stage_metrics_from_workers(stage_id)
 
             # Store job state (enables Portal to list running jobs from storage)
             job_info = self.get_job_info()

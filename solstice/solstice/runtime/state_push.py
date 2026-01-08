@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from solstice.core.stage_master import QueueEndpoint
+    from solstice.webui.storage.slatedb_storage import JobStorage
 
 from solstice.utils.logging import create_ray_logger
 
@@ -96,11 +97,11 @@ class StatePushManager:
         """JobStateManager instance (for WebUI queries)."""
         return self._state_manager
 
-    async def start(self, storage: Optional[Any] = None) -> None:
+    async def start(self, storage: "JobStorage") -> None:
         """Start state push infrastructure.
 
         Args:
-            storage: Optional JobStorageWriter for persisting state snapshots
+            storage: JobStorageWriter for persisting state snapshots
         """
         if not self.config.enabled:
             self.logger.debug("State push disabled")
@@ -115,7 +116,6 @@ class StatePushManager:
             from solstice.webui.state.producer import StateProducer
             from solstice.webui.state.manager import JobStateManager
 
-            # Store the storage instance passed from caller
             self._storage = storage
 
             # Create and start broker

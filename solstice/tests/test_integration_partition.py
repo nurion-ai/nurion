@@ -206,5 +206,3 @@ class TestPartitionRebalance:
         assert removed == 2
 
         await master.stop()
-
-

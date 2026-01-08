@@ -16,19 +16,19 @@
 
 StateProducer provides a simple interface for producing state messages
 to Tansu. It handles:
-- Rate limiting (to avoid overwhelming the queue)
 - Async fire-and-forget produce (doesn't block caller)
 - Sequence number generation
 - Graceful degradation on failures
+
+Note: Rate limiting is done by callers where needed, not in this producer.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import TYPE_CHECKING, Optional
 
-from solstice.webui.state.messages import StateMessage, StateMessageType
+from solstice.webui.state.messages import StateMessage
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -36,10 +36,9 @@ if TYPE_CHECKING:
 
 
 class StateProducer:
-    """Producer for state messages with rate limiting.
+    """Producer for state messages.
 
     Features:
-    - Rate limiting per message type (configurable)
     - Fire-and-forget async produce
     - Automatic sequence numbering
     - Graceful failure handling (log and continue)
@@ -47,30 +46,15 @@ class StateProducer:
     Usage:
         producer = StateProducer(job_id, queue_client, state_topic)
         await producer.start()
-
-        # Produce immediately
         await producer.produce(message)
-
-        # Produce with rate limiting (skipped if too frequent)
-        await producer.produce_rate_limited(message)
-
         await producer.stop()
     """
-
-    # Default rate limits (minimum interval in seconds between messages)
-    DEFAULT_RATE_LIMITS = {
-        StateMessageType.WORKER_METRICS: 0.5,  # Max 2/s per worker
-        StateMessageType.STAGE_METRICS: 1.0,  # Max 1/s per stage
-        StateMessageType.BACKPRESSURE: 2.0,  # Max 1/2s
-        # Lifecycle events are not rate limited
-    }
 
     def __init__(
         self,
         job_id: str,
         queue_client: "QueueClient",
         state_topic: str,
-        rate_limits: Optional[dict] = None,
     ):
         """Initialize state producer.
 
@@ -78,17 +62,12 @@ class StateProducer:
             job_id: Job identifier
             queue_client: Tansu queue client
             state_topic: Topic name for state messages
-            rate_limits: Optional custom rate limits per message type
         """
         self.job_id = job_id
         self.queue_client = queue_client
         self.state_topic = state_topic
-        self.rate_limits = rate_limits or self.DEFAULT_RATE_LIMITS.copy()
 
         self.logger = create_ray_logger(f"StateProducer-{job_id}")
-
-        # Rate limiting state: (message_type, source_id) -> last_emit_time
-        self._last_emit: dict[tuple[StateMessageType, str], float] = {}
 
         # Sequence counter
         self._sequence = 0
@@ -128,7 +107,7 @@ class StateProducer:
         self.logger.debug("StateProducer stopped")
 
     async def produce(self, message: StateMessage) -> None:
-        """Produce a message immediately (queued for async send).
+        """Produce a message (queued for async send).
 
         This is fire-and-forget - it doesn't wait for the message
         to be sent to Tansu. Failures are logged but not raised.
@@ -139,44 +118,6 @@ class StateProducer:
 
         # Queue for background produce
         await self._pending_produces.put(message)
-
-    async def produce_rate_limited(self, message: StateMessage) -> bool:
-        """Produce a message with rate limiting.
-
-        Returns:
-            True if message was queued, False if rate limited (skipped)
-        """
-        rate_limit = self.rate_limits.get(message.message_type)
-
-        if rate_limit is not None:
-            key = (message.message_type, message.source_id)
-            last_time = self._last_emit.get(key, 0.0)
-            now = time.time()
-
-            if now - last_time < rate_limit:
-                # Rate limited - skip this message
-                return False
-
-            self._last_emit[key] = now
-
-        await self.produce(message)
-        return True
-
-    def should_emit(self, message_type: StateMessageType, source_id: str) -> bool:
-        """Check if a message should be emitted (not rate limited).
-
-        Useful for pre-checking before constructing expensive message payloads.
-        """
-        rate_limit = self.rate_limits.get(message_type)
-
-        if rate_limit is None:
-            return True
-
-        key = (message_type, source_id)
-        last_time = self._last_emit.get(key, 0.0)
-        now = time.time()
-
-        return now - last_time >= rate_limit
 
     async def _produce_loop(self) -> None:
         """Background loop that sends pending messages to Tansu."""

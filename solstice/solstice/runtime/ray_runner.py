@@ -242,6 +242,7 @@ class RayJobRunner:
             num_cpus=worker_res.get("num_cpus", 1.0),
             num_gpus=worker_res.get("num_gpus", 0.0),
             memory_mb=int(worker_res.get("memory", 0) / (1024**2)),
+            lineage_sample_rate=self.job.config.webui.lineage_sample_rate,
         )
 
     def _stage_info(self, stage: "Stage") -> Dict[str, Any]:
@@ -530,44 +531,6 @@ class RayJobRunner:
     def is_initialized(self) -> bool:
         return self._initialized
 
-    # === WebUI API ===
-
-    def get_dag_edges(self) -> Dict[str, List[str]]:
-        """Get the DAG edges for this job."""
-        return self.job.dag_edges
-
-    async def get_stages_for_webui(self) -> List[Dict[str, Any]]:
-        """Get detailed stage info with metrics for the WebUI.
-
-        Returns list of stage dicts with:
-        - stage_id, operator_type, worker_count
-        - input_count, output_count (from workers)
-        - is_running, is_finished, failed
-        - output_queue_size
-        """
-        stages = []
-        for stage_id, master in self._masters.items():
-            status = await master.get_status_async()
-            metrics = await master.collect_metrics()
-
-            stages.append(
-                {
-                    "stage_id": stage_id,
-                    "operator_type": type(master.stage.operator_config).__name__,
-                    "worker_count": status.worker_count,
-                    "min_parallelism": master.config.min_workers,
-                    "max_parallelism": master.config.max_workers,
-                    "input_count": metrics.input_records,
-                    "output_count": metrics.output_records,
-                    "output_queue_size": status.output_queue_size,
-                    "is_running": status.is_running,
-                    "is_finished": status.is_finished,
-                    "failed": status.failed,
-                    "backpressure_active": status.backpressure_active,
-                }
-            )
-        return stages
-
     # === Autoscaling Manual Intervention API ===
 
     def set_stage_workers(self, stage_id: str, count: int) -> None:
@@ -675,11 +638,13 @@ class RayJobRunner:
             self._webui_port = self.job.config.webui.port
 
             # Create JobWebUI using pre-created storage
+            # Pass state_manager for Prometheus export (push-based metrics)
             self._webui = JobWebUI(
                 self,
                 self._webui_storage,
-                prometheus_enabled=self.job.config.webui.prometheus_enabled,
                 attempt_id=self._webui_attempt_id,
+                state_manager=self._state_push.state_manager,
+                prometheus_enabled=self.job.config.webui.prometheus_enabled,
             )
 
             # Start WebUI

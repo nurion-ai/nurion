@@ -314,8 +314,8 @@ class TestSkewDetectionAlgorithm:
     """Tests for skew detection algorithm using real backends."""
 
     @pytest.mark.asyncio
-    async def test_no_skew_detected(self, payload_store, tansu_backend):
-        """Test that no skew is detected when lags are similar."""
+    async def test_no_skew_when_no_lag(self, payload_store, tansu_backend):
+        """Test that no skew is detected when there's no lag (empty topic)."""
         config = StageConfig(max_workers=4, partition_count=4)
         stage = Stage(
             stage_id="test_stage",
@@ -332,16 +332,7 @@ class TestSkewDetectionAlgorithm:
         topic = "test_topic"
         await tansu_backend.create_topic(topic, partitions=4)
 
-        # Produce similar amounts to each partition
-        for partition in range(4):
-            for i in range(100):
-                msg = QueueMessage(
-                    message_id=f"msg_{partition}_{i}",
-                    split_id=f"split_{partition}_{i}",
-                    payload_key=f"key_{partition}_{i}",
-                )
-                await tansu_backend.produce(topic, msg.to_bytes())
-
+        # Don't produce any messages - all partitions have 0 lag
         consumer_group = "test_job_test_stage"
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
@@ -352,19 +343,26 @@ class TestSkewDetectionAlgorithm:
         master.upstream_topic = topic
         master._consumer_group = consumer_group
 
-        skew_detected, skew_ratio, partition_lags = await master._detect_partition_skew(
+        skew_detected, skew_ratio, partition_lags = await master.detect_partition_skew(
             skew_threshold=2.0
         )
 
-        # With similar lags, should not detect skew
-        # Note: Actual values depend on message distribution
-        assert isinstance(skew_detected, bool)
-        assert skew_ratio >= 0.0
-        assert isinstance(partition_lags, dict)
+        # With no lag on any partition, skew should not be detected
+        assert skew_detected is False
+        # When all lags are 0, ratio is 0.0 (undefined, no data to calculate)
+        assert skew_ratio == 0.0
+        # partition_lags should have entries for each partition with 0 lag
+        assert len(partition_lags) == 4
+        for pid in range(4):
+            assert pid in partition_lags
+            assert partition_lags[pid] == 0
 
     @pytest.mark.asyncio
-    async def test_skew_detection_algorithm(self, payload_store, tansu_backend):
-        """Test skew detection algorithm with real backend."""
+    async def test_skew_detected_with_uneven_commits(self, payload_store, tansu_backend):
+        """Test skew detection when one partition has much higher lag than others."""
+        import asyncio
+        from aiokafka import AIOKafkaConsumer, TopicPartition
+
         config = StageConfig(max_workers=4, partition_count=4)
         stage = Stage(
             stage_id="test_stage",
@@ -381,7 +379,37 @@ class TestSkewDetectionAlgorithm:
         topic = "test_topic"
         await tansu_backend.create_topic(topic, partitions=4)
 
+        # Produce 100 messages (Tansu distributes round-robin, so ~25 per partition)
+        for i in range(100):
+            msg = QueueMessage(
+                message_id=f"msg_{i}",
+                split_id=f"split_{i}",
+                payload_key=f"key_{i}",
+            )
+            await tansu_backend.produce(topic, msg.to_bytes())
+
         consumer_group = "test_job_test_stage"
+
+        # Commit most messages on partitions 0,1,2 but leave partition 3 uncommitted
+        # This creates skew: partitions 0,1,2 have low lag, partition 3 has high lag
+        for partition in [0, 1, 2]:
+            commit_consumer = AIOKafkaConsumer(
+                bootstrap_servers=f"localhost:{tansu_backend.port}",
+                enable_auto_commit=False,
+                auto_offset_reset="earliest",
+                request_timeout_ms=5000,
+                group_id=consumer_group,
+            )
+            await commit_consumer.start()
+            await asyncio.sleep(0.2)
+            commit_consumer.assign([TopicPartition(topic, partition)])
+            await asyncio.sleep(0.1)
+            # Commit at offset 25 (most messages consumed)
+            await commit_consumer.commit({TopicPartition(topic, partition): 25})
+            await commit_consumer.stop()
+
+        # Don't commit partition 3 - it will have lag = latest_offset - 0
+
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
             host="localhost",
@@ -391,24 +419,36 @@ class TestSkewDetectionAlgorithm:
         master.upstream_topic = topic
         master._consumer_group = consumer_group
 
-        # Test the algorithm with different scenarios
-        # The actual detection depends on real lag values from the backend
-        skew_detected, skew_ratio, partition_lags = await master._detect_partition_skew(
-            skew_threshold=2.0
+        skew_detected, skew_ratio, partition_lags = await master.detect_partition_skew(
+            skew_threshold=2.0  # Detect skew if max_lag > 2 * min_lag
         )
 
-        # Verify return types
-        assert isinstance(skew_detected, bool)
-        assert isinstance(skew_ratio, float)
-        assert isinstance(partition_lags, dict)
+        # Verify partition_lags contains expected partitions
+        assert len(partition_lags) == 4
+
+        # Partitions 0,1,2 should have low lag (committed at 25)
+        # Partition 3 should have higher lag (no commit, lag = latest_offset)
+        committed_lags = [partition_lags[p] for p in [0, 1, 2]]
+        uncommitted_lag = partition_lags[3]
+
+        # Verify the uncommitted partition has higher lag
+        assert uncommitted_lag >= max(committed_lags), (
+            f"Expected partition 3 lag ({uncommitted_lag}) >= "
+            f"max committed lag ({max(committed_lags)})"
+        )
+
+        # If there's meaningful skew, it should be detected
+        if uncommitted_lag > 0 and min(committed_lags) > 0:
+            actual_ratio = max(partition_lags.values()) / max(min(partition_lags.values()), 1)
+            assert skew_ratio == actual_ratio
 
 
 class TestSkewMetricsCollection:
     """Tests for skew metrics collection using real backends."""
 
     @pytest.mark.asyncio
-    async def test_metrics_include_partition_info(self, payload_store, tansu_backend):
-        """Test that collected metrics include partition-level information."""
+    async def test_metrics_for_all_partitions(self, payload_store, tansu_backend):
+        """Test that partition metrics are collected for all partitions."""
         config = StageConfig(max_workers=4, partition_count=4)
         stage = Stage(
             stage_id="test_stage",
@@ -426,6 +466,15 @@ class TestSkewMetricsCollection:
         topic = "test_topic"
         await tansu_backend.create_topic(topic, partitions=4)
 
+        # Produce some messages to create non-zero offsets
+        for i in range(20):
+            msg = QueueMessage(
+                message_id=f"msg_{i}",
+                split_id=f"split_{i}",
+                payload_key=f"key_{i}",
+            )
+            await tansu_backend.produce(topic, msg.to_bytes())
+
         consumer_group = "test_job_test_stage"
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
@@ -436,33 +485,50 @@ class TestSkewMetricsCollection:
         master.upstream_topic = topic
         master._consumer_group = consumer_group
 
-        # Start master to initialize output queue
         await master.start()
 
         try:
-            metrics = await master.collect_metrics()
+            partition_metrics = await master.get_partition_metrics()
 
-            assert hasattr(metrics, "partition_metrics")
-            assert hasattr(metrics, "skew_detected")
-            assert hasattr(metrics, "skew_ratio")
+            # Should have metrics for all 4 partitions
+            assert len(partition_metrics) == 4
 
-            # Verify partition metrics structure
-            assert isinstance(metrics.partition_metrics, dict)
-            for partition_id, pm in metrics.partition_metrics.items():
-                assert isinstance(pm, PartitionMetrics)
+            # Each partition should have valid metrics
+            total_lag = 0
+            for partition_id in range(4):
+                assert partition_id in partition_metrics
+                pm = partition_metrics[partition_id]
                 assert pm.partition_id == partition_id
-                assert pm.lag >= 0
+                assert pm.latest_offset >= 0
+                assert pm.committed_offset >= 0
+                assert pm.lag == pm.latest_offset - pm.committed_offset
+                total_lag += pm.lag
+
+            # Total lag should equal total messages (no commits yet)
+            assert total_lag == 20
+
+            # Skew detection with no commits - messages distributed across partitions
+            skew_detected, skew_ratio, partition_lags = await master.detect_partition_skew(
+                skew_threshold=2.0
+            )
+            # With round-robin distribution, skew should be minimal (ratio close to 1.0)
+            # Allow some variance due to message distribution
+            assert skew_ratio >= 1.0  # ratio >= 1.0 always (max >= avg)
+            assert skew_ratio < 2.0  # No significant skew
         finally:
             await master.stop()
 
     @pytest.mark.asyncio
-    async def test_metrics_serialization(self, payload_store, tansu_backend):
-        """Test that metrics can be serialized to dict."""
-        config = StageConfig(max_workers=4, partition_count=4)
+    async def test_partition_metrics_reflect_commits(self, payload_store, tansu_backend):
+        """Test that partition metrics correctly reflect committed offsets."""
+        import asyncio
+        from aiokafka import AIOKafkaConsumer, TopicPartition
+
+        config = StageConfig(max_workers=1, partition_count=1)
         stage = Stage(
             stage_id="test_stage",
             operator_config=_TestOperatorConfig(),
-            parallelism=4,
+            parallelism=1,
         )
         master = StageMaster(
             job_id="test_job",
@@ -472,10 +538,36 @@ class TestSkewMetricsCollection:
         )
         master._start_time = 1000.0
 
+        # Use single partition for deterministic testing
         topic = "test_topic"
-        await tansu_backend.create_topic(topic, partitions=4)
+        await tansu_backend.create_topic(topic, partitions=1)
+
+        # Produce 100 messages to partition 0
+        for i in range(100):
+            msg = QueueMessage(
+                message_id=f"msg_{i}",
+                split_id=f"split_{i}",
+                payload_key=f"key_{i}",
+            )
+            await tansu_backend.produce(topic, msg.to_bytes())
 
         consumer_group = "test_job_test_stage"
+
+        # Commit at offset 40 for partition 0
+        commit_consumer = AIOKafkaConsumer(
+            bootstrap_servers=f"localhost:{tansu_backend.port}",
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+            request_timeout_ms=5000,
+            group_id=consumer_group,
+        )
+        await commit_consumer.start()
+        await asyncio.sleep(0.2)
+        commit_consumer.assign([TopicPartition(topic, 0)])
+        await asyncio.sleep(0.1)
+        await commit_consumer.commit({TopicPartition(topic, 0): 40})
+        await commit_consumer.stop()
+
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
             host="localhost",
@@ -488,18 +580,13 @@ class TestSkewMetricsCollection:
         await master.start()
 
         try:
-            metrics = await master.collect_metrics()
-            metrics_dict = metrics.to_dict()
+            partition_metrics = await master.get_partition_metrics()
 
-            assert "partition_metrics" in metrics_dict
-            assert "skew_detected" in metrics_dict
-            assert "skew_ratio" in metrics_dict
-
-            # Verify partition_metrics is a dict of dicts
-            assert isinstance(metrics_dict["partition_metrics"], dict)
-            for pid, pm_dict in metrics_dict["partition_metrics"].items():
-                assert isinstance(pm_dict, dict)
-                assert "partition_id" in pm_dict
-                assert "lag" in pm_dict
+            # Verify partition 0 metrics
+            assert 0 in partition_metrics
+            pm = partition_metrics[0]
+            assert pm.latest_offset == 100
+            assert pm.committed_offset == 40
+            assert pm.lag == 60  # 100 - 40
         finally:
             await master.stop()

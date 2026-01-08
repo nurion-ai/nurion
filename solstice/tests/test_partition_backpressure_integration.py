@@ -186,10 +186,10 @@ class TestPartitionSkewScenario:
         master.upstream_topic = topic
         master._consumer_group = consumer_group
 
-        metrics = await master.collect_metrics()
+        partition_metrics = await master.get_partition_metrics()
+        skew_detected, skew_ratio, _ = await master.detect_partition_skew()
 
         # Expect skew: partition1 lags most (200), avg lag ~70 -> ratio > 2
-        partition_metrics = metrics.partition_metrics
         assert set(partition_metrics.keys()) == {0, 1, 2}
         assert partition_metrics[0].latest_offset == 10
         assert partition_metrics[0].committed_offset == 0
@@ -203,9 +203,9 @@ class TestPartitionSkewScenario:
         assert partition_metrics[2].committed_offset == 20
         assert partition_metrics[2].lag == 0
 
-        assert metrics.skew_detected is True
+        assert skew_detected is True
         expected_ratio = 200 / ((10 + 200 + 0) / 3)
-        assert math.isclose(metrics.skew_ratio, expected_ratio, rel_tol=0.05)
+        assert math.isclose(skew_ratio, expected_ratio, rel_tol=0.05)
 
 
 class TestBackpressureEndToEnd:
@@ -421,12 +421,10 @@ class TestCombinedScenarios:
             backpressure_active = await master._check_backpressure()
             assert isinstance(backpressure_active, bool)
 
-            # Collect metrics (includes skew detection)
-            metrics = await master.collect_metrics()
-
-            # Both should be detected
-            assert hasattr(metrics, "skew_detected")
-            assert hasattr(metrics, "skew_ratio")
+            # Check skew detection
+            skew_detected, skew_ratio, _ = await master.detect_partition_skew()
+            assert isinstance(skew_detected, bool)
+            assert isinstance(skew_ratio, float)
             assert isinstance(master._backpressure_active, bool)
         finally:
             await master.stop()

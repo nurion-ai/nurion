@@ -133,6 +133,9 @@ class StageConfig:
     state_endpoint: Optional["QueueEndpoint"] = None
     state_topic: Optional[str] = None
 
+    # Lineage tracking (for WebUI)
+    lineage_sample_rate: float = 0.0  # 0=off, 1=full, 0.x=sampling
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "queue_type": self.queue_type.value,
@@ -265,6 +268,9 @@ class StageMaster:
         self.state_endpoint = config.state_endpoint
         self.state_topic = config.state_topic
 
+        # Lineage tracking configuration (from config)
+        self._lineage_sample_rate = config.lineage_sample_rate
+
         self.logger = create_ray_logger(f"Master-{self.stage_id}")
 
         # SplitPayloadStore - shared across all stages
@@ -285,7 +291,8 @@ class StageMaster:
         # Partition assignment: worker_id -> List[partition_ids]
         # Managed centrally, recomputed on worker add/remove
         self._partition_assignments: Dict[str, List[int]] = {}
-        self._partition_count: Optional[int] = None  # Cached after queue creation
+        self._partition_count: Optional[int] = None  # Cached after output queue creation
+        self._upstream_partition_count: Optional[int] = None  # Cached upstream partition count
 
         # State
         self._running = False
@@ -306,6 +313,10 @@ class StageMaster:
         # Backpressure state
         self._backpressure_active = False
         self._downstream_stage_refs: Dict[str, StageMaster] = {}  # For backpressure propagation
+
+        # State producer for WebUI metrics push
+        self._state_producer = None
+        self._last_metrics_emit_time = 0.0
 
     async def _get_upstream_metrics_queue(self) -> Optional[TansuQueueClient]:
         """Get or create a client-only queue for upstream metrics/lag/skew."""
@@ -340,6 +351,43 @@ class StageMaster:
         # For multiple workers, use max_workers as partition count
         # This allows each worker to potentially consume from a different partition
         return self.config.max_workers
+
+    async def _get_upstream_partition_count(self) -> int:
+        """Get the partition count of the upstream topic.
+
+        For non-source stages, workers need to be assigned partitions based on the
+        upstream topic's partition count, not this stage's output partition count.
+
+        Returns:
+            Number of partitions in the upstream topic, or 1 if no upstream.
+        """
+        if self._upstream_partition_count is not None:
+            return self._upstream_partition_count
+
+        # Source stages have no upstream
+        if not self.upstream_endpoint or not self.upstream_topic:
+            self._upstream_partition_count = 1
+            return 1
+
+        # Query upstream topic partition count
+        queue = await self._get_upstream_metrics_queue()
+        if queue is None:
+            # Fallback for non-Tansu queues
+            self._upstream_partition_count = 1
+            return 1
+
+        try:
+            offsets = await queue.get_all_partition_offsets(self.upstream_topic)
+            partition_count = len(offsets)
+            self._upstream_partition_count = max(1, partition_count)
+            self.logger.debug(
+                f"Upstream topic {self.upstream_topic} has {partition_count} partition(s)"
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to get upstream partition count: {e}")
+            self._upstream_partition_count = 1
+
+        return self._upstream_partition_count
 
     async def _create_queue(self) -> QueueClient:
         """Create the appropriate queue backend with dynamic partition count."""
@@ -425,6 +473,10 @@ class StageMaster:
             self._rebalance_partitions()
             await self._notify_workers_partition_update()
 
+        # Initialize state producer and emit stage started event
+        await self._init_state_producer()
+        await self._emit_stage_started()
+
         self.logger.info(f"Stage {self.stage_id} started with {len(self._workers)} workers")
 
     def _rebalance_partitions(self) -> None:
@@ -437,7 +489,12 @@ class StageMaster:
         if self._partition_count is None:
             self._partition_count = self._compute_partition_count()
 
-        partition_count = self._partition_count
+        # Use upstream partition count for non-source stages (if already cached)
+        # For source stages or when upstream count is not yet known, use output partition count
+        if self.upstream_endpoint and self._upstream_partition_count is not None:
+            partition_count = self._upstream_partition_count
+        else:
+            partition_count = self._partition_count
         worker_ids = list(self._workers.keys())
         num_workers = len(worker_ids)
 
@@ -478,15 +535,24 @@ class StageMaster:
         worker_index = len(self._workers)
         worker_id = f"{self.stage_id}_w{worker_index}_{uuid.uuid4().hex[:6]}"
 
-        # Pre-compute partition count if not set
+        # Pre-compute output partition count if not set
         if self._partition_count is None:
             self._partition_count = self._compute_partition_count()
+
+        # Get partition count for worker assignment:
+        # - For non-source stages: use upstream topic's partition count
+        # - For source stages: use output partition count (workers don't consume from upstream)
+        if self.upstream_endpoint and self.upstream_topic:
+            # Non-source stage: partitions based on upstream topic
+            partition_count = await self._get_upstream_partition_count()
+        else:
+            # Source stage: no upstream to consume from
+            partition_count = self._partition_count
 
         # Compute initial partition assignment for this new worker
         # This will be updated by rebalance after worker is added
         # When partition_count < num_workers, some workers will have empty assignments
         num_workers = len(self._workers) + 1
-        partition_count = self._partition_count
         assigned_partitions = [p for p in range(partition_count) if p % num_workers == worker_index]
 
         # Create worker actor
@@ -515,6 +581,7 @@ class StageMaster:
             payload_store=self.payload_store,
             state_endpoint=self.state_endpoint,
             state_topic=self.state_topic,
+            lineage_sample_rate=self._lineage_sample_rate,
         )
 
         self._workers[worker_id] = worker
@@ -665,7 +732,13 @@ class StageMaster:
                     self._finished = True
                     break
 
+                # Emit periodic stage metrics
+                await self._emit_stage_metrics()
+
                 await asyncio.sleep(0.1)
+
+            # Emit stage completed event
+            await self._emit_stage_completed()
 
             if self._failed:
                 raise RuntimeError(self._failure_message)
@@ -697,10 +770,110 @@ class StageMaster:
                 self.logger.warning(f"Error stopping metrics queue backend: {e}")
             self._upstream_metrics_queue = None
 
+        # Stop state producer
+        if self._state_producer:
+            try:
+                await self._state_producer.stop()
+            except Exception as e:
+                self.logger.warning(f"Error stopping stage state producer: {e}")
+            self._state_producer = None
+
         # Note: Don't stop output queue here - downstream stages may still need it
         # The queue will be cleaned up by the runner after all stages are done
 
         self.logger.info(f"Stage {self.stage_id} stopped")
+
+    async def _init_state_producer(self) -> None:
+        """Initialize state producer for stage-level metrics push."""
+        if not self.state_endpoint or not self.state_topic:
+            return
+
+        try:
+            from solstice.webui.state.producer import StateProducer
+
+            state_queue = await self._create_queue_from_endpoint(self.state_endpoint)
+            self._state_producer = StateProducer(
+                job_id=self.job_id,
+                queue_client=state_queue,
+                state_topic=self.state_topic,
+            )
+            await self._state_producer.start()
+            self.logger.debug("Stage state producer initialized")
+        except Exception as e:
+            self.logger.warning(f"Failed to init stage state producer: {e}")
+            self._state_producer = None
+
+    async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> "QueueClient":
+        """Create a queue client from an endpoint."""
+        if endpoint.queue_type == QueueType.TANSU:
+            broker_url = f"{endpoint.host}:{endpoint.port}"
+            queue = TansuQueueClient(broker_url)
+        else:
+            queue = MemoryClient(endpoint.storage_url)
+        await queue.start()
+        return queue
+
+    async def _emit_stage_started(self) -> None:
+        """Emit STAGE_STARTED event."""
+        if not self._state_producer:
+            return
+
+        try:
+            from solstice.webui.state.messages import stage_started_message
+
+            msg = stage_started_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                operator_type=self.stage.operator_class.__name__,
+                min_parallelism=self.config.min_workers,
+                max_parallelism=self.config.max_workers,
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit stage started: {e}")
+
+    async def _emit_stage_completed(self) -> None:
+        """Emit STAGE_COMPLETED event."""
+        if not self._state_producer:
+            return
+
+        try:
+            from solstice.webui.state.messages import stage_completed_message
+
+            msg = stage_completed_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit stage completed: {e}")
+
+    async def _emit_stage_metrics(self) -> None:
+        """Emit STAGE_METRICS event with stage-level data.
+
+        Note: input_records and output_records are aggregated from WORKER_METRICS
+        by the state manager, not sent here.
+        """
+        if not self._state_producer:
+            return
+
+        # Rate limit: max 1/s
+        now = time.time()
+        if now - self._last_metrics_emit_time < 1.0:
+            return
+        self._last_metrics_emit_time = now
+
+        try:
+            from solstice.webui.state.messages import stage_metrics_message
+
+            msg = stage_metrics_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                worker_count=len(self._workers),
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit stage metrics: {e}")
 
     async def cleanup_queue(self) -> None:
         """Clean up the output queue. Called by runner after all consumers are done."""
@@ -768,57 +941,6 @@ class StageMaster:
             backpressure_active=self._backpressure_active,
         )
 
-    async def collect_metrics(self):
-        """Collect comprehensive stage metrics including partition-level information."""
-        from solstice.core.models import StageMetrics
-
-        # Check backpressure status
-        await self._check_backpressure()
-
-        # Get partition metrics and detect skew
-        partition_metrics = await self.get_partition_metrics()
-        skew_detected, skew_ratio, partition_lags = await self._detect_partition_skew()
-
-        # Aggregate metrics from all workers
-        total_input_records = 0
-        total_output_records = 0
-        total_processing_time = 0.0
-
-        if self._workers:
-            # Collect metrics from all workers in parallel
-            # Use ray.get with timeout to avoid blocking indefinitely
-            import ray
-
-            try:
-                for worker in self._workers.values():
-                    try:
-                        # Use ray.get with a short timeout
-                        wm = ray.get(worker.get_metrics.remote(), timeout=1.0)
-                        total_input_records += wm.input_records
-                        total_output_records += wm.output_records
-                        total_processing_time += wm.processing_time
-                    except Exception:
-                        # Worker might be busy or method not available
-                        continue
-            except Exception as e:
-                self.logger.debug(f"Failed to collect worker metrics: {e}")
-
-        return StageMetrics(
-            stage_id=self.stage_id,
-            worker_count=len(self._workers),
-            input_records=total_input_records,
-            output_records=total_output_records,
-            total_processing_time=total_processing_time,
-            pending_splits=0,  # Not applicable in queue-based model
-            inflight_results=0,  # Not applicable in queue-based model
-            output_buffer_size=0,  # Not applicable in queue-based model
-            backpressure_active=self._backpressure_active,
-            uptime_secs=time.time() - (self._start_time or time.time()),
-            partition_metrics=partition_metrics,
-            skew_detected=skew_detected,
-            skew_ratio=skew_ratio,
-        )
-
     async def get_input_queue_lag(self) -> int:
         """Get the input queue lag (messages pending to be processed).
 
@@ -843,7 +965,7 @@ class StageMaster:
 
         return total_lag
 
-    async def _detect_partition_skew(
+    async def detect_partition_skew(
         self, skew_threshold: float = 2.0
     ) -> tuple[bool, float, Dict[int, int]]:
         """Detect partition-level skew in the input queue.
@@ -1171,6 +1293,7 @@ class StageWorker:
         payload_store: SplitPayloadStore,
         state_endpoint: Optional[QueueEndpoint] = None,
         state_topic: Optional[str] = None,
+        lineage_sample_rate: float = 0.0,
     ):
         self.worker_id = worker_id
         self.job_id = job_id
@@ -1193,6 +1316,9 @@ class StageWorker:
         self.state_endpoint = state_endpoint
         self.state_topic = state_topic
         self._state_producer = None  # Created in run() if configured
+
+        # Lineage tracking configuration (from WebUIConfig via runner)
+        self._lineage_sample_rate = lineage_sample_rate
 
         # Queue connections (created lazily)
         self.upstream_queue: Optional[QueueClient] = None
@@ -1348,6 +1474,9 @@ class StageWorker:
                 reason=reason,
                 processed_count=self._processed_count,
                 error_count=self._error_count,
+                input_records=self._total_input_records,
+                output_records=self._total_output_records,
+                processing_time=self._total_processing_time,
             )
             await self._state_producer.produce(msg)
         except Exception as e:
@@ -1372,8 +1501,7 @@ class StageWorker:
                 assigned_partitions=self.assigned_partitions,
                 is_running=self._running,
             )
-            # Use rate-limited produce
-            await self._state_producer.produce_rate_limited(msg)
+            await self._state_producer.produce(msg)
         except Exception as e:
             self.logger.debug(f"Failed to emit worker metrics: {e}")
 
@@ -1470,6 +1598,12 @@ class StageWorker:
 
             # Safety check: ensure we have partitions
             if not active_partitions:
+                # If upstream is finished and we have no partitions, we're done
+                if self._upstream_finished:
+                    self.logger.info(
+                        f"Worker {self.worker_id} finished: no partitions and upstream done"
+                    )
+                    break
                 await asyncio.sleep(0.5)
                 continue
 
@@ -1522,7 +1656,7 @@ class StageWorker:
             for record in records:
                 try:
                     message = QueueMessage.from_bytes(record.value)
-                    await self._process_message(message)
+                    await self._process_message(message, partition_id=partition)
                     self._processed_count += 1
                 except Exception as e:
                     import traceback
@@ -1562,7 +1696,7 @@ class StageWorker:
                     partition=p,
                 )
 
-    async def _process_message(self, message: QueueMessage) -> None:
+    async def _process_message(self, message: QueueMessage, partition_id: int = -1) -> None:
         """Process a single message.
 
         Handles two types of messages:
@@ -1600,9 +1734,10 @@ class StageWorker:
             )
 
         # Process with operator
-        start_time = time.time()
+        dequeue_time = time.time()
         output_payload = self.operator.process_split(split, payload)
-        processing_time = time.time() - start_time
+        complete_time = time.time()
+        processing_time = complete_time - dequeue_time
 
         # Update metrics
         input_records = len(payload) if payload else 0
@@ -1611,6 +1746,18 @@ class StageWorker:
         self._total_output_records += output_records
         self._total_processing_time += processing_time
 
+        # Calculate payload sizes for lineage
+        input_bytes = 0
+        output_bytes = 0
+        if payload:
+            # Estimate size from Arrow table
+            input_bytes = payload.data.nbytes if hasattr(payload.data, "nbytes") else 0
+        if output_payload:
+            output_bytes = (
+                output_payload.data.nbytes if hasattr(output_payload.data, "nbytes") else 0
+            )
+
+        payload_key = ""
         if output_payload:
             # Generate unique key for this payload
             payload_key = f"{self.worker_id}_{self._processed_count}_{split.split_id}"
@@ -1633,6 +1780,33 @@ class StageWorker:
             self.logger.debug(f"Produced output for {message.split_id} at offset {offset}")
         else:
             self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")
+
+        # Emit lineage tracking (gated by sample rate: 0=off, 1=full, 0.x=sampling)
+        if self._should_track_lineage():
+            # The output split ID that downstream stages will use as parent
+            # This must match the split_id in output_message
+            output_split_id = f"{self.stage_id}_{message.split_id}"
+
+            # For source operators: no parents
+            # For other operators: input message's split_id is the parent
+            if is_source_message:
+                parent_ids: list[str] = []  # Source has no parents
+            else:
+                parent_ids = [message.split_id]  # Input split is the parent
+
+            await self._emit_split_lineage(
+                output_split_id=output_split_id,
+                parent_split_ids=parent_ids,
+                partition_id=partition_id,
+                enqueue_time=message.timestamp,
+                dequeue_time=dequeue_time,
+                complete_time=complete_time,
+                input_records=input_records,
+                output_records=output_records,
+                input_bytes=input_bytes,
+                output_bytes=output_bytes,
+                payload_key=payload_key,
+            )
 
         # Emit metrics periodically (rate limited by StateProducer)
         await self._emit_worker_metrics()
@@ -1699,3 +1873,61 @@ class StageWorker:
             output_records=self._total_output_records,
             processing_time=self._total_processing_time,
         )
+
+    def _should_track_lineage(self) -> bool:
+        """Check if this split should be tracked based on sample rate.
+
+        - rate=0.0: never track (disabled)
+        - rate=1.0: always track (full)
+        - rate=0.x: probabilistic sampling
+        """
+        rate = self._lineage_sample_rate
+        if rate <= 0.0:
+            return False
+        if rate >= 1.0:
+            return True
+        import random
+
+        return random.random() < rate
+
+    async def _emit_split_lineage(
+        self,
+        output_split_id: str,
+        parent_split_ids: list[str],
+        partition_id: int,
+        enqueue_time: float,
+        dequeue_time: float,
+        complete_time: float,
+        input_records: int,
+        output_records: int,
+        input_bytes: int,
+        output_bytes: int,
+        payload_key: str,
+    ) -> None:
+        """Emit SPLIT_PROCESSED event for lineage tracking."""
+        if not self._state_producer:
+            return
+
+        try:
+            from solstice.webui.state.messages import split_processed_message
+
+            msg = split_processed_message(
+                job_id=self.job_id,
+                stage_id=self.stage_id,
+                worker_id=self.worker_id,
+                split_id=output_split_id,
+                parent_split_ids=parent_split_ids,
+                partition_id=partition_id,
+                enqueue_time=enqueue_time,
+                dequeue_time=dequeue_time,
+                complete_time=complete_time,
+                input_records=input_records,
+                output_records=output_records,
+                input_bytes=input_bytes,
+                output_bytes=output_bytes,
+                payload_store_key=payload_key,
+                payload_storage_path=None,  # TODO: Add external storage path if needed
+            )
+            await self._state_producer.produce(msg)
+        except Exception as e:
+            self.logger.debug(f"Failed to emit split lineage: {e}")

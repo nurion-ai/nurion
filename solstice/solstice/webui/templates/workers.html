@@ -54,10 +54,13 @@
         <details open style="margin-bottom: 1rem;">
             <summary style="cursor: pointer; font-weight: bold;">
                 {{ stage.stage_id }} ({{ stage_workers|length }} workers)
-                {% if stage.is_finished %}
+                {% set status = stage.status|default('PENDING') %}
+                {% if status == 'COMPLETED' %}
                 <span class="badge badge-completed" style="margin-left: 0.5rem;">COMPLETED</span>
-                {% elif stage.is_running %}
+                {% elif status == 'RUNNING' %}
                 <span class="badge badge-running" style="margin-left: 0.5rem;">RUNNING</span>
+                {% elif status == 'FAILED' %}
+                <span class="badge badge-failed" style="margin-left: 0.5rem;">FAILED</span>
                 {% endif %}
             </summary>
             <div class="table-container" style="margin-top: 0.5rem;">

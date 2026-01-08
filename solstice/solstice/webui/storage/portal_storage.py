@@ -29,30 +29,33 @@ The Portal scans this directory structure to find completed jobs.
 """
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 from solstice.utils.logging import create_ray_logger
 
 
-def _open_slatedb_reader(path: str):
-    """Open SlateDB in read-only mode using url parameter.
+@contextmanager
+def _open_slatedb(path: str) -> Generator:
+    """Open SlateDB reader as context manager.
 
     Args:
         path: Full path to the SlateDB directory
 
-    Returns:
+    Yields:
         SlateDBReader instance for read-only access
     """
     from slatedb import SlateDBReader
 
     if path.startswith("s3://"):
-        # S3 storage - use path as URL directly
-        return SlateDBReader("db", url=path)
+        db = SlateDBReader("db", url=path)
     else:
-        # Local filesystem storage - use file:// URL
-        url = f"file://{path}/"
-        return SlateDBReader("db", url=url)
+        db = SlateDBReader("db", url=f"file://{path}/")
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class PortalStorage:
@@ -64,6 +67,9 @@ class PortalStorage:
     This avoids SlateDB single-writer conflicts by:
     1. Each job writes to its own isolated SlateDB instance
     2. Portal reads from all of them (read-only)
+
+    Note: SlateDBReader is a read-only snapshot that doesn't see updates.
+    Each method opens a fresh connection to ensure reading latest data.
     """
 
     def __init__(self, base_path: str):
@@ -103,8 +109,8 @@ class PortalStorage:
         else:
             jobs = self._list_jobs_local(status)
 
-        # Sort by end_time (newest first)
-        jobs.sort(key=lambda x: x.get("end_time", 0), reverse=True)
+        # Sort by end_time (newest first), handle None values
+        jobs.sort(key=lambda x: x.get("end_time") or 0, reverse=True)
 
         # Apply offset and limit
         return jobs[offset : offset + limit]
@@ -165,14 +171,11 @@ class PortalStorage:
         Returns:
             Job archive data or None if not found
         """
-        db = _open_slatedb_reader(attempt_path)
-        # Key is just "job" since path already contains job_id
-        key = b"job"
-        data = db.get(key)
-        db.close()
-        if data:
-            return json.loads(data.decode())
-        return None
+        with _open_slatedb(attempt_path) as db:
+            data = db.get(b"job")
+            if data:
+                return json.loads(data.decode())
+            return None
 
     def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get archived job data by job_id.
@@ -188,11 +191,6 @@ class PortalStorage:
         if self._is_s3:
             return self._get_job_archive_s3(job_id)
         return self._get_job_archive_local(job_id)
-
-    # Alias for API compatibility
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Alias for get_job_archive for API compatibility."""
-        return self.get_job_archive(job_id)
 
     def _get_job_archive_local(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job archive from local filesystem."""
@@ -255,23 +253,19 @@ class PortalStorage:
         if not latest_attempt:
             return None
 
-        db = _open_slatedb_reader(str(latest_attempt))
+        with _open_slatedb(str(latest_attempt)) as db:
+            # Try dedicated config key first
+            config_data = db.get(b"config")
+            if config_data:
+                return json.loads(config_data.decode())
 
-        # Try dedicated config key first
-        config_data = db.get(b"config")
-        if config_data:
-            db.close()
-            return json.loads(config_data.decode())
+            # Fallback: extract from job archive
+            job_data = db.get(b"job")
+            if not job_data:
+                return None
 
-        # Fallback: extract from job archive
-        job_data = db.get(b"job")
-        db.close()
-
-        if not job_data:
-            return None
-
-        job_archive = json.loads(job_data.decode())
-        return self._extract_config_from_archive(job_archive)
+            job_archive = json.loads(job_data.decode())
+            return self._extract_config_from_archive(job_archive)
 
     def _extract_config_from_archive(self, job_archive: Dict[str, Any]) -> Dict[str, Any]:
         """Extract configuration from job archive data.
@@ -317,50 +311,13 @@ class PortalStorage:
         if not latest_attempt:
             return []
 
-        db = _open_slatedb_reader(str(latest_attempt))
-        # Key is "exception:" since path already contains job_id
-        prefix = b"exception:"
-        results = []
-
-        for key, value in db.scan_prefix(prefix):
-            results.append(json.loads(value.decode()))
-            if len(results) >= offset + limit:
-                break
-
-        db.close()
-        return results[offset : offset + limit]
-
-    def list_worker_events(
-        self,
-        job_id: str,
-        worker_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> List[Dict[str, Any]]:
-        """List worker events for a job."""
-        if self._is_s3:
-            return []
-
-        latest_attempt = self._get_latest_attempt_path(job_id)
-        if not latest_attempt:
-            return []
-
-        db = _open_slatedb_reader(str(latest_attempt))
-
-        # Keys don't contain job_id since path already has it
-        if worker_id:
-            prefix = f"worker_event:{worker_id}:".encode()
-        else:
-            prefix = b"worker_event:"
-
-        results = []
-        for key, value in db.scan_prefix(prefix):
-            results.append(json.loads(value.decode()))
-            if len(results) >= offset + limit:
-                break
-
-        db.close()
-        return results[offset : offset + limit]
+        with _open_slatedb(str(latest_attempt)) as db:
+            results = []
+            for _, value in db.scan_prefix(b"exception:"):
+                results.append(json.loads(value.decode()))
+                if len(results) >= offset + limit:
+                    break
+            return results[offset : offset + limit]
 
     def get_metrics_history(
         self,
@@ -377,61 +334,23 @@ class PortalStorage:
         if not latest_attempt:
             return []
 
-        db = _open_slatedb_reader(str(latest_attempt))
-        # Key is "metrics:{stage_id}:" since path already contains job_id
-        prefix = f"metrics:{stage_id}:".encode()
+        with _open_slatedb(str(latest_attempt)) as db:
+            prefix = f"metrics:{stage_id}:".encode()
+            results = []
+            for key, value in db.scan_prefix(prefix):
+                parts = key.decode().split(":")
+                if len(parts) >= 3:
+                    key_ts = float(parts[2])
+                    if start_time <= key_ts <= end_time:
+                        data = json.loads(value.decode())
+                        if data.get("timestamp") is None:
+                            data["timestamp"] = key_ts
+                        results.append(data)
+            return sorted(results, key=lambda x: x.get("timestamp") or 0)
 
-        results = []
-        for key, value in db.scan_prefix(prefix):
-            # Extract timestamp from key: metrics:{stage_id}:{timestamp}
-            parts = key.decode().split(":")
-            if len(parts) >= 3:
-                key_ts = float(parts[2])
-                if start_time <= key_ts <= end_time:
-                    data = json.loads(value.decode())
-                    # Ensure timestamp is present (use key timestamp as fallback)
-                    if data.get("timestamp") is None:
-                        data["timestamp"] = key_ts
-                    results.append(data)
-
-        db.close()
-        return sorted(results, key=lambda x: x.get("timestamp", 0))
-
-    def get_lineage_graph(self, job_id: str) -> Dict[str, Any]:
-        """Get complete lineage graph for a job."""
-        if self._is_s3:
-            return {"nodes": [], "edges": []}
-
-        latest_attempt = self._get_latest_attempt_path(job_id)
-        if not latest_attempt:
-            return {"nodes": [], "edges": []}
-
-        db = _open_slatedb_reader(str(latest_attempt))
-        # Key is "lineage:" since path already contains job_id
-        prefix = b"lineage:"
-
-        nodes = []
-        edges = []
-
-        for _, value in db.scan_prefix(prefix):
-            lineage = json.loads(value.decode())
-            split_id = lineage["split_id"]
-
-            nodes.append(
-                {
-                    "id": split_id,
-                    "split_id": split_id,
-                    "stage_id": lineage.get("stage_id"),
-                    "worker_id": lineage.get("worker_id"),
-                    "timestamp": lineage.get("timestamp"),
-                }
-            )
-
-            for parent_id in lineage.get("parent_ids", []):
-                edges.append({"source": parent_id, "target": split_id})
-
-        db.close()
-        return {"nodes": nodes, "edges": edges}
+    # -------------------------------------------------------------------------
+    # Lineage (4 core methods)
+    # -------------------------------------------------------------------------
 
     def get_split_lineage(self, job_id: str, split_id: str) -> Optional[Dict[str, Any]]:
         """Get lineage for a specific split."""
@@ -442,20 +361,43 @@ class PortalStorage:
         if not latest_attempt:
             return None
 
-        db = _open_slatedb_reader(str(latest_attempt))
-        # Key is "lineage:{split_id}" since path already contains job_id
-        key = f"lineage:{split_id}".encode()
-        data = db.get(key)
-        db.close()
-        if data:
-            return json.loads(data.decode())
-        return None
+        with _open_slatedb(str(latest_attempt)) as db:
+            data = db.get(f"lineage:{split_id}".encode())
+            if data:
+                return json.loads(data.decode())
+            return None
+
+    def list_splits_by_stage(
+        self,
+        job_id: str,
+        stage_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List splits for a stage."""
+        if self._is_s3:
+            return []
+
+        latest_attempt = self._get_latest_attempt_path(job_id)
+        if not latest_attempt:
+            return []
+
+        with _open_slatedb(str(latest_attempt)) as db:
+            prefix = f"lineage_by_stage:{stage_id}:".encode()
+            splits = []
+            for _, split_id_bytes in db.scan_prefix(prefix):
+                split_id = split_id_bytes.decode()
+                lineage_data = db.get(f"lineage:{split_id}".encode())
+                if lineage_data:
+                    splits.append(json.loads(lineage_data.decode()))
+
+            splits = sorted(splits, key=lambda x: x.get("timestamp") or 0, reverse=True)
+            return splits[offset : offset + limit]
 
     def list_workers(
         self,
         job_id: str,
         stage_id: Optional[str] = None,
-        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -467,27 +409,16 @@ class PortalStorage:
         if not latest_attempt:
             return []
 
-        db = _open_slatedb_reader(str(latest_attempt))
-        # Key is "worker:" since path already contains job_id
-        prefix = b"worker:"
+        with _open_slatedb(str(latest_attempt)) as db:
+            workers = []
+            for _, value in db.scan_prefix(b"worker:"):
+                worker = json.loads(value.decode())
+                if stage_id and worker.get("stage_id") != stage_id:
+                    continue
+                workers.append(worker)
 
-        workers = []
-        for _, value in db.scan_prefix(prefix):
-            worker = json.loads(value.decode())
-
-            # Filter by stage_id if specified
-            if stage_id and worker.get("stage_id") != stage_id:
-                continue
-
-            # Filter by status if specified
-            if status and worker.get("status") != status:
-                continue
-
-            workers.append(worker)
-
-        db.close()
-        sorted_workers = sorted(workers, key=lambda x: x.get("start_time", 0), reverse=True)
-        return sorted_workers[offset : offset + limit]
+            sorted_workers = sorted(workers, key=lambda x: x.get("start_time") or 0, reverse=True)
+            return sorted_workers[offset : offset + limit]
 
     def get_worker_history(
         self,
@@ -502,11 +433,186 @@ class PortalStorage:
         if not latest_attempt:
             return None
 
-        db = _open_slatedb_reader(str(latest_attempt))
-        # Key is "worker:{worker_id}" since path already contains job_id
-        key = f"worker:{worker_id}".encode()
-        data = db.get(key)
-        db.close()
-        if data:
-            return json.loads(data.decode())
-        return None
+        with _open_slatedb(str(latest_attempt)) as db:
+            data = db.get(f"worker:{worker_id}".encode())
+            if data:
+                return json.loads(data.decode())
+            return None
+
+    # -------------------------------------------------------------------------
+    # Lineage (continued - overview and trace)
+    # -------------------------------------------------------------------------
+
+    def get_lineage_overview(self, job_id: str) -> Dict[str, Any]:
+        """Get stage-level lineage overview with aggregated statistics.
+
+        Returns:
+            Dict with 'stages', 'edges', and 'dag_edges'
+        """
+        if self._is_s3:
+            return {"stages": [], "edges": [], "dag_edges": {}}
+
+        latest_attempt = self._get_latest_attempt_path(job_id)
+        if not latest_attempt:
+            return {"stages": [], "edges": [], "dag_edges": {}}
+
+        with _open_slatedb(str(latest_attempt)) as db:
+            job_data = db.get(b"job")
+            if not job_data:
+                return {"stages": [], "edges": [], "dag_edges": {}}
+
+            job_info = json.loads(job_data.decode())
+            dag_edges = job_info.get("dag_edges", {})
+            stages_list = job_info.get("stages", [])
+            stage_order = [s.get("stage_id") for s in stages_list]
+
+            # Collect all lineage records grouped by stage
+            stage_splits: Dict[str, List[Dict]] = {}
+            for _, value in db.scan_prefix(b"lineage:"):
+                lineage = json.loads(value.decode())
+                stage_id = lineage.get("stage_id", "")
+                if stage_id not in stage_splits:
+                    stage_splits[stage_id] = []
+                stage_splits[stage_id].append(lineage)
+
+            # Calculate edge statistics
+            edges = []
+            for from_stage, to_stages in dag_edges.items():
+                for to_stage in to_stages:
+                    to_splits = stage_splits.get(to_stage, [])
+                    if not to_splits:
+                        edges.append(
+                            {
+                                "from_stage": from_stage,
+                                "to_stage": to_stage,
+                                "splits_count": 0,
+                                "total_rows": 0,
+                                "total_bytes": 0,
+                            }
+                        )
+                        continue
+
+                    total_rows = sum(s.get("output_records", 0) for s in to_splits)
+                    total_bytes = sum(s.get("output_bytes", 0) for s in to_splits)
+                    rows_list = [s.get("output_records", 0) for s in to_splits]
+                    bytes_list = [s.get("output_bytes", 0) for s in to_splits]
+                    proc_times = [s.get("processing_time_ms", 0) for s in to_splits]
+
+                    edges.append(
+                        {
+                            "from_stage": from_stage,
+                            "to_stage": to_stage,
+                            "splits_count": len(to_splits),
+                            "total_rows": total_rows,
+                            "total_bytes": total_bytes,
+                            "min_rows": min(rows_list) if rows_list else 0,
+                            "max_rows": max(rows_list) if rows_list else 0,
+                            "min_bytes": min(bytes_list) if bytes_list else 0,
+                            "max_bytes": max(bytes_list) if bytes_list else 0,
+                            "min_processing_ms": min(proc_times) if proc_times else 0,
+                            "max_processing_ms": max(proc_times) if proc_times else 0,
+                            "avg_processing_ms": sum(proc_times) / len(proc_times)
+                            if proc_times
+                            else 0,
+                        }
+                    )
+
+            # Stage stats
+            stage_stats = []
+            for stage_id in stage_order:
+                splits = stage_splits.get(stage_id, [])
+                if not splits:
+                    stage_stats.append(
+                        {
+                            "stage_id": stage_id,
+                            "splits_count": 0,
+                            "total_output_rows": 0,
+                            "total_output_bytes": 0,
+                        }
+                    )
+                    continue
+
+                total_rows = sum(s.get("output_records", 0) for s in splits)
+                total_bytes = sum(s.get("output_bytes", 0) for s in splits)
+
+                stage_stats.append(
+                    {
+                        "stage_id": stage_id,
+                        "splits_count": len(splits),
+                        "total_output_rows": total_rows,
+                        "total_output_bytes": total_bytes,
+                    }
+                )
+
+            return {"stages": stage_stats, "edges": edges, "dag_edges": dag_edges}
+
+    def get_split_trace(self, job_id: str, split_id: str) -> Dict[str, Any]:
+        """Get complete lineage trace for a split (both upstream and downstream).
+
+        Returns:
+            Dict with 'splits' (ordered by stage), 'edges', and 'root_split_id'
+        """
+        if self._is_s3:
+            return {"splits": [], "edges": [], "root_split_id": split_id}
+
+        latest_attempt = self._get_latest_attempt_path(job_id)
+        if not latest_attempt:
+            return {"splits": [], "edges": [], "root_split_id": split_id}
+
+        with _open_slatedb(str(latest_attempt)) as db:
+            visited: set = set()
+            splits: list = []
+            edges: list = []
+
+            def collect_upstream(current_id: str):
+                if current_id in visited:
+                    return
+                visited.add(current_id)
+
+                lineage_data = db.get(f"lineage:{current_id}".encode())
+                if not lineage_data:
+                    return
+
+                lineage = json.loads(lineage_data.decode())
+                splits.append(lineage)
+
+                for parent_id in lineage.get("parent_split_ids", []):
+                    edges.append({"source": parent_id, "target": current_id})
+                    collect_upstream(parent_id)
+
+            def collect_downstream(current_id: str):
+                if current_id in visited:
+                    return
+                visited.add(current_id)
+
+                lineage_data = db.get(f"lineage:{current_id}".encode())
+                if not lineage_data:
+                    return
+
+                lineage = json.loads(lineage_data.decode())
+                if current_id not in [s.get("split_id") for s in splits]:
+                    splits.append(lineage)
+
+                for _, child_id_bytes in db.scan_prefix(
+                    f"lineage_by_parent:{current_id}:".encode()
+                ):
+                    child_id = child_id_bytes.decode()
+                    edges.append({"source": current_id, "target": child_id})
+                    visited.discard(current_id)
+                    collect_downstream(child_id)
+
+            collect_upstream(split_id)
+            visited.clear()
+            collect_downstream(split_id)
+
+            # Sort splits by stage order
+            job_data = db.get(b"job")
+            stage_order = {}
+            if job_data:
+                job_info = json.loads(job_data.decode())
+                for i, s in enumerate(job_info.get("stages", [])):
+                    stage_order[s.get("stage_id")] = i
+
+            splits.sort(key=lambda x: stage_order.get(x.get("stage_id"), 999))
+
+            return {"splits": splits, "edges": edges, "root_split_id": split_id}

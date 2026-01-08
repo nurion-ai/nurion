@@ -238,6 +238,24 @@ For Solstice integration tests, you need:
    
    **Rule of thumb**: If a value is only used during initialization or can be recomputed from config, use local variables instead of `self._` attributes.
 
+8. **Keep API responses minimal**: Don't return redundant or derived fields
+   ```python
+   # Bad: Redundant status fields that can be derived from each other
+   return {
+       "status": "RUNNING",
+       "is_running": True,      # Derived from status == "RUNNING"
+       "is_finished": False,    # Derived from status == "COMPLETED"
+       "failed": False,         # Derived from status == "FAILED"
+   }
+   
+   # Good: Single source of truth, client derives what it needs
+   return {
+       "status": "RUNNING",  # Client checks: status == "RUNNING", etc.
+   }
+   ```
+   
+   **Rule of thumb**: Return the canonical data, let clients compute derived values. This avoids inconsistencies and keeps the API contract simple.
+
 ### Preferred Patterns
 
 1. **Use Protocols over Abstract Classes**: Prefer `typing.Protocol` for structural subtyping
@@ -491,8 +509,9 @@ solstice history-server -s s3://bucket/solstice-history/ -p 8080
 
 ---
 
-*Last updated: 2025-01-07*
+*Last updated: 2025-01-08*
 
 <!-- Changelog:
+- 2025-01-08: Added pattern #8 (keep API responses minimal)
 - 2025-01-07: Added patterns #6 (no uncertain fallbacks) and #7 (minimize self._ state)
 -->

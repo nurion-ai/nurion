@@ -63,6 +63,18 @@ class JobStorageWriter(Protocol):
         """Store split lineage data."""
         ...
 
+    def store_split_lineage_with_children(
+        self,
+        split_id: str,
+        lineage_data: Dict[str, Any],
+    ) -> None:
+        """Store split lineage data and update parent→child indexes atomically.
+
+        This ensures consistency between lineage records and reverse indexes.
+        All writes happen in a single transaction/batch.
+        """
+        ...
+
     def store_worker_history(
         self,
         worker_id: str,
@@ -96,6 +108,10 @@ class JobStorageReader(Protocol):
     Methods need job_id to locate the correct job's storage.
     """
 
+    # -------------------------------------------------------------------------
+    # Job & Configuration
+    # -------------------------------------------------------------------------
+
     def list_jobs(
         self,
         status: Optional[str] = None,
@@ -106,16 +122,16 @@ class JobStorageReader(Protocol):
         ...
 
     def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve archived job data."""
-        ...
-
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Alias for get_job_archive."""
+        """Retrieve archived job data (includes stages, dag_edges, etc)."""
         ...
 
     def get_configuration(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve job configuration."""
         ...
+
+    # -------------------------------------------------------------------------
+    # Metrics & Exceptions
+    # -------------------------------------------------------------------------
 
     def get_metrics_history(
         self,
@@ -136,17 +152,57 @@ class JobStorageReader(Protocol):
         """List exceptions for a job."""
         ...
 
+    # -------------------------------------------------------------------------
+    # Lineage (4 core methods)
+    # -------------------------------------------------------------------------
+
     def get_split_lineage(
         self,
         job_id: str,
         split_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Get split lineage data."""
+        """Get single split's lineage details."""
         ...
 
-    def get_lineage_graph(self, job_id: str) -> Dict[str, Any]:
-        """Get complete lineage graph for a job."""
+    def list_splits_by_stage(
+        self,
+        job_id: str,
+        stage_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List splits for a stage with pagination."""
         ...
+
+    def get_lineage_overview(self, job_id: str) -> Dict[str, Any]:
+        """Get stage-level lineage overview with aggregated statistics.
+
+        Returns:
+            Dict with:
+            - 'stages': list of {stage_id, splits_count, total_rows, total_bytes}
+            - 'edges': list of {from_stage, to_stage, splits_count, total_rows,
+                total_bytes, min/max rows/bytes/processing_ms}
+            - 'dag_edges': original DAG structure
+        """
+        ...
+
+    def get_split_trace(
+        self,
+        job_id: str,
+        split_id: str,
+    ) -> Dict[str, Any]:
+        """Get complete lineage trace for a split (both upstream and downstream).
+
+        Returns:
+            Dict with:
+            - 'splits': list of split details ordered by stage
+            - 'edges': list of {parent_id, child_id} relationships
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Workers
+    # -------------------------------------------------------------------------
 
     def get_worker_history(
         self,
@@ -160,19 +216,8 @@ class JobStorageReader(Protocol):
         self,
         job_id: str,
         stage_id: Optional[str] = None,
-        status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List all workers for a job."""
-        ...
-
-    def list_worker_events(
-        self,
-        job_id: str,
-        worker_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> List[Dict[str, Any]]:
-        """List worker events."""
+        """List workers for a job."""
         ...

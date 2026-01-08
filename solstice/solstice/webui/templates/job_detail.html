@@ -246,11 +246,12 @@
                         <td class="number">{{ (stage.input_records|default(stage.final_metrics.input_records if stage.final_metrics else none)|default(0))|format_number }} rows</td>
                         <td class="number">{{ (stage.output_records|default(stage.final_metrics.output_records if stage.final_metrics else none)|default(0))|format_number }} rows</td>
                         <td>
-                            {% if stage.is_running %}
+                            {% set stage_status = stage.status|default('PENDING') %}
+                            {% if stage_status == 'RUNNING' %}
                             <span class="badge badge-running">RUNNING</span>
-                            {% elif stage.is_finished %}
+                            {% elif stage_status == 'COMPLETED' %}
                             <span class="badge badge-completed">COMPLETED</span>
-                            {% elif stage.failed %}
+                            {% elif stage_status == 'FAILED' %}
                             <span class="badge badge-failed">FAILED</span>
                             {% else %}
                             <span class="badge badge-pending">PENDING</span>
@@ -325,9 +326,9 @@ function renderDag() {
     // Add nodes - use empty label, we'll add custom SVG text later
     stages.forEach(stage => {
         let statusClass = 'pending';
-        if (stage.is_running) statusClass = 'running';
-        else if (stage.is_finished) statusClass = 'finished';
-        else if (stage.failed) statusClass = 'failed';
+        if (stage.status === 'RUNNING') statusClass = 'running';
+        else if (stage.status === 'COMPLETED') statusClass = 'finished';
+        else if (stage.status === 'FAILED') statusClass = 'failed';
         
         g.setNode(stage.stage_id, {
             label: '',  // Empty label - we'll add custom text
@@ -436,9 +437,9 @@ function renderDag() {
             if (!stage) return;
             
             let statusText = 'Pending';
-            if (stage.is_running) statusText = 'Running';
-            else if (stage.is_finished) statusText = 'Completed';
-            else if (stage.failed) statusText = 'Failed';
+            if (stage.status === 'RUNNING') statusText = 'Running';
+            else if (stage.status === 'COMPLETED') statusText = 'Completed';
+            else if (stage.status === 'FAILED') statusText = 'Failed';
             
             tooltip.innerHTML = `
                 <h4>${stage.stage_id}</h4>

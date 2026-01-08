@@ -11,41 +11,82 @@
     background: var(--pico-card-background-color);
     border-radius: 8px;
     overflow: hidden;
+    position: relative;
 }
 .dag-container svg {
     width: 100%;
     height: 100%;
 }
-.dag-node rect {
+/* Vertical DAG layout */
+.node rect {
     fill: var(--pico-secondary-background);
     stroke: var(--pico-primary);
     stroke-width: 2px;
     rx: 6px;
     ry: 6px;
 }
-.dag-node.running rect {
-    fill: #dcfce7;
-    stroke: #16a34a;
-}
-.dag-node.finished rect {
-    fill: #e0e7ff;
-    stroke: #4f46e5;
-}
-.dag-node.failed rect {
-    fill: #fee2e2;
-    stroke: #dc2626;
-}
-.dag-node text {
+.node text {
     fill: var(--pico-color);
-    font-size: 12px;
+    font-size: 11px;
+    font-family: var(--pico-font-family);
 }
-.dag-edge path {
+.edgePath path {
     fill: none;
     stroke: var(--pico-muted-color);
     stroke-width: 2px;
 }
-.dag-edge marker path {
-    fill: var(--pico-muted-color);
+.edgeLabel {
+    font-size: 10px;
+    background: var(--pico-background-color);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+/* Split detail card */
+.split-card {
+    background: var(--pico-card-background-color);
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+.split-card.current {
+    border-color: var(--pico-primary);
+    box-shadow: 0 0 0 2px var(--pico-primary-focus);
+}
+.split-card h5 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.9rem;
+}
+.split-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem;
+    font-size: 0.85rem;
+}
+.split-meta-item {
+    display: flex;
+    flex-direction: column;
+}
+.split-meta-label {
+    color: var(--pico-muted-color);
+    font-size: 0.75rem;
+}
+/* Pagination */
+.pagination {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+.pagination button {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.85rem;
+}
+/* Edge stats tooltip */
+.edge-stats {
+    font-size: 10px;
+    line-height: 1.3;
+    text-align: center;
 }
 </style>
 {% endblock %}
@@ -63,50 +104,90 @@
         <h1 style="margin-top: 0.25rem;">Data Lineage</h1>
     </header>
     
-    <!-- Stage DAG -->
-    <section>
-        <h2>Stage DAG</h2>
-        <div id="stage-dag" class="dag-container" style="height: 400px; position: relative;">
-            <svg></svg>
-        </div>
-    </section>
+    <!-- Tabs -->
+    <nav style="margin-bottom: 1rem;">
+        <ul role="tablist" style="display: flex; gap: 0.5rem; padding: 0; list-style: none; border-bottom: 1px solid var(--pico-muted-border-color);">
+            <li role="tab" id="tab-btn-overview" class="tab-btn active" style="padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid var(--pico-primary);" onclick="showTab('overview')">
+                Overview
+            </li>
+            <li role="tab" id="tab-btn-by-stage" class="tab-btn" style="padding: 0.5rem 1rem; cursor: pointer;" onclick="showTab('by-stage')">
+                By Stage
+            </li>
+            <li role="tab" id="tab-btn-split-detail" class="tab-btn" style="padding: 0.5rem 1rem; cursor: pointer; display: none;" onclick="showTab('split-detail')">
+                Split Detail
+            </li>
+        </ul>
+    </nav>
     
-    <!-- Split Lineage Search -->
-    <section>
-        <h2>Split Lineage</h2>
-        <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
-            <input type="search" id="split-search" placeholder="Enter split ID to trace..." style="flex: 1;">
-            <button class="outline" onclick="searchSplit()">Search</button>
-        </div>
-        
-        <div id="split-lineage" style="min-height: 200px; background: var(--pico-card-background-color); border-radius: 8px; padding: 1rem;">
-            <p class="text-center" style="color: var(--pico-muted-color);">
-                Enter a split ID above to view its lineage and processing history.
+    <!-- Overview Tab: Vertical DAG with edge stats -->
+    <div id="tab-overview" class="tab-content">
+        <section>
+            <h2>Data Flow Overview</h2>
+            <p style="color: var(--pico-muted-color); margin-bottom: 1rem; font-size: 0.9rem;">
+                Edges show: splits count • total rows • total bytes • processing time range
             </p>
-        </div>
-    </section>
+            <div id="lineage-dag" class="dag-container" style="height: 500px;">
+                <svg></svg>
+            </div>
+        </section>
+        
+        <!-- Summary Stats -->
+        <section style="margin-top: 1.5rem;">
+            <h2>Summary</h2>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-value" id="total-splits">-</div>
+                    <div class="metric-label">Total Splits</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="total-rows">-</div>
+                    <div class="metric-label">Total Rows</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="total-bytes">-</div>
+                    <div class="metric-label">Total Bytes</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="avg-processing">-</div>
+                    <div class="metric-label">Avg Processing</div>
+                </div>
+            </div>
+        </section>
+    </div>
     
-    <!-- Lineage Stats -->
-    <section>
-        <h2>Summary</h2>
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-value" id="total-splits">-</div>
-                <div class="metric-label">Total Splits</div>
+    <!-- By Stage Tab -->
+    <div id="tab-by-stage" class="tab-content" style="display: none;">
+        <section>
+            <div style="margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center;">
+                <label for="stage-select" style="margin: 0;">Stage:</label>
+                <select id="stage-select" onchange="loadStageSplits(1)" style="margin: 0; width: auto;">
+                    <option value="">-- Select --</option>
+                </select>
             </div>
-            <div class="metric-card">
-                <div class="metric-value" id="processed-splits">-</div>
-                <div class="metric-label">Processed</div>
+            
+            <div id="stage-splits-container">
+                <p style="color: var(--pico-muted-color);">Select a stage to view its splits.</p>
             </div>
-            <div class="metric-card">
-                <div class="metric-value" id="avg-time">-</div>
-                <div class="metric-label">Avg Processing Time</div>
+            
+            <div id="stage-pagination" class="pagination" style="display: none;"></div>
+        </section>
+    </div>
+    
+    <!-- Split Detail Tab (shown when clicking a split) -->
+    <div id="tab-split-detail" class="tab-content" style="display: none;">
+        <section>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2 style="margin: 0;">Split Lineage Chain</h2>
+                <button class="outline small" onclick="closeSplitDetail()">← Back to By Stage</button>
             </div>
-        </div>
-    </section>
+            <div id="split-chain-container">
+                <p style="color: var(--pico-muted-color);">Loading split lineage...</p>
+            </div>
+        </section>
+    </div>
     
     <!-- Back link -->
-    <section>
+    <section style="margin-top: 1rem;">
         <a href="{{ base_path }}/jobs/{{ job_id }}/" role="button" class="outline small">← Back to Job</a>
     </section>
 </article>
@@ -114,162 +195,317 @@
 
 {% block extra_scripts %}
 <script>
-// Stage DAG data (will be populated from API)
 const jobId = '{{ job_id }}';
+const basePath = '{{ base_path }}';
+let stages = [];
+let currentPage = 1;
+const pageSize = 20;
 
-// Fetch stages and render DAG
-async function renderStageDag() {
+// Tab management
+function showTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(tab => tab.style.display = 'none');
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.style.borderBottom = 'none';
+        btn.classList.remove('active');
+    });
+    
+    document.getElementById(`tab-${tabName}`).style.display = 'block';
+    const btnEl = document.getElementById(`tab-btn-${tabName}`);
+    if (btnEl) {
+        btnEl.style.borderBottom = '2px solid var(--pico-primary)';
+        btnEl.classList.add('active');
+    }
+}
+
+// Format bytes
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// Format number with K/M suffix
+function formatNumber(num) {
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toString();
+}
+
+// Render vertical DAG with edge stats
+async function renderLineageDag() {
     try {
-        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/stages`);
-        if (!response.ok) return;
+        // Fetch edge stats
+        const edgeResponse = await fetch(`${basePath}/api/jobs/${jobId}/lineage/overview`);
+        if (!edgeResponse.ok) {
+            throw new Error('Failed to fetch edge stats');
+        }
+        const edgeData = await edgeResponse.json();
+        const stageStats = edgeData.stages || [];
+        const edges = edgeData.edges || [];
+        const dagEdges = edgeData.dag_edges || {};
         
-        const data = await response.json();
-        const stages = data.stages || [];
-        const edges = data.dag_edges || {};
+        stages = stageStats;
+        populateStageSelector();
         
-        // Create dagre graph
+        // Update summary stats
+        const totalSplits = stageStats.reduce((sum, s) => sum + (s.splits_count || 0), 0);
+        const totalRows = stageStats.reduce((sum, s) => sum + (s.total_output_rows || 0), 0);
+        const totalBytes = stageStats.reduce((sum, s) => sum + (s.total_output_bytes || 0), 0);
+        
+        document.getElementById('total-splits').textContent = totalSplits;
+        document.getElementById('total-rows').textContent = formatNumber(totalRows);
+        document.getElementById('total-bytes').textContent = formatBytes(totalBytes);
+        
+        // Calculate average processing time from edges
+        let totalProcTime = 0, edgeCount = 0;
+        edges.forEach(e => {
+            if (e.avg_processing_ms) {
+                totalProcTime += e.avg_processing_ms;
+                edgeCount++;
+            }
+        });
+        document.getElementById('avg-processing').textContent = edgeCount > 0 
+            ? (totalProcTime / edgeCount).toFixed(0) + 'ms' 
+            : 'N/A';
+        
+        // Create dagre graph (vertical: top to bottom)
         const g = new dagreD3.graphlib.Graph().setGraph({
-            rankdir: 'LR',
-            marginx: 20,
-            marginy: 20,
+            rankdir: 'TB',  // Top to Bottom
+            marginx: 40,
+            marginy: 40,
             ranksep: 80,
-            nodesep: 40
+            nodesep: 60
         });
         
-        // Add nodes
-        stages.forEach(stage => {
-            let statusClass = 'pending';
-            if (stage.is_running) statusClass = 'running';
-            else if (stage.is_finished) statusClass = 'finished';
-            else if (stage.failed) statusClass = 'failed';
-            
+        // Add stage nodes
+        stageStats.forEach(stage => {
+            const label = `${stage.stage_id}\n${stage.splits_count} splits\n${formatNumber(stage.total_output_rows)} rows`;
             g.setNode(stage.stage_id, {
-                label: `${stage.stage_id}\n(${stage.worker_count} workers)`,
-                class: statusClass,
-                width: 140,
-                height: 50
+                label: label,
+                width: 120,
+                height: 60
             });
         });
         
-        // Add edges
-        for (const [source, targets] of Object.entries(edges)) {
-            for (const target of targets) {
-                g.setEdge(source, target, {
-                    curve: d3.curveBasis
-                });
-            }
-        }
+        // Add edges with stats labels
+        edges.forEach(edge => {
+            const procRange = edge.min_processing_ms !== edge.max_processing_ms
+                ? `${edge.min_processing_ms}-${edge.max_processing_ms}ms`
+                : `${edge.min_processing_ms || 0}ms`;
+            
+            const label = `${edge.splits_count} splits\n${formatNumber(edge.total_rows)} rows\n${formatBytes(edge.total_bytes)}\n${procRange}`;
+            
+            g.setEdge(edge.from_stage, edge.to_stage, {
+                label: label,
+                labelStyle: 'font-size: 10px',
+                curve: d3.curveBasis
+            });
+        });
         
-        // Create renderer
+        // Render
         const render = new dagreD3.render();
-        const svg = d3.select('#stage-dag svg');
+        const svg = d3.select('#lineage-dag svg');
+        svg.selectAll('*').remove();
         const inner = svg.append('g');
         
-        // Run layout
         render(inner, g);
         
-        // Center and scale
+        // Scale and center
         const bbox = inner.node().getBBox();
-        const containerWidth = document.getElementById('stage-dag').clientWidth;
-        const containerHeight = 400;
+        const containerWidth = document.getElementById('lineage-dag').clientWidth;
+        const containerHeight = 500;
         
         const scale = Math.min(
-            containerWidth / (bbox.width + 40),
-            containerHeight / (bbox.height + 40),
-            1.5
+            (containerWidth - 40) / (bbox.width + 40),
+            (containerHeight - 40) / (bbox.height + 40),
+            1.2
         );
         
         const translateX = (containerWidth - bbox.width * scale) / 2;
-        const translateY = (containerHeight - bbox.height * scale) / 2;
+        const translateY = 20;
         
         svg.attr('viewBox', `0 0 ${containerWidth} ${containerHeight}`);
         inner.attr('transform', `translate(${translateX}, ${translateY}) scale(${scale})`);
         
-        // Add click handlers
-        svg.selectAll('.dag-node').on('click', function(event, d) {
-            window.location.href = `{{ base_path }}/jobs/${jobId}/stages/${d}`;
+        // Click handler for nodes
+        svg.selectAll('.node').on('click', function(event, d) {
+            document.getElementById('stage-select').value = d;
+            showTab('by-stage');
+            loadStageSplits(1);
         }).style('cursor', 'pointer');
         
     } catch (e) {
         console.error('Failed to render DAG:', e);
-        document.getElementById('stage-dag').innerHTML = `
-            <p class="text-center" style="margin-top: 150px; color: var(--pico-muted-color);">
-                Failed to load stage DAG
+        document.getElementById('lineage-dag').innerHTML = `
+            <p class="text-center" style="padding: 4rem; color: var(--pico-muted-color);">
+                No lineage data available. Enable with lineage_sample_rate > 0.
             </p>
         `;
     }
 }
 
-// Search for split lineage
-async function searchSplit() {
-    const splitId = document.getElementById('split-search').value.trim();
-    if (!splitId) return;
+// Populate stage selector
+function populateStageSelector() {
+    const select = document.getElementById('stage-select');
+    select.innerHTML = '<option value="">-- Select --</option>';
+    stages.forEach(stage => {
+        const option = document.createElement('option');
+        option.value = stage.stage_id;
+        option.textContent = `${stage.stage_id} (${stage.splits_count} splits)`;
+        select.appendChild(option);
+    });
+}
+
+// Load splits for selected stage with pagination
+async function loadStageSplits(page) {
+    const stageId = document.getElementById('stage-select').value;
+    const container = document.getElementById('stage-splits-container');
+    const paginationEl = document.getElementById('stage-pagination');
     
-    const container = document.getElementById('split-lineage');
-    container.innerHTML = '<p>Searching...</p>';
+    if (!stageId) {
+        container.innerHTML = '<p style="color: var(--pico-muted-color);">Select a stage to view its splits.</p>';
+        paginationEl.style.display = 'none';
+        return;
+    }
+    
+    currentPage = page;
+    const offset = (page - 1) * pageSize;
+    container.innerHTML = '<p>Loading...</p>';
     
     try {
-        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/lineage/${splitId}`);
-        if (response.ok) {
-            const data = await response.json();
-            container.innerHTML = `
-                <h4>Split: ${data.split_id}</h4>
-                <table>
-                    <tr><td><strong>Stage:</strong></td><td>${data.stage_id || 'N/A'}</td></tr>
-                    <tr><td><strong>Worker:</strong></td><td><code>${data.worker_id || 'N/A'}</code></td></tr>
-                    <tr><td><strong>Processing Time:</strong></td><td>${data.processing_time ? data.processing_time.toFixed(3) + 's' : 'N/A'}</td></tr>
-                    <tr><td><strong>Input Records:</strong></td><td>${data.input_records || 0}</td></tr>
-                    <tr><td><strong>Output Records:</strong></td><td>${data.output_records || 0}</td></tr>
-                    <tr><td><strong>Parent Splits:</strong></td><td>${(data.parent_ids || []).join(', ') || 'None (source)'}</td></tr>
-                </table>
-            `;
-        } else {
-            container.innerHTML = `
-                <p style="color: var(--pico-warning);">
-                    Split "${splitId}" not found in lineage data.
-                </p>
-                <p style="font-size: 0.85rem; color: var(--pico-muted-color);">
-                    Note: Split-level lineage tracking requires additional instrumentation.
-                    Currently showing stage-level DAG only.
-                </p>
-            `;
+        const response = await fetch(`${basePath}/api/jobs/${jobId}/lineage/stages/${stageId}/splits?limit=${pageSize}&offset=${offset}`);
+        if (!response.ok) throw new Error('Failed to load splits');
+        
+        const splits = await response.json();
+        
+        if (splits.length === 0 && page === 1) {
+            container.innerHTML = '<p style="color: var(--pico-muted-color);">No splits for this stage.</p>';
+            paginationEl.style.display = 'none';
+            return;
         }
+        
+        let html = '<div style="overflow-x: auto;"><table style="font-size: 0.9rem;"><thead><tr>';
+        html += '<th>Split ID</th><th>Worker</th><th>Queue Wait</th><th>Processing</th>';
+        html += '<th>In</th><th>Out</th><th>Size</th></tr></thead><tbody>';
+        
+        splits.forEach(split => {
+            const shortId = split.split_id.length > 24 ? split.split_id.substring(0, 24) + '...' : split.split_id;
+            const workerId = split.worker_id ? split.worker_id.substring(0, 16) : 'N/A';
+            html += `<tr onclick="showSplitDetail('${split.split_id}')" style="cursor: pointer;" title="Click to view lineage chain">`;
+            html += `<td><code style="font-size: 0.8rem;">${shortId}</code></td>`;
+            html += `<td><code style="font-size: 0.75rem;">${workerId}</code></td>`;
+            html += `<td>${(split.queue_wait_time_ms || 0).toFixed(0)}ms</td>`;
+            html += `<td>${(split.processing_time_ms || 0).toFixed(0)}ms</td>`;
+            html += `<td>${split.input_records || 0}</td>`;
+            html += `<td>${split.output_records || 0}</td>`;
+            html += `<td>${formatBytes(split.output_bytes || 0)}</td>`;
+            html += '</tr>';
+        });
+        
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
+        
+        // Pagination
+        const hasMore = splits.length === pageSize;
+        paginationEl.style.display = 'flex';
+        paginationEl.innerHTML = `
+            <button class="outline" onclick="loadStageSplits(${page - 1})" ${page === 1 ? 'disabled' : ''}>← Prev</button>
+            <span style="padding: 0.5rem;">Page ${page}</span>
+            <button class="outline" onclick="loadStageSplits(${page + 1})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+        `;
+        
     } catch (e) {
-        container.innerHTML = `<p style="color: var(--pico-danger);">Error: ${e.message}</p>`;
+        console.error('Failed to load splits:', e);
+        container.innerHTML = '<p style="color: var(--pico-danger);">Error loading splits.</p>';
     }
 }
 
-// Load lineage stats
-async function loadLineageStats() {
+// Show split detail with full lineage chain
+async function showSplitDetail(splitId) {
+    // Show the split detail tab
+    document.getElementById('tab-btn-split-detail').style.display = 'block';
+    showTab('split-detail');
+    
+    const container = document.getElementById('split-chain-container');
+    container.innerHTML = '<p>Loading lineage chain...</p>';
+    
     try {
-        const response = await fetch(`{{ base_path }}/api/jobs/${jobId}/lineage`);
-        if (response.ok) {
-            const data = await response.json();
-            const nodes = data.nodes || [];
-            
-            document.getElementById('total-splits').textContent = nodes.length || '0';
-            
-            // Calculate stats
-            const processed = nodes.filter(n => n.worker_id).length;
-            document.getElementById('processed-splits').textContent = processed;
-            
-            // This would need actual timing data
-            document.getElementById('avg-time').textContent = 'N/A';
+        const response = await fetch(`${basePath}/api/jobs/${jobId}/lineage/splits/${splitId}/trace`);
+        if (!response.ok) throw new Error('Failed to load trace');
+        
+        const data = await response.json();
+        const splits = data.splits || [];
+        const rootSplitId = data.root_split_id;
+        
+        if (splits.length === 0) {
+            container.innerHTML = '<p style="color: var(--pico-muted-color);">No lineage data for this split.</p>';
+            return;
         }
+        
+        // API returns splits already sorted by stage order (source → sink)
+        // No need to re-sort here
+        
+        // Build the chain visualization
+        let html = '<div style="display: flex; flex-direction: column; gap: 0.5rem;">';
+        
+        let prevStage = null;
+        splits.forEach((split, idx) => {
+            const isRoot = split.split_id === rootSplitId;
+            const stageChanged = split.stage_id !== prevStage;
+            prevStage = split.stage_id;
+            
+            // Stage header if changed
+            if (stageChanged) {
+                html += `<div style="margin-top: ${idx > 0 ? '1rem' : '0'}; display: flex; align-items: center; gap: 0.5rem;">`;
+                html += `<strong style="font-size: 1rem;">${split.stage_id}</strong>`;
+                html += `<span style="flex: 1; height: 1px; background: var(--pico-muted-border-color);"></span>`;
+                html += '</div>';
+            }
+            
+            // Arrow connector
+            if (idx > 0 && stageChanged) {
+                html += '<div style="text-align: center; color: var(--pico-muted-color); font-size: 1.2rem;">↓</div>';
+            }
+            
+            // Split card
+            html += `<div class="split-card ${isRoot ? 'current' : ''}" onclick="highlightSplit('${split.split_id}', this)">`;
+            html += `<h5><code>${split.split_id}</code></h5>`;
+            html += '<div class="split-meta">';
+            html += `<div class="split-meta-item"><span class="split-meta-label">Worker</span><code style="font-size: 0.8rem;">${split.worker_id || 'N/A'}</code></div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">In Rows</span>${split.input_records || 0}</div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">Out Rows</span>${split.output_records || 0}</div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">In Size</span>${formatBytes(split.input_bytes || 0)}</div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">Out Size</span>${formatBytes(split.output_bytes || 0)}</div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">Queue Wait</span>${(split.queue_wait_time_ms || 0).toFixed(0)}ms</div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">Processing</span>${(split.processing_time_ms || 0).toFixed(0)}ms</div>`;
+            html += `<div class="split-meta-item"><span class="split-meta-label">Partition</span>${split.partition_id !== undefined ? split.partition_id : 'N/A'}</div>`;
+            html += '</div></div>';
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+        
     } catch (e) {
-        console.log('Failed to load lineage stats:', e);
+        console.error('Failed to load split detail:', e);
+        container.innerHTML = '<p style="color: var(--pico-danger);">Error loading split lineage.</p>';
     }
+}
+
+function highlightSplit(splitId, element) {
+    document.querySelectorAll('.split-card').forEach(el => el.classList.remove('current'));
+    element.classList.add('current');
+}
+
+function closeSplitDetail() {
+    document.getElementById('tab-btn-split-detail').style.display = 'none';
+    showTab('by-stage');
 }
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-    renderStageDag();
-    loadLineageStats();
-    
-    // Allow Enter key to search
-    document.getElementById('split-search').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') searchSplit();
-    });
+    renderLineageDag();
 });
 </script>
 {% endblock %}

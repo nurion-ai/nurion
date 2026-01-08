@@ -196,32 +196,35 @@ def stage_started_message(
     )
 
 
+def stage_completed_message(
+    job_id: str,
+    stage_id: str,
+) -> StateMessage:
+    """Create a STAGE_COMPLETED message."""
+    return StateMessage(
+        message_type=StateMessageType.STAGE_COMPLETED,
+        job_id=job_id,
+        source_id=stage_id,
+        payload={},
+    )
+
+
 def stage_metrics_message(
     job_id: str,
     stage_id: str,
     worker_count: int,
-    input_records: int,
-    output_records: int,
-    input_throughput: float = 0.0,
-    output_throughput: float = 0.0,
-    queue_lag: int = 0,
-    backpressure_active: bool = False,
-    partition_metrics: Optional[Dict[int, Any]] = None,
 ) -> StateMessage:
-    """Create a STAGE_METRICS message."""
+    """Create a STAGE_METRICS message.
+
+    Note: input_records and output_records are aggregated from WORKER_METRICS
+    by the state manager, not sent by stage master.
+    """
     return StateMessage(
         message_type=StateMessageType.STAGE_METRICS,
         job_id=job_id,
         source_id=stage_id,
         payload={
             "worker_count": worker_count,
-            "input_records": input_records,
-            "output_records": output_records,
-            "input_throughput": input_throughput,
-            "output_throughput": output_throughput,
-            "queue_lag": queue_lag,
-            "backpressure_active": backpressure_active,
-            "partition_metrics": partition_metrics or {},
         },
     )
 
@@ -251,8 +254,11 @@ def worker_stopped_message(
     reason: str = "completed",
     processed_count: int = 0,
     error_count: int = 0,
+    input_records: int = 0,
+    output_records: int = 0,
+    processing_time: float = 0.0,
 ) -> StateMessage:
-    """Create a WORKER_STOPPED message."""
+    """Create a WORKER_STOPPED message with final metrics."""
     return StateMessage(
         message_type=StateMessageType.WORKER_STOPPED,
         job_id=job_id,
@@ -262,6 +268,9 @@ def worker_stopped_message(
             "reason": reason,
             "processed_count": processed_count,
             "error_count": error_count,
+            "input_records": input_records,
+            "output_records": output_records,
+            "processing_time": processing_time,
         },
     )
 
@@ -345,11 +354,39 @@ def split_processed_message(
     worker_id: str,
     split_id: str,
     parent_split_ids: list,
+    partition_id: int,
+    # Timing
+    enqueue_time: float,
+    dequeue_time: float,
+    complete_time: float,
+    # Data
     input_records: int,
     output_records: int,
-    processing_time: float,
+    input_bytes: int,
+    output_bytes: int,
+    # Payload reference
+    payload_store_key: str,
+    payload_storage_path: Optional[str] = None,
 ) -> StateMessage:
-    """Create a SPLIT_PROCESSED message for lineage tracking."""
+    """Create a SPLIT_PROCESSED message for lineage tracking.
+
+    Args:
+        job_id: Job identifier
+        stage_id: Stage identifier
+        worker_id: Worker identifier
+        split_id: Split identifier
+        parent_split_ids: List of parent split IDs
+        partition_id: Partition this split was consumed from
+        enqueue_time: When split entered the queue (Unix timestamp)
+        dequeue_time: When worker started processing (Unix timestamp)
+        complete_time: When processing finished (Unix timestamp)
+        input_records: Number of input records
+        output_records: Number of output records
+        input_bytes: Size of input payload in bytes
+        output_bytes: Size of output payload in bytes
+        payload_store_key: Key in SplitPayloadStore for accessing the payload
+        payload_storage_path: Optional external storage path if persisted
+    """
     return StateMessage(
         message_type=StateMessageType.SPLIT_PROCESSED,
         job_id=job_id,
@@ -358,8 +395,20 @@ def split_processed_message(
             "stage_id": stage_id,
             "split_id": split_id,
             "parent_split_ids": parent_split_ids,
+            "partition_id": partition_id,
+            # Timing
+            "enqueue_time": enqueue_time,
+            "dequeue_time": dequeue_time,
+            "complete_time": complete_time,
+            "queue_wait_time_ms": (dequeue_time - enqueue_time) * 1000,
+            "processing_time_ms": (complete_time - dequeue_time) * 1000,
+            # Data
             "input_records": input_records,
             "output_records": output_records,
-            "processing_time": processing_time,
+            "input_bytes": input_bytes,
+            "output_bytes": output_bytes,
+            # Payload reference
+            "payload_store_key": payload_store_key,
+            "payload_storage_path": payload_storage_path,
         },
     )
