@@ -170,12 +170,14 @@ class TestPartitionSkewScenario:
                 request_timeout_ms=5000,
                 group_id=consumer_group,
             )
-            await commit_consumer.start()
-            await asyncio.sleep(0.2)
-            commit_consumer.assign([TopicPartition(topic, partition)])
-            await asyncio.sleep(0.1)
-            await commit_consumer.commit({TopicPartition(topic, partition): offset})
-            await commit_consumer.stop()
+            try:
+                await commit_consumer.start()
+                await asyncio.sleep(0.2)
+                commit_consumer.assign([TopicPartition(topic, partition)])
+                await asyncio.sleep(0.1)
+                await commit_consumer.commit({TopicPartition(topic, partition): offset})
+            finally:
+                await commit_consumer.stop()
 
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
@@ -290,6 +292,7 @@ class TestBackpressureEndToEnd:
             await master3.stop()
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(60)
     async def test_backpressure_clears_when_downstream_catches_up(
         self, payload_store, tansu_backend, ray_cluster
     ):
@@ -353,12 +356,14 @@ class TestBackpressureEndToEnd:
                 request_timeout_ms=5000,
                 group_id=consumer_group,
             )
-            await commit_consumer.start()
-            await asyncio.sleep(0.2)
-            commit_consumer.assign([TopicPartition(topic, 0)])
-            await asyncio.sleep(0.1)
-            await commit_consumer.commit({TopicPartition(topic, 0): 3000})
-            await commit_consumer.stop()
+            try:
+                await commit_consumer.start()
+                await asyncio.sleep(0.2)
+                commit_consumer.assign([TopicPartition(topic, 0)])
+                await asyncio.sleep(0.1)
+                await commit_consumer.commit({TopicPartition(topic, 0): 3000})
+            finally:
+                await commit_consumer.stop()
 
             # Check backpressure again - should clear with hysteresis
             result2 = await master._check_backpressure()
