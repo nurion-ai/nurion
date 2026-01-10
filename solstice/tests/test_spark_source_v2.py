@@ -34,6 +34,8 @@ from solstice.operators.sources.sparkv2 import (
     SparkSourceV2Config,
     SparkSourceV2Master,
 )
+from solstice.core.stage_master import StageConfig, QueueEndpoint
+from solstice.queue import QueueType
 
 
 # Test data path
@@ -87,7 +89,7 @@ class TestSparkSourceV2Integration:
     """
 
     @pytest.mark.asyncio
-    async def test_v2_writes_to_output_queue(self, ray_cluster):
+    async def test_v2_writes_to_output_queue(self, ray_cluster, tansu_backend):
         """Test that V2 writes directly to output_queue."""
         test_path = str(TEST_DATA_100)
 
@@ -105,10 +107,20 @@ class TestSparkSourceV2Integration:
         payload_store = RaySplitPayloadStore(name="test_v2_output_store")
         _wait_for_actor(payload_store)
 
+        stage_config = StageConfig(
+            queue_type=QueueType.TANSU,
+            shared_broker_endpoint=QueueEndpoint(
+                queue_type=QueueType.TANSU,
+                host="localhost",
+                port=tansu_backend.port,
+                storage_url="memory://tansu/",
+            ),
+        )
         master = SparkSourceV2Master(
             job_id="test-v2-output",
             stage=source_stage,
             payload_store=payload_store,
+            config=stage_config,
         )
 
         try:
@@ -146,7 +158,7 @@ class TestSparkSourceV2Integration:
             await master.stop()
 
     @pytest.mark.asyncio
-    async def test_v2_with_parallelism(self, ray_cluster):
+    async def test_v2_with_parallelism(self, ray_cluster, tansu_backend):
         """Test V2 with custom parallelism."""
         test_path = str(TEST_DATA_100)
 
@@ -165,10 +177,20 @@ class TestSparkSourceV2Integration:
         payload_store = RaySplitPayloadStore(name="test_v2_parallel_store")
         _wait_for_actor(payload_store)
 
+        stage_config = StageConfig(
+            queue_type=QueueType.TANSU,
+            shared_broker_endpoint=QueueEndpoint(
+                queue_type=QueueType.TANSU,
+                host="localhost",
+                port=tansu_backend.port,
+                storage_url="memory://tansu/",
+            ),
+        )
         master = SparkSourceV2Master(
             job_id="test-v2-parallel",
             stage=source_stage,
             payload_store=payload_store,
+            config=stage_config,
         )
 
         try:
@@ -184,7 +206,7 @@ class TestSparkSourceV2Integration:
             await master.stop()
 
     @pytest.mark.asyncio
-    async def test_v2_large_dataset(self, ray_cluster):
+    async def test_v2_large_dataset(self, ray_cluster, tansu_backend):
         """Test V2 with larger dataset."""
         test_path = str(TEST_DATA_1000)
 
@@ -202,10 +224,20 @@ class TestSparkSourceV2Integration:
         payload_store = RaySplitPayloadStore(name="test_v2_large_store")
         _wait_for_actor(payload_store)
 
+        stage_config = StageConfig(
+            queue_type=QueueType.TANSU,
+            shared_broker_endpoint=QueueEndpoint(
+                queue_type=QueueType.TANSU,
+                host="localhost",
+                port=tansu_backend.port,
+                storage_url="memory://tansu/",
+            ),
+        )
         master = SparkSourceV2Master(
             job_id="test-v2-large",
             stage=source_stage,
             payload_store=payload_store,
+            config=stage_config,
         )
 
         try:

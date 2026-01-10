@@ -72,7 +72,6 @@ from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
 from solstice.core.models import Split
 from solstice.core.operator import OperatorConfig
 from solstice.core.stage_master import StageMaster, StageConfig
-from solstice.queue import QueueType
 from solstice.utils.logging import create_ray_logger
 
 if TYPE_CHECKING:
@@ -135,6 +134,7 @@ class SparkSourceV2Master(StageMaster):
         job_id: str,
         stage: "Stage",
         payload_store: "SplitPayloadStore",
+        config: StageConfig,
         **kwargs,
     ):
         # Get config from stage.operator_config
@@ -144,11 +144,11 @@ class SparkSourceV2Master(StageMaster):
                 f"SparkSourceV2Master requires SparkSourceV2Config, got {type(operator_cfg)}"
             )
 
-        # Create stage config for queue setup
-        # upstream_endpoint/topic are None for source stages
+        # Override worker settings for V2 (JVM writes directly, no workers needed)
         stage_config = StageConfig(
-            queue_type=QueueType.TANSU,
-            min_workers=0,  # No workers needed - JVM writes directly
+            queue_type=config.queue_type,
+            shared_broker_endpoint=config.shared_broker_endpoint,
+            min_workers=0,
             max_workers=0,
             upstream_endpoint=None,
             upstream_topic=None,
@@ -215,12 +215,8 @@ class SparkSourceV2Master(StageMaster):
         """
         import raydp
 
-        # Check backpressure before starting write
-        if await self._check_backpressure_before_produce():
-            self.logger.warning(
-                f"Backpressure detected before Spark write for {self.stage_id}. "
-                f"Proceeding anyway (current implementation doesn't support streaming write)."
-            )
+        # Note: Backpressure checking is not supported in V2 batch write.
+        # For true backpressure support, JVM-side streaming write is needed.
 
         # Initialize Spark
         spark_configs = {
@@ -274,13 +270,6 @@ class SparkSourceV2Master(StageMaster):
         )
 
         self.logger.info(f"JVM write completed: {count} splits to output_queue")
-
-        # Check backpressure after write
-        if await self._check_backpressure_before_produce():
-            self.logger.warning(
-                f"Backpressure detected after Spark write for {self.stage_id}. "
-                f"Downstream may be overwhelmed."
-            )
 
         return count
 

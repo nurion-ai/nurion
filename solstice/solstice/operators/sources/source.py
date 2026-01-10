@@ -75,7 +75,6 @@ from solstice.core.stage_master import (
 from solstice.queue import (
     QueueBroker,
     QueueClient,
-    TansuBrokerManager,
     TansuQueueClient,
     MemoryBroker,
     MemoryClient,
@@ -155,16 +154,16 @@ class SourceMaster(StageMaster):
         self.logger = create_ray_logger(f"SourceMaster-{self.stage_id}")
 
     async def _create_source_queue(self) -> QueueClient:
-        """Create queue broker and client for source queue.
+        """Connect to shared broker and create source queue topic.
 
-        For production (TANSU): Uses persistent TansuBrokerManager + TansuQueueClient.
-        For testing (MEMORY): Uses in-memory MemoryBroker + MemoryClient.
+        All stages use the same shared broker managed by RayJobRunner.
+        This reduces resource usage and improves stability.
 
         Returns:
             QueueClient for producing/consuming messages.
         """
         if self.config.queue_type == QueueType.MEMORY:
-            # Use Memory for testing
+            # MEMORY: Create local broker (for testing only)
             broker = MemoryBroker()
             await broker.start()
             self._source_broker = broker
@@ -182,33 +181,29 @@ class SourceMaster(StageMaster):
             self.logger.info(f"Created Memory source queue for {self.stage_id}")
             return client
         else:
-            # Use Tansu for production (persistent)
-            broker = TansuBrokerManager(
-                storage_url=self.config.tansu_storage_url,
-                port=None,  # Auto-select free port
-            )
-            await broker.start()
-            self._source_broker = broker
+            # TANSU: Connect to shared broker (required)
+            endpoint = self.config.shared_broker_endpoint
+            if not endpoint:
+                raise RuntimeError(
+                    f"Source {self.stage_id}: shared_broker_endpoint is required for TANSU queue type"
+                )
 
-            # Parse broker URL to get host:port
-            broker_url = broker.get_broker_url()
-            host, port_str = broker_url.split(":")
-            port = int(port_str)
-
+            broker_url = f"{endpoint.host}:{endpoint.port}"
             client = TansuQueueClient(broker_url)
             await client.start()
             self._source_client = client
 
             self._source_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                host=host,
-                port=port,
-                storage_url=self.config.tansu_storage_url,
+                host=endpoint.host,
+                port=endpoint.port,
+                storage_url=endpoint.storage_url,
             )
 
             await client.create_topic(self._source_topic)
-
-            self.logger.info(f"Created Tansu source queue on port {port} for {self.stage_id}")
+            self.logger.info(
+                f"Connected to shared broker at {broker_url} for source {self.stage_id}"
+            )
             return client
 
     async def start(self) -> None:
@@ -239,9 +234,23 @@ class SourceMaster(StageMaster):
         self.upstream_endpoint = self._source_endpoint
         self.upstream_topic = self._source_topic
 
+        # Update partition manager with source queue info
+        self._partition_manager._upstream_endpoint = self._source_endpoint
+        self._partition_manager._upstream_topic = self._source_topic
+
+        # Initialize managers (must be called after output queue is created)
+        self._init_managers()
+
+        # Update worker manager with source queue info (workers consume from source queue)
+        self._worker_manager.set_target_worker_count(self.config.min_workers)
+        self._worker_manager.set_upstream_config(self._source_endpoint, self._source_topic)
+
+        # Get partition count for worker assignment
+        partition_count = await self._partition_manager.get_upstream_partition_count()
+
         # Spawn workers
         for i in range(self.config.min_workers):
-            await self._spawn_worker()
+            await self._worker_manager.spawn_worker(partition_count=partition_count)
 
         self.logger.info(
             f"Source {self.stage_id} started: {self._splits_produced} splits, "
@@ -295,6 +304,31 @@ class SourceMaster(StageMaster):
                 raise
 
         self.logger.info(f"Source {self.stage_id} produced {self._splits_produced} splits to queue")
+
+        # Send EOF marker to source queue (single partition for source)
+        # This signals workers that no more splits will be produced
+        await self._send_source_eof()
+
+    async def _send_source_eof(self) -> None:
+        """Send EOF marker to source queue.
+
+        Source queue is single-partition, so we only send one EOF.
+        """
+        if not self._source_client:
+            return
+
+        try:
+            from solstice.core.stage_master import QueueMessage
+
+            eof_message = QueueMessage.create_eof(partition=0)
+            await self._source_client.produce(
+                self._source_topic,
+                eof_message.to_bytes(),
+                partition=0,
+            )
+            self.logger.info(f"Source {self.stage_id} sent EOF marker to source queue")
+        except Exception as e:
+            self.logger.warning(f"Failed to send EOF to source queue: {e}")
 
     async def _check_backpressure_before_produce(self) -> bool:
         """Check if we should pause production due to downstream backpressure.

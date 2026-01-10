@@ -360,6 +360,7 @@ class TansuQueueClient:
         max_records: int = 100,
         timeout_ms: int = 5000,
         partition: int = 0,
+        group_id: Optional[str] = None,
     ) -> List[Record]:
         """Fetch records from a topic.
 
@@ -370,8 +371,9 @@ class TansuQueueClient:
             max_records: Maximum records to fetch
             timeout_ms: Fetch timeout in milliseconds
             partition: Partition to fetch from
+            group_id: Consumer group ID (should match commit_offset calls)
         """
-        consumer = await self._get_consumer(topic, partition=partition)
+        consumer = await self._get_consumer(topic, partition=partition, group_id=group_id)
         tp = TopicPartition(topic, partition)
         # Only seek if offset is explicitly specified
         if offset is not None:
@@ -535,6 +537,30 @@ class TansuQueueClient:
             # (group_id is still set for offset commit tracking)
             tp = TopicPartition(topic, partition)
             consumer.assign([tp])
+
+            # Check if there's a committed offset for this group
+            # If not, seek to beginning to ensure we start from offset 0
+            if group_id:
+                committed = await consumer.committed(tp)
+                if committed is None:
+                    # No committed offset, explicitly seek to offset 0
+                    # Use seek() instead of seek_to_beginning() for more control
+                    consumer.seek(tp, 0)
+                    self.logger.debug(
+                        f"Consumer for {topic}:{partition} (group={group_id}) "
+                        f"starting from offset 0 (no committed offset)"
+                    )
+                else:
+                    # Resume from committed offset
+                    consumer.seek(tp, committed)
+                    self.logger.debug(
+                        f"Consumer for {topic}:{partition} (group={group_id}) "
+                        f"resuming from committed offset {committed}"
+                    )
+            else:
+                # No group_id means no offset tracking, always start from offset 0
+                consumer.seek(tp, 0)
+
             self.logger.debug(f"Created consumer for {topic}:{partition} (group={group_id})")
 
             self._consumers[consumer_key] = consumer

@@ -32,6 +32,8 @@ from solstice.operators.sources.spark import (
     SparkSourceConfig,
     SparkSourceMaster,
 )
+from solstice.operators.sources.source import SourceConfig
+from solstice.queue import QueueType
 
 
 # Test data path
@@ -601,10 +603,12 @@ class TestSparkSourceMaster:
         from solstice.core.split_payload_store import RaySplitPayloadStore
 
         payload_store = RaySplitPayloadStore(name="test-full-pipeline_store")
+        source_config = SourceConfig(queue_type=QueueType.MEMORY)
         master = SparkSourceMaster(
             job_id="test-full-pipeline",
             stage=source_stage,
             payload_store=payload_store,
+            config=source_config,
         )
 
         # Start the full pipeline (creates queues, spawns workers)

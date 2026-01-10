@@ -324,6 +324,7 @@ class MemoryClient:
         max_records: int = 100,
         timeout_ms: int = 1000,
         partition: int = 0,
+        group_id: Optional[str] = None,
     ) -> List[Record]:
         """Fetch records from the topic.
 
@@ -333,13 +334,15 @@ class MemoryClient:
             max_records: Maximum records to fetch.
             timeout_ms: Fetch timeout (not used in memory implementation).
             partition: Partition to read from.
+            group_id: Consumer group ID (used for position tracking).
         """
         topic_data = self._broker._get_topic(topic)
         if topic_data is None:
             return []
 
         # Use tracked position if offset not specified
-        position_key = (topic, partition)
+        # Include group_id in key for proper isolation
+        position_key = (topic, partition, group_id)
         if offset is None:
             offset = self._consumer_positions.get(position_key, 0)
 
@@ -359,7 +362,7 @@ class MemoryClient:
                     )
                 )
 
-        # Update position for next fetch
+        # Update position for next fetch (position_key includes group_id)
         if result:
             self._consumer_positions[position_key] = result[-1].offset + 1
 

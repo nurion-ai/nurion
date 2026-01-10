@@ -37,6 +37,8 @@ from solstice.core.models import Split
 from solstice.core.stage import Stage
 from solstice.operators.sources import LanceTableSourceConfig
 from solstice.operators.sources.lance import LanceSourceMaster
+from solstice.operators.sources.source import SourceConfig
+from solstice.queue import QueueType
 
 pytestmark = pytest.mark.integration
 
@@ -204,10 +206,12 @@ class TestLancePipeline:
         from solstice.core.split_payload_store import RaySplitPayloadStore
 
         payload_store = RaySplitPayloadStore(name="test-lance-pipeline_store")
+        source_config = SourceConfig(queue_type=QueueType.MEMORY)
         master = LanceSourceMaster(
             job_id="test-lance-pipeline",
             stage=source_stage,
             payload_store=payload_store,
+            config=source_config,
         )
 
         # Start the full pipeline (creates queues, spawns workers)
@@ -283,10 +287,12 @@ class TestLancePipeline:
         from solstice.core.split_payload_store import RaySplitPayloadStore
 
         payload_store = RaySplitPayloadStore(name="test-lance-s3-pipeline_store")
+        source_config = SourceConfig(queue_type=QueueType.MEMORY)
         master = LanceSourceMaster(
             job_id="test-lance-s3-pipeline",
             stage=source_stage,
             payload_store=payload_store,
+            config=source_config,
         )
 
         await master.start()

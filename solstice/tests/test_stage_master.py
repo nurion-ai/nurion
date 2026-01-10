@@ -32,6 +32,7 @@ from solstice.core.stage_master import (
     StageConfig,
     QueueType,
     QueueMessage,
+    QueueEndpoint,
 )
 from solstice.core.operator import OperatorConfig, Operator
 
@@ -113,9 +114,9 @@ def mock_stage():
 
 @pytest.fixture
 def stage_config():
-    """Provide default stage config using TANSU backend for distributed tests."""
+    """Provide default stage config using MEMORY backend for unit tests."""
     return StageConfig(
-        queue_type=QueueType.TANSU,
+        queue_type=QueueType.MEMORY,
         min_workers=1,
         max_workers=2,
         batch_size=10,
@@ -192,14 +193,21 @@ class TestStageConfig:
         assert config.batch_size == 100
 
     def test_tansu_config(self):
-        """Test Tansu-specific config."""
+        """Test Tansu-specific config with shared broker endpoint."""
+        endpoint = QueueEndpoint(
+            queue_type=QueueType.TANSU,
+            host="localhost",
+            port=9092,
+            storage_url="s3://my-bucket/",
+        )
         config = StageConfig(
             queue_type=QueueType.TANSU,
-            tansu_storage_url="s3://my-bucket/",
+            shared_broker_endpoint=endpoint,
         )
 
         assert config.queue_type == QueueType.TANSU
-        assert config.tansu_storage_url == "s3://my-bucket/"
+        assert config.shared_broker_endpoint is not None
+        assert config.shared_broker_endpoint.storage_url == "s3://my-bucket/"
 
     def test_to_dict(self):
         """Test config serialization."""
@@ -276,7 +284,7 @@ class TestStageMaster:
     @pytest.mark.asyncio
     async def test_get_output_queue(self, mock_stage, stage_config, payload_store, ray_cluster):
         """Test getting output queue for downstream."""
-        from solstice.queue import TansuQueueClient
+        from solstice.queue import QueueClient
 
         master = StageMaster(
             job_id="test_job",
@@ -291,7 +299,7 @@ class TestStageMaster:
 
         queue = master.get_output_queue()
         assert queue is not None
-        assert isinstance(queue, TansuQueueClient)
+        assert isinstance(queue, QueueClient)
 
         await master.stop()
 

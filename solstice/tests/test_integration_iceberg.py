@@ -213,11 +213,11 @@ class TestIcebergPipeline:
             ),
         )
 
-        # Create stage master with TansuBackend
+        # Create stage master with Memory queue for testing
         from solstice.core.split_payload_store import RaySplitPayloadStore
 
         config = StageConfig(
-            queue_type=QueueType.TANSU,
+            queue_type=QueueType.MEMORY,
             min_workers=1,
             max_workers=1,
         )

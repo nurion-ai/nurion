@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pr-title-check:
     name: PR Title Check
@@ -46,6 +51,68 @@ jobs:
           doesn't start with an uppercase character.
         validateSingleCommit: false
 
+  # ============================================================================
+  # Build artifacts that can be shared across jobs
+  # ============================================================================
+  
+  build-raydp-jars:
+    name: Build RayDP JARs
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push' }}
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v45
+      with:
+        files: |
+          solstice/**
+    
+    - name: Skip if no Solstice changes
+      if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
+      run: echo "No Solstice files changed, skipping JAR build..."
+    
+    - name: Set up Java 11
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '11'
+        cache: 'maven'
+        cache-dependency-path: 'solstice/java/pom.xml'
+    
+    - name: Build raydp JARs
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice/java
+        mvn clean package -DskipTests -q
+        
+        mkdir -p ../raydp/jars
+        cp raydp-main/target/raydp-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        cp shims/common/target/raydp-shims-common-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        cp shims/spark340/target/raydp-shims-spark340-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        cp shims/spark350/target/raydp-shims-spark350-1.7.0-SNAPSHOT.jar ../raydp/jars/
+        
+        echo "Built JARs:"
+        ls -la ../raydp/jars/
+    
+    - name: Upload JARs artifact
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: actions/upload-artifact@v4
+      with:
+        name: raydp-jars
+        path: solstice/raydp/jars/
+        retention-days: 1
+
+  # ============================================================================
+  # Lint and code quality checks
+  # ============================================================================
+
   lint:
     name: Code Quality Check
     runs-on: ubuntu-latest
@@ -75,6 +142,8 @@ jobs:
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
     
     - name: Set up Python 3.13
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -96,6 +165,12 @@ jobs:
     - name: Set up Rust
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: dtolnay/rust-toolchain@stable
+    
+    - name: Rust cache
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "solstice/tansu-py -> target"
 
     - name: Check solstice
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -104,6 +179,10 @@ jobs:
         uv sync --dev
         uv run ruff check solstice/
         uv run ruff format --check solstice/
+
+  # ============================================================================
+  # Aether tests (Python 3.13, no Rust/Java dependencies)
+  # ============================================================================
 
   test-aether:
     name: Aether Tests
@@ -133,6 +212,8 @@ jobs:
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
     
     - name: Set up Python 3.13
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -158,6 +239,10 @@ jobs:
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
+
+  # ============================================================================
+  # Solstice unit tests (no external services)
+  # ============================================================================
 
   test-solstice:
     name: Solstice Unit Tests
@@ -189,11 +274,19 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: dtolnay/rust-toolchain@stable
     
+    - name: Rust cache
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "solstice/tansu-py -> target"
+    
     - name: Install uv
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
     
     - name: Set up Python 3.12
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
@@ -211,7 +304,7 @@ jobs:
         SOLSTICE_TEST_VIDEO_LIMIT: "20"
       run: |
         cd solstice
-        uv run pytest tests/ -v --tb=short -m "not integration"
+        uv run pytest tests/ -v --tb=short -m "not integration and not chaos"
     
     - name: Print Ray logs on failure
       if: failure()
@@ -235,9 +328,15 @@ jobs:
         rm -rf solstice/tests/testdata/resources/lance
         rm -rf solstice/tests/testdata/resources/tmp
 
+  # ============================================================================
+  # Solstice integration tests (requires Aether, Spark JARs)
+  # ============================================================================
+
   test-solstice-integration:
     name: Solstice Integration Tests
     runs-on: ubuntu-latest
+    needs: [build-raydp-jars]
+    if: needs.build-raydp-jars.outputs.should_run == 'true'
     
     steps:
     - name: Free up disk space
@@ -256,54 +355,43 @@ jobs:
       with:
         fetch-depth: 0
     
-    - name: Get changed files
-      id: changed-files
-      uses: tj-actions/changed-files@v45
+    - name: Download RayDP JARs
+      uses: actions/download-artifact@v4
       with:
-        files: |
-          solstice/**
+        name: raydp-jars
+        path: solstice/raydp/jars/
     
-    - name: Skip if no Solstice changes
-      if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
-      run: echo "No Solstice files changed, skipping..."
+    - name: Verify JARs
+      run: |
+        echo "Downloaded JARs:"
+        ls -la solstice/raydp/jars/
     
     - name: Install system dependencies
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
     
     - name: Set up Rust
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: dtolnay/rust-toolchain@stable
     
+    - name: Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "solstice/tansu-py -> target"
+    
     - name: Set up Java 11
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '11'
     
-    - name: Build raydp JARs
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
-      run: |
-        cd solstice/java
-        mvn clean package -DskipTests -q
-        
-        mkdir -p ../raydp/jars
-        cp raydp-main/target/raydp-1.7.0-SNAPSHOT.jar ../raydp/jars/
-        cp shims/common/target/raydp-shims-common-1.7.0-SNAPSHOT.jar ../raydp/jars/
-        cp shims/spark340/target/raydp-shims-spark340-1.7.0-SNAPSHOT.jar ../raydp/jars/
-        cp shims/spark350/target/raydp-shims-spark350-1.7.0-SNAPSHOT.jar ../raydp/jars/
-        
-        echo "Built JARs:"
-        ls -la ../raydp/jars/
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
     
-    - name: Start aether services
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+    - name: Start aether services (with cache)
       run: |
         cd aether
-        docker compose build --no-cache
+        docker compose build
         docker compose up -d 
         
         echo "Waiting for aether to be ready..."
@@ -319,23 +407,21 @@ jobs:
         docker compose ps
     
     - name: Install uv
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
     
     - name: Set up Python 3.12
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: uv python install 3.12
       
     - name: Install dependencies
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       run: |
         cd solstice
         uv sync --dev --python 3.12
     
     - name: Run integration tests (excluding video workflow)
-      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       env:
         SOLSTICE_TEST_VIDEO_LIMIT: "20"
       run: |
@@ -374,6 +460,83 @@ jobs:
       run: |
         cd aether
         docker compose down -v
+
+  # ============================================================================
+  # Solstice chaos tests (experimental)
+  # ============================================================================
+
+  test-solstice-chaos:
+    name: Solstice Chaos Tests
+    runs-on: ubuntu-latest
+    # Chaos tests are experimental and may be flaky - doesn't block PR merge
+    continue-on-error: true
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v45
+      with:
+        files: |
+          solstice/**
+    
+    - name: Skip if no Solstice changes
+      if: steps.changed-files.outputs.any_changed == 'false' && github.event_name == 'pull_request'
+      run: echo "No Solstice files changed, skipping..."
+    
+    - name: Set up Rust
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Rust cache
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "solstice/tansu-py -> target"
+    
+    - name: Install uv
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+    
+    - name: Set up Python 3.12
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: uv python install 3.12
+      
+    - name: Install dependencies
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv sync --dev --python 3.12
+    
+    - name: Run chaos tests
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      run: |
+        cd solstice
+        uv run pytest tests/ -v --tb=short -m "chaos" --timeout=600
+    
+    - name: Print Ray logs on failure
+      if: failure()
+      run: |
+        echo "=== Ray Session Logs ==="
+        if [ -d /tmp/ray ]; then
+          find /tmp/ray -name "*.log" -type f 2>/dev/null | head -20 | while read f; do
+            echo "=== $f ==="
+            tail -200 "$f" 2>/dev/null || true
+          done
+        else
+          echo "No Ray logs found in /tmp/ray"
+        fi
+
+  # ============================================================================
+  # Solstice video workflow test (slow, optional)
+  # ============================================================================
 
   test-solstice-video-workflow:
     name: Solstice Video Workflow Test
@@ -419,11 +582,19 @@ jobs:
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: dtolnay/rust-toolchain@stable
     
+    - name: Rust cache
+      if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "solstice/tansu-py -> target"
+    
     - name: Install uv
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
     
     - name: Set up Python 3.12
       if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'push'

@@ -75,6 +75,7 @@ class QueueConsumer(Protocol):
         max_records: int = 100,
         timeout_ms: int = 5000,
         partition: int = 0,
+        group_id: Optional[str] = None,
     ) -> List[Record]:
         """Fetch records from the topic.
 
@@ -84,6 +85,7 @@ class QueueConsumer(Protocol):
             max_records: Maximum number of records to fetch.
             timeout_ms: Timeout in milliseconds.
             partition: Partition to read from.
+            group_id: Consumer group ID. Should match commit_offset calls.
 
         Returns:
             List of records.

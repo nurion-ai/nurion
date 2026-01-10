@@ -37,9 +37,11 @@ if TYPE_CHECKING:
 from solstice.core.stage_master import (
     StageMaster,
     StageConfig,
+    QueueEndpoint,
 )
 from solstice.operators.sources.source import SourceMaster
 from solstice.core.split_payload_store import RaySplitPayloadStore
+from solstice.queue import QueueType, TansuBrokerManager, TansuQueueClient
 from solstice.runtime.autoscaler import SimpleAutoscaler
 from solstice.runtime.state_push import StatePushManager, StatePushConfig
 from solstice.utils.logging import create_ray_logger
@@ -120,6 +122,11 @@ class RayJobRunner:
             ),
         )
 
+        # Shared Tansu broker for all stages (reduces resource usage and improves stability)
+        self._shared_broker = None
+        self._shared_broker_endpoint = None
+        self._shared_broker_client = None
+
         # State
         self._initialized = False
         self._running = False
@@ -133,6 +140,53 @@ class RayJobRunner:
         """Ensure Ray is initialized."""
         if not ray.is_initialized():
             ray.init(ignore_reinit_error=True, **self._ray_init_kwargs)
+
+    async def _create_shared_broker(self) -> None:
+        """Create a single shared Tansu broker for all stages.
+
+        This improves stability by having one broker process instead of one per stage.
+        All stages connect to this broker and create their own topics.
+        """
+        if self.queue_type != QueueType.TANSU:
+            return  # Memory queue doesn't need shared broker
+
+        self._shared_broker = TansuBrokerManager(
+            storage_url=self.tansu_storage_url or "memory://tansu/",
+        )
+        await self._shared_broker.start()
+
+        broker_url = self._shared_broker.get_broker_url()
+        host, port_str = broker_url.split(":")
+
+        self._shared_broker_endpoint = QueueEndpoint(
+            queue_type=QueueType.TANSU,
+            host=host,
+            port=int(port_str),
+            storage_url=self.tansu_storage_url or "memory://tansu/",
+        )
+
+        # Create a client for the runner itself (for cleanup operations)
+        self._shared_broker_client = TansuQueueClient(broker_url)
+        await self._shared_broker_client.start()
+
+        self.logger.info(f"Created shared Tansu broker at {broker_url}")
+
+    async def _stop_shared_broker(self) -> None:
+        """Stop the shared Tansu broker."""
+        if self._shared_broker_client:
+            try:
+                await self._shared_broker_client.stop()
+            except Exception as e:
+                self.logger.warning(f"Error stopping shared broker client: {e}")
+            self._shared_broker_client = None
+
+        if self._shared_broker:
+            try:
+                await self._shared_broker.stop()
+            except Exception as e:
+                self.logger.warning(f"Error stopping shared broker: {e}")
+            self._shared_broker = None
+            self._shared_broker_endpoint = None
 
     async def initialize(self) -> None:
         """Initialize the pipeline."""
@@ -153,6 +207,9 @@ class RayJobRunner:
 
         # Initialize state push infrastructure (if WebUI enabled)
         await self._state_push.start(storage=storage)
+
+        # Create shared Tansu broker for all stages (if using Tansu)
+        await self._create_shared_broker()
 
         # Build reverse DAG (stage -> its upstreams)
         self._reverse_dag = self.job.build_reverse_dag()
@@ -236,13 +293,13 @@ class RayJobRunner:
         worker_res = stage.worker_resources or {}
         return StageConfig(
             queue_type=self.queue_type,
-            tansu_storage_url=self.tansu_storage_url,
             min_workers=stage.min_parallelism,
             max_workers=stage.max_parallelism,
             num_cpus=worker_res.get("num_cpus", 1.0),
             num_gpus=worker_res.get("num_gpus", 0.0),
             memory_mb=int(worker_res.get("memory", 0) / (1024**2)),
             lineage_sample_rate=self.job.config.webui.lineage_sample_rate,
+            shared_broker_endpoint=self._shared_broker_endpoint,
         )
 
     def _stage_info(self, stage: "Stage") -> Dict[str, Any]:
@@ -442,6 +499,9 @@ class RayJobRunner:
 
         # Clean up state push infrastructure
         await self._state_push.stop()
+
+        # Stop shared broker (after all stages are done)
+        await self._stop_shared_broker()
 
         # Stop WebUI
         await self._stop_webui()

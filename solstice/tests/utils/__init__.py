@@ -17,6 +17,85 @@
 import asyncio
 from typing import Callable, Union
 
+# Re-export utilities from submodules
+from .collecting_sink import (
+    CollectingSink,
+    CollectingSinkConfig,
+    RecordCollector,
+    clear_collector,
+    count_sink_records,
+    create_collector,
+    get_collector,
+    get_sink_records,
+)
+from .data_validator import DataValidator
+from .test_helpers import (
+    is_runner_finished,
+    kill_all_workers,
+    kill_random_worker,
+    scale_stage_workers,
+    wait_for_progress,
+    wait_for_stage_workers,
+)
+from .test_pipeline_factory import (
+    ExplodeConfig,
+    ExplodeOperator,
+    FilterConfig,
+    FilterExplodeConfig,
+    FilterExplodeOperator,
+    FilterOperator,
+    PassthroughConfig,
+    PassthroughOperator,
+    SlowTransformConfig,
+    SlowTransformOperator,
+    TestSourceConfig,
+    TestSourceMaster,
+    TestSourceOperator,
+    create_multi_stage_pipeline,
+    create_test_pipeline,
+    generate_test_data_with_checksum,
+)
+
+__all__ = [
+    # Data validation
+    "DataValidator",
+    # Collecting sink
+    "RecordCollector",
+    "CollectingSink",
+    "CollectingSinkConfig",
+    "create_collector",
+    "get_collector",
+    "get_sink_records",
+    "count_sink_records",
+    "clear_collector",
+    # Pipeline factory
+    "TestSourceConfig",
+    "TestSourceOperator",
+    "TestSourceMaster",
+    "PassthroughConfig",
+    "PassthroughOperator",
+    "SlowTransformConfig",
+    "SlowTransformOperator",
+    "FilterConfig",
+    "FilterOperator",
+    "ExplodeConfig",
+    "ExplodeOperator",
+    "FilterExplodeConfig",
+    "FilterExplodeOperator",
+    "create_test_pipeline",
+    "create_multi_stage_pipeline",
+    "generate_test_data_with_checksum",
+    # Test helpers
+    "wait_for_progress",
+    "wait_for_stage_workers",
+    "kill_random_worker",
+    "kill_all_workers",
+    "scale_stage_workers",
+    "is_runner_finished",
+    # Async helpers
+    "wait_until",
+]
+
 
 async def wait_until(
     condition: Callable[[], Union[bool, "asyncio.Future[bool]"]],

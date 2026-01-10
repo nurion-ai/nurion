@@ -39,6 +39,23 @@ if TYPE_CHECKING:
 
 
 # ============================================================================
+# Pytest configuration
+# ============================================================================
+
+
+def pytest_configure(config):
+    """Configure pytest markers."""
+    config.addinivalue_line(
+        "markers",
+        "chaos: mark test as chaos engineering test (unstable, not in CI)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "slow: mark test as slow (takes more than 30 seconds)",
+    )
+
+
+# ============================================================================
 # Common excludes for Ray runtime environment
 # ============================================================================
 
@@ -412,11 +429,12 @@ def s3_storage_options(minio_endpoint: str, minio_credentials: dict) -> dict:
 # ============================================================================
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def ray_cluster():
     """Initialize Ray cluster with unified configuration.
 
-    Session-scoped to avoid Ray restart overhead per module (~3-5s each).
+    Function-scoped to ensure complete isolation between tests.
+    Each test gets a fresh Ray cluster to avoid resource conflicts.
 
     - num_cpus=4
     - Includes raydp JARs if available
@@ -424,10 +442,9 @@ def ray_cluster():
     """
     from ray.job_config import JobConfig
 
+    # Shutdown any existing cluster first
     if ray.is_initialized():
-        # Reuse existing cluster in session
-        yield
-        return
+        ray.shutdown()
 
     # Try to get raydp jars if available
     jars_paths = []
@@ -457,6 +474,9 @@ def ray_cluster():
     except Exception:
         pass
     ray.shutdown()
+    # Wait for Ray to fully shutdown before next test
+    import time
+    time.sleep(0.5)
 
 
 @pytest_asyncio.fixture
@@ -467,3 +487,27 @@ async def payload_store(ray_cluster, request):
     store = RaySplitPayloadStore(name=f"test_store_{unique}")
     yield store
     # Ray handles cleanup
+
+
+@pytest_asyncio.fixture
+async def record_collector(ray_cluster, request):
+    """Create a unique RecordCollector actor for distributed tests.
+
+    The collector is created with a unique name based on the test name,
+    ensuring isolation between tests.
+    """
+    from tests.utils.collecting_sink import RecordCollector
+
+    test_name = request.node.name.replace("[", "_").replace("]", "_")
+    unique = hashlib.md5(test_name.encode()).hexdigest()[:8] if test_name else str(uuid.uuid4())[:8]
+    collector_name = f"test_collector_{unique}"
+
+    collector = RecordCollector.options(name=collector_name).remote()
+
+    yield collector_name
+
+    # Clean up the actor
+    try:
+        ray.kill(collector)
+    except Exception:
+        pass  # Actor may already be dead
