@@ -33,17 +33,58 @@ class RecordCollector:
 
     This actor serves as a centralized collection point for test data,
     allowing verification of data integrity across distributed processing.
+
+    Implements exactly-once semantics by deduplicating records based on
+    their unique ID. This is critical for fault tolerance tests where
+    workers may be killed and restarted, potentially producing duplicates.
     """
 
-    def __init__(self):
+    def __init__(self, deduplicate: bool = True):
+        """Initialize the collector.
+
+        Args:
+            deduplicate: If True, deduplicates records based on ID.
+                        Required for exactly-once semantics in chaos tests.
+        """
         self._records: List[Dict] = []
+        self._seen_ids: set = set()  # For deduplication
+        self._deduplicate = deduplicate
+        self._duplicate_count = 0
 
     def add_records(self, records: List[Dict]) -> None:
-        """Add records to the collection."""
-        self._records.extend(records)
+        """Add records to the collection, deduplicating if enabled."""
+        for record in records:
+            self._add_single(record)
 
     def add_record(self, record: Dict) -> None:
         """Add a single record to the collection."""
+        self._add_single(record)
+
+    def _add_single(self, record: Dict) -> None:
+        """Add a single record, with optional deduplication.
+
+        Deduplication uses a composite key of (id, copy_idx) if copy_idx exists,
+        otherwise just id. This supports explode operations where the same id
+        is legitimately duplicated with different copy_idx values.
+        """
+        if self._deduplicate:
+            record_id = record.get("id")
+            copy_idx = record.get("copy_idx")
+
+            # Build composite key for deduplication
+            if record_id is not None:
+                if copy_idx is not None:
+                    # Exploded records: use (id, copy_idx) as unique key
+                    dedup_key = (record_id, copy_idx)
+                else:
+                    # Normal records: use just id
+                    dedup_key = (record_id,)
+
+                if dedup_key in self._seen_ids:
+                    self._duplicate_count += 1
+                    return  # Skip duplicate
+                self._seen_ids.add(dedup_key)
+
         self._records.append(record)
 
     def get_all(self) -> List[Dict]:
@@ -54,9 +95,15 @@ class RecordCollector:
         """Get the count of collected records."""
         return len(self._records)
 
+    def get_duplicate_count(self) -> int:
+        """Get the count of duplicates that were filtered out."""
+        return self._duplicate_count
+
     def clear(self) -> None:
         """Clear all collected records."""
         self._records.clear()
+        self._seen_ids.clear()
+        self._duplicate_count = 0
 
     def get_by_id(self, record_id: int) -> Optional[Dict]:
         """Get a record by its ID."""

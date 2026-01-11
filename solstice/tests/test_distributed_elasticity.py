@@ -107,11 +107,12 @@ class TestElasticScaling:
             master = runner._masters.get("transform")
             initial_count = len(master._workers) if master else 0
 
-            # Scale up: spawn additional workers
-            if master:
+            # Scale up: spawn additional workers using worker manager
+            if master and master._worker_manager:
+                partition_count = master._partition_count
                 for _ in range(4):
                     try:
-                        await master._spawn_worker()
+                        await master._worker_manager.spawn_worker(partition_count=partition_count)
                     except Exception:
                         pass
                     await asyncio.sleep(0.2)
@@ -307,11 +308,12 @@ class TestElasticScaling:
                     collector_name=self.collector_name,
                 )
 
-                # Scale up
-                if master:
+                # Scale up using worker manager
+                if master and master._worker_manager:
+                    partition_count = master._partition_count
                     for _ in range(2):
                         try:
-                            await master._spawn_worker()
+                            await master._worker_manager.spawn_worker(partition_count=partition_count)
                         except Exception:
                             pass
 
@@ -373,11 +375,12 @@ class TestElasticScaling:
 
             master = runner._masters.get("transform")
 
-            # Scale up significantly to trigger rebalance
-            if master:
+            # Scale up significantly to trigger rebalance using worker manager
+            if master and master._worker_manager:
+                partition_count = master._partition_count
                 for _ in range(4):
                     try:
-                        await master._spawn_worker()
+                        await master._worker_manager.spawn_worker(partition_count=partition_count)
                     except Exception:
                         pass
                     await asyncio.sleep(0.1)

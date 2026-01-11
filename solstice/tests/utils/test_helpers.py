@@ -121,16 +121,23 @@ async def wait_for_stage_workers(
 async def kill_random_worker(
     runner: RayJobRunner,
     stage_id: Optional[str] = None,
+    wait_for_death: bool = True,
+    timeout: float = 5.0,
 ) -> Optional[str]:
     """Kill a random worker from a stage.
 
     Args:
         runner: The RayJobRunner instance
         stage_id: Optional stage ID to target (random if not specified)
+        wait_for_death: If True, wait for the worker to actually die
+        timeout: Maximum time to wait for worker death (seconds)
 
     Returns:
         Worker ID that was killed, or None if no workers available
     """
+    import os
+    import signal
+
     if stage_id:
         masters = [runner._masters.get(stage_id)]
         masters = [m for m in masters if m is not None]
@@ -144,8 +151,54 @@ async def kill_random_worker(
         if master._workers:
             worker_id = random.choice(list(master._workers.keys()))
             worker = master._workers[worker_id]
+
+            # Try to get the worker's pid before killing (for fallback)
+            worker_pid = None
             try:
+                status = ray.get(worker.get_status.remote(), timeout=1.0)
+                worker_pid = status.get("pid")
+            except Exception:
+                pass
+
+            try:
+                # ray.kill is async - it sends SIGKILL but doesn't wait
                 ray.kill(worker)
+
+                if wait_for_death:
+                    # Wait for the actor to actually die by trying to call a method
+                    # This will raise RayActorError once the actor is dead
+                    deadline = asyncio.get_event_loop().time() + timeout
+                    actor_dead = False
+
+                    while asyncio.get_event_loop().time() < deadline:
+                        try:
+                            # Try to ping the worker - if it's dead this will fail
+                            ray.get(worker.get_status.remote(), timeout=0.5)
+                            await asyncio.sleep(0.1)
+                        except (ray.exceptions.RayActorError, ray.exceptions.GetTimeoutError):
+                            # Actor is confirmed dead or unreachable
+                            actor_dead = True
+                            break
+                        except Exception:
+                            # Any other error also means actor is likely dead
+                            actor_dead = True
+                            break
+
+                    # Fallback: if actor still alive after timeout, force kill by pid
+                    if not actor_dead and worker_pid:
+                        try:
+                            os.kill(worker_pid, signal.SIGKILL)
+                            logger.warning(
+                                f"Force killed worker {worker_id} (pid={worker_pid}) via SIGKILL"
+                            )
+                            # Wait a bit for the process to actually die
+                            await asyncio.sleep(0.2)
+                        except ProcessLookupError:
+                            # Process already dead
+                            pass
+                        except Exception as e:
+                            logger.warning(f"Failed to force kill pid {worker_pid}: {e}")
+
                 return worker_id
             except Exception:
                 # Worker might already be dead
@@ -208,9 +261,10 @@ async def scale_stage_workers(
     current = len(master._workers)
 
     if target_count > current:
-        # Scale up
+        # Scale up using worker manager
+        partition_count = master._partition_count
         for _ in range(target_count - current):
-            await master._spawn_worker()
+            await master._worker_manager.spawn_worker(partition_count=partition_count)
     elif target_count < current:
         # Scale down
         workers_to_remove = current - target_count

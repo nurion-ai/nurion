@@ -319,6 +319,8 @@ class StageWorker:
 
     def get_status(self) -> Dict[str, Any]:
         """Get current worker status. Used for health checks and monitoring."""
+        import os
+
         return {
             "worker_id": self.worker_id,
             "stage_id": self.stage_id,
@@ -327,6 +329,7 @@ class StageWorker:
             "error_count": self._error_count,
             "upstream_finished": self._upstream_finished,
             "assigned_partitions": self.assigned_partitions,
+            "pid": os.getpid(),
         }
 
     async def _process_from_upstream(self) -> None:
@@ -345,6 +348,11 @@ class StageWorker:
         eof_received: set = set()  # Track which partitions have received EOF
         current_partition_idx = 0  # Round-robin index for partition polling
         active_partitions = list(self.assigned_partitions)  # Local copy
+
+        # Track consecutive empty fetches per partition
+        # Used to detect end-of-partition after recovery when EOF was already consumed
+        empty_fetch_count: Dict[int, int] = {p: 0 for p in active_partitions}
+        MAX_EMPTY_FETCHES_WHEN_UPSTREAM_DONE = 10
 
         self.logger.info(
             f"Worker {self.worker_id} starting to consume from {self.upstream_topic} "
@@ -422,8 +430,31 @@ class StageWorker:
             )
 
             if not records:
-                await asyncio.sleep(0.05)
+                # Track empty fetches to detect end-of-partition after recovery
+                # When worker recovers from a crash, it may resume at an offset past the EOF
+                # (because EOF was processed but worker crashed before completion)
+                if partition not in empty_fetch_count:
+                    empty_fetch_count[partition] = 0
+                empty_fetch_count[partition] += 1
+
+                # If upstream is finished and we've had many consecutive empty fetches,
+                # assume this partition is done (EOF was already consumed before recovery)
+                if (
+                    self._upstream_finished
+                    and empty_fetch_count[partition] >= MAX_EMPTY_FETCHES_WHEN_UPSTREAM_DONE
+                ):
+                    eof_received.add(partition)
+                    self.logger.info(
+                        f"Worker {self.worker_id} marking partition {partition} as done "
+                        f"(upstream finished, {empty_fetch_count[partition]} empty fetches, "
+                        f"likely resumed past EOF)"
+                    )
+                else:
+                    await asyncio.sleep(0.05)
                 continue
+
+            # Reset empty fetch count on successful fetch
+            empty_fetch_count[partition] = 0
 
             # Debug: Log first batch fetched
             if self._processed_count == 0 and records:
@@ -432,7 +463,11 @@ class StageWorker:
                     f"offset range [{records[0].offset}-{records[-1].offset}]"
                 )
 
-            # Process each record
+            # Process each record with frequent commits for exactly-once semantics.
+            # Commit every N messages (config.commit_batch_size) to balance performance vs duplicate risk.
+            commit_batch_size = self.config.commit_batch_size
+            messages_since_commit = 0
+
             for record in records:
                 try:
                     message = QueueMessage.from_bytes(record.value)
@@ -444,11 +479,21 @@ class StageWorker:
                             f"Worker {self.worker_id} received EOF for partition {partition} "
                             f"({len(eof_received)}/{len(active_partitions)} complete)"
                         )
-                        # Don't process EOF as a regular message
+                        # Commit offset for EOF marker immediately
+                        eof_offset = record.offset + 1
+                        await self.upstream_queue.commit_offset(
+                            self.consumer_group,
+                            self.upstream_topic,
+                            eof_offset,
+                            partition=partition,
+                        )
+                        # Update last_committed_offsets to prevent final commit from rolling back
+                        last_committed_offsets[partition] = eof_offset
                         continue
 
                     await self._process_message(message, partition_id=partition)
                     self._processed_count += 1
+
                 except Exception as e:
                     import traceback
 
@@ -458,15 +503,23 @@ class StageWorker:
                     self.logger.debug(f"Traceback: {traceback.format_exc()}")
                     self._error_count += 1
 
-                # Track the highest offset for this partition
+                # Track offset for this partition
                 current_offset = record.offset + 1
-                last_committed_offsets[partition] = max(
-                    last_committed_offsets.get(partition, 0),
-                    current_offset,
-                )
+                last_committed_offsets[partition] = current_offset
+                messages_since_commit += 1
 
-            # Commit offset periodically
-            if time.time() - self._last_commit_time > self.config.commit_interval_ms / 1000:
+                # Commit frequently to minimize duplicate window
+                if messages_since_commit >= commit_batch_size:
+                    await self.upstream_queue.commit_offset(
+                        self.consumer_group,
+                        self.upstream_topic,
+                        current_offset,
+                        partition=partition,
+                    )
+                    messages_since_commit = 0
+
+            # Final commit for any remaining messages in this batch
+            if messages_since_commit > 0:
                 for p, offset in last_committed_offsets.items():
                     await self.upstream_queue.commit_offset(
                         self.consumer_group,
@@ -474,7 +527,7 @@ class StageWorker:
                         offset,
                         partition=p,
                     )
-                self._last_commit_time = time.time()
+            self._last_commit_time = time.time()
 
         # Final commit for all assigned partitions
         if self.upstream_queue and last_committed_offsets:

@@ -82,16 +82,6 @@ def create_test_lance_table(table_path: str) -> None:
     logger.info(f"Created test Lance table at {table_path} with {len(records)} videos")
 
 
-def _check_video_access() -> bool:
-    """Check if we can access the public video endpoint."""
-    try:
-        test_url = f"{PUBLIC_VIDEO_URL}/{TEST_VIDEOS[0]}"
-        r = requests.head(test_url, timeout=10)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
 @pytest.mark.integration
 @pytest.mark.timeout(900)  # 15 minutes for video processing
 def test_video_slice_workflow_with_ray(ray_cluster):
@@ -104,10 +94,6 @@ def test_video_slice_workflow_with_ray(ray_cluster):
 
     In local debug mode (VIDEO_CACHE_DIR set), output is preserved in the cache directory.
     """
-    # Skip if public endpoint not accessible
-    if not _check_video_access():
-        pytest.skip("Public video endpoint not accessible.")
-
     # In local debug mode, use cache directory for output (preserved after test)
     # Otherwise use temp directory (cleaned up after test)
     if LOCAL_CACHE_DIR:

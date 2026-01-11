@@ -127,12 +127,14 @@ class WorkerManager:
         self,
         partition_count: int,
         is_min_worker: bool = False,
+        assigned_partitions: Optional[List[int]] = None,
     ) -> Optional[str]:
         """Spawn a new worker with optional resource checking.
 
         Args:
             partition_count: Number of partitions for assignment
             is_min_worker: If True, worker is required (raises on failure)
+            assigned_partitions: Optional explicit partition assignment (for recovery)
 
         Returns:
             worker_id if successful, None if cancelled due to resources
@@ -140,7 +142,7 @@ class WorkerManager:
         Raises:
             RuntimeError: If is_min_worker=True and worker cannot start
         """
-        worker_id = await self._create_worker(partition_count)
+        worker_id = await self._create_worker(partition_count, assigned_partitions)
 
         if not is_min_worker:
             # Optional worker - check if it started successfully
@@ -157,11 +159,16 @@ class WorkerManager:
 
         return worker_id
 
-    async def _create_worker(self, partition_count: int) -> str:
+    async def _create_worker(
+        self,
+        partition_count: int,
+        explicit_partitions: Optional[List[int]] = None,
+    ) -> str:
         """Create a new worker actor and start its run loop.
 
         Args:
             partition_count: Number of partitions for assignment
+            explicit_partitions: Optional explicit partition assignment (for recovery)
 
         Returns:
             The worker_id of the spawned worker
@@ -169,13 +176,19 @@ class WorkerManager:
         worker_index = len(self._workers)
         worker_id = f"{self._stage_id}_w{worker_index}_{uuid.uuid4().hex[:6]}"
 
-        # Compute partition assignment
-        assigned_partitions = self._partition_manager.assign_worker(
-            worker_id=worker_id,
-            worker_index=worker_index,
-            target_worker_count=self._target_worker_count,
-            partition_count=partition_count,
-        )
+        # Use explicit partitions if provided (recovery), otherwise compute
+        if explicit_partitions is not None:
+            assigned_partitions = explicit_partitions
+            # Register in partition manager
+            for p in explicit_partitions:
+                self._partition_manager.assign_orphaned_partition(worker_id, p)
+        else:
+            assigned_partitions = self._partition_manager.assign_worker(
+                worker_id=worker_id,
+                worker_index=worker_index,
+                target_worker_count=self._target_worker_count,
+                partition_count=partition_count,
+            )
 
         # Build resource requirements
         resources = {}

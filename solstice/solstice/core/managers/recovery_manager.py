@@ -148,32 +148,31 @@ class RecoveryManager:
 
         for _ in range(failure_count):
             try:
+                # If we have orphaned partitions, pass them directly to spawn_worker
+                # This ensures the replacement worker gets the exact partitions the failed worker had
+                partitions_for_worker = None
+                if orphaned_partitions:
+                    partitions_for_worker = list(orphaned_partitions)
+                    orphaned_partitions.clear()
+
                 worker_id = await self._worker_manager.spawn_worker(
                     partition_count=partition_count,
                     is_min_worker=False,
+                    assigned_partitions=partitions_for_worker,
                 )
                 if worker_id is None:
+                    # Restore orphaned partitions if spawn failed
+                    if partitions_for_worker:
+                        orphaned_partitions.extend(partitions_for_worker)
                     failed_to_spawn += 1
                     continue
 
                 spawned += 1
 
-                # If new worker has no partitions and we have orphaned ones, assign them
-                current_partitions = self._partition_manager.get_assignment(worker_id)
-                if not current_partitions and orphaned_partitions:
-                    partition_to_assign = orphaned_partitions.pop(0)
-                    self._partition_manager.assign_orphaned_partition(
-                        worker_id, partition_to_assign
+                if partitions_for_worker:
+                    self._logger.info(
+                        f"Assigned orphaned partitions {partitions_for_worker} to {worker_id}"
                     )
-
-                    # Notify worker of new assignment
-                    success = await self._worker_manager.update_worker_partitions(
-                        worker_id, [partition_to_assign]
-                    )
-                    if success:
-                        self._logger.info(
-                            f"Assigned orphaned partition {partition_to_assign} to {worker_id}"
-                        )
 
                 # Notify of upstream completion if applicable
                 await self._worker_manager.notify_worker_upstream_finished(worker_id)

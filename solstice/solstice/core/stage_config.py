@@ -47,7 +47,11 @@ class StageConfig:
         max_workers: Maximum number of workers
         min_workers: Minimum number of workers
         batch_size: Number of messages to fetch per batch
-        commit_interval_ms: Interval between offset commits (ms)
+        commit_interval_ms: Interval between offset commits (ms) - legacy, not actively used
+        commit_batch_size: Commit offset after every N messages processed.
+            Lower values = better exactly-once guarantees but more overhead.
+            Higher values = better throughput but larger duplicate window on crash.
+            Default: 5 (balance between safety and performance)
         partition_count: Number of partitions for the output queue.
             If None, automatically set based on max_workers.
             For single worker, uses 1 partition. For multiple workers,
@@ -65,6 +69,7 @@ class StageConfig:
 
     batch_size: int = 100
     commit_interval_ms: int = 5000
+    commit_batch_size: int = 5  # Commit offset after every N messages for exactly-once
 
     # Partition configuration
     partition_count: Optional[int] = None  # None = auto based on workers
@@ -104,6 +109,7 @@ class StageConfig:
             "min_workers": self.min_workers,
             "batch_size": self.batch_size,
             "commit_interval_ms": self.commit_interval_ms,
+            "commit_batch_size": self.commit_batch_size,
             "partition_count": self.partition_count,
             "backpressure_threshold_lag": self.backpressure_threshold_lag,
             "backpressure_threshold_queue_size": self.backpressure_threshold_queue_size,

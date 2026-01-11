@@ -445,6 +445,14 @@ class TestExactlyOnceSemantics:
             await runner.initialize()
             run_task = asyncio.create_task(runner.run())
 
+            # Wait for workers to be spawned first
+            await wait_for_stage_workers(runner, "transform", min_workers=3, timeout=30)
+
+            # Wait for some initial processing before killing to test at-least-once
+            await wait_for_progress(
+                runner, min_processed=1000, timeout=60, collector_name=self.collector_name
+            )
+
             # Rapid kills to increase chance of catching pre-commit state
             for _ in range(5):
                 await asyncio.sleep(0.5)
@@ -470,7 +478,7 @@ class TestExactlyOnceSemantics:
     @pytest.mark.asyncio
     async def test_offset_commit_atomicity(self, ray_cluster):
         """Offset commit: no data loss after worker crashes (at-least-once)."""
-        NUM_RECORDS = 15000
+        NUM_RECORDS = 3000  # Small for faster test with per-message commits
         FILTER_MODULO = 3
         FILTER_REMAINDER = 0
         validator = DataValidator()
@@ -482,9 +490,9 @@ class TestExactlyOnceSemantics:
 
         job = create_test_pipeline(
             num_records=NUM_RECORDS,
-            batch_size=500,
-            min_workers=3,
-            max_workers=6,
+            batch_size=200,  # Smaller batches for faster commits
+            min_workers=2,
+            max_workers=4,
             collector_name=self.collector_name,
             with_checksum=True,
             source_data=source_data,
@@ -499,25 +507,21 @@ class TestExactlyOnceSemantics:
             await runner.initialize()
             run_task = asyncio.create_task(runner.run())
 
-            # Kill workers at various points
+            # Kill one worker after initial progress
             await wait_for_progress(
-                runner, min_processed=1500, timeout=60, collector_name=self.collector_name
-            )
-            await kill_random_worker(runner)
-            await wait_for_progress(
-                runner, min_processed=3000, timeout=90, collector_name=self.collector_name
+                runner, min_processed=200, timeout=60, collector_name=self.collector_name
             )
             await kill_random_worker(runner)
 
-            await asyncio.wait_for(run_task, timeout=420)
+            await asyncio.wait_for(run_task, timeout=180)
         finally:
             await runner.stop()
 
         sink_data = get_sink_records(self.collector_name)
 
-        # At-least-once: no data loss (may have duplicates)
-        assert len(sink_data) >= expected_count, (
-            f"Data loss: expected >= {expected_count}, got {len(sink_data)}"
+        # Exactly-once: count should match expected (dedup enabled in collector)
+        assert validator.verify_count(sink_data, expected_count), (
+            f"Data count mismatch: expected {expected_count}, got {len(sink_data)}"
         )
         # Verify all expected IDs are present
         actual_ids = {r["id"] for r in sink_data}

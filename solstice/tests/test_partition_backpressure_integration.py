@@ -97,15 +97,15 @@ class TestMultiPartitionParallelConsumption:
             payload_store=payload_store,
         )
 
-        # Verify partition count calculation
-        partition_count = master._compute_partition_count()
+        # Verify partition count calculation via partition manager
+        partition_count = master._partition_count
         assert partition_count == 8
 
         # Start and verify actual partition count
         await master.start()
 
         try:
-            assert master._compute_partition_count() == 8
+            assert master._partition_count == 8
         finally:
             await master.stop()
 
@@ -125,7 +125,6 @@ class TestPartitionSkewScenario:
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
-            tansu_storage_url="memory://tansu/",
             partition_count=3,
             shared_broker_endpoint=QueueEndpoint(
                 queue_type=QueueType.TANSU,
@@ -193,26 +192,32 @@ class TestPartitionSkewScenario:
         master.upstream_topic = topic
         master._consumer_group = consumer_group
 
-        partition_metrics = await master.get_partition_metrics()
-        skew_detected, skew_ratio, _ = await master.detect_partition_skew()
+        # Initialize backpressure monitor with the upstream config
+        await master.start()
 
-        # Expect skew: partition1 lags most (200), avg lag ~70 -> ratio > 2
-        assert set(partition_metrics.keys()) == {0, 1, 2}
-        assert partition_metrics[0].latest_offset == 10
-        assert partition_metrics[0].committed_offset == 0
-        assert partition_metrics[0].lag == 10
+        try:
+            partition_metrics = await master._backpressure_monitor.get_partition_metrics()
+            skew_info = await master._backpressure_monitor.detect_skew()
 
-        assert partition_metrics[1].latest_offset == 200
-        assert partition_metrics[1].committed_offset == 0
-        assert partition_metrics[1].lag == 200
+            # Expect skew: partition1 lags most (200), avg lag ~70 -> ratio > 2
+            assert set(partition_metrics.keys()) == {0, 1, 2}
+            assert partition_metrics[0].latest_offset == 10
+            assert partition_metrics[0].committed_offset == 0
+            assert partition_metrics[0].lag == 10
 
-        assert partition_metrics[2].latest_offset == 20
-        assert partition_metrics[2].committed_offset == 20
-        assert partition_metrics[2].lag == 0
+            assert partition_metrics[1].latest_offset == 200
+            assert partition_metrics[1].committed_offset == 0
+            assert partition_metrics[1].lag == 200
 
-        assert skew_detected is True
-        expected_ratio = 200 / ((10 + 200 + 0) / 3)
-        assert math.isclose(skew_ratio, expected_ratio, rel_tol=0.05)
+            assert partition_metrics[2].latest_offset == 20
+            assert partition_metrics[2].committed_offset == 20
+            assert partition_metrics[2].lag == 0
+
+            assert skew_info.is_skewed is True
+            expected_ratio = 200 / ((10 + 200 + 0) / 3)
+            assert math.isclose(skew_info.skew_ratio, expected_ratio, rel_tol=0.05)
+        finally:
+            await master.stop()
 
 
 class TestBackpressureEndToEnd:
@@ -278,14 +283,14 @@ class TestBackpressureEndToEnd:
         await master3.start()
 
         try:
-            # Activate backpressure on master3 (sink)
-            master3._backpressure_active = True
+            # Activate backpressure on master3 (sink) via backpressure monitor
+            master3._backpressure_monitor._backpressure_active = True
 
-            # Connect master2 to master3
-            master2._downstream_stage_refs = {"sink": master3}
+            # Connect master2 to master3 via set_downstream_stage_refs
+            master2.set_downstream_stage_refs({"sink": master3})
 
             # Verify master2 can detect backpressure from master3
-            should_pause = await master2._check_backpressure_before_produce()
+            should_pause = await master2._backpressure_monitor.check_downstream_backpressure()
             # master2 should detect backpressure from master3
             assert isinstance(should_pause, bool)
         finally:
@@ -302,7 +307,7 @@ class TestBackpressureEndToEnd:
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=2,
-            tansu_storage_url="memory://tansu/",
+            backpressure_threshold_lag=5000,
             shared_broker_endpoint=QueueEndpoint(
                 queue_type=QueueType.TANSU,
                 host="localhost",
@@ -321,7 +326,6 @@ class TestBackpressureEndToEnd:
             config=config,
             payload_store=payload_store,
         )
-        master._backpressure_threshold_lag = 5000
 
         # Create upstream topic
         topic = "upstream_topic"
@@ -348,7 +352,9 @@ class TestBackpressureEndToEnd:
                 await tansu_backend.produce(topic, msg.to_bytes())
 
             # Check backpressure - should be active
-            result1 = await master._check_backpressure()
+            result1 = await master._backpressure_monitor.check_backpressure(
+                master._output_queue, master._output_topic
+            )
             assert isinstance(result1, bool)
 
             # Commit offsets to simulate processing
@@ -374,7 +380,9 @@ class TestBackpressureEndToEnd:
                 await commit_consumer.stop()
 
             # Check backpressure again - should clear with hysteresis
-            result2 = await master._check_backpressure()
+            result2 = await master._backpressure_monitor.check_backpressure(
+                master._output_queue, master._output_topic
+            )
             assert isinstance(result2, bool)
         finally:
             await master.stop()
@@ -389,7 +397,6 @@ class TestCombinedScenarios:
         config = StageConfig(
             queue_type=QueueType.TANSU,
             max_workers=4,
-            tansu_storage_url="memory://tansu/",
             partition_count=4,
             shared_broker_endpoint=QueueEndpoint(
                 queue_type=QueueType.TANSU,
@@ -436,31 +443,35 @@ class TestCombinedScenarios:
         await master.start()
 
         try:
-            # Check backpressure
-            backpressure_active = await master._check_backpressure()
+            # Check backpressure via backpressure monitor
+            backpressure_active = await master._backpressure_monitor.check_backpressure(
+                master._output_queue, master._output_topic
+            )
             assert isinstance(backpressure_active, bool)
 
-            # Check skew detection
-            skew_detected, skew_ratio, _ = await master.detect_partition_skew()
-            assert isinstance(skew_detected, bool)
-            assert isinstance(skew_ratio, float)
-            assert isinstance(master._backpressure_active, bool)
+            # Check skew detection via backpressure monitor
+            skew_info = await master._backpressure_monitor.detect_skew()
+            assert isinstance(skew_info.is_skewed, bool)
+            assert isinstance(skew_info.skew_ratio, float)
+            assert isinstance(master._backpressure_monitor.is_backpressure_active, bool)
         finally:
             await master.stop()
 
     @pytest.mark.asyncio
     async def test_dynamic_workers_with_partitions(self, payload_store, ray_cluster):
         """Test dynamic worker scaling with multiple partitions."""
+        # Use smaller resource requirements to fit within local Ray cluster
         config = StageConfig(
             queue_type=QueueType.MEMORY,
-            max_workers=8,
-            min_workers=2,
-            partition_count=8,
+            max_workers=4,
+            min_workers=1,
+            partition_count=4,
+            num_cpus=0.25,  # Smaller CPU requirement per worker
         )
         stage = Stage(
             stage_id="test_stage",
             operator_config=_TestOperatorConfig(),
-            parallelism=8,
+            parallelism=4,
         )
         master = StageMaster(
             job_id="test_job",
@@ -473,16 +484,17 @@ class TestCombinedScenarios:
 
         try:
             initial_workers = len(master._workers)
-            assert initial_workers == 2  # min_workers
+            assert initial_workers == 1  # min_workers
 
-            # Scale up
-            for _ in range(4):
-                await master._spawn_worker()
+            # Scale up using worker manager - spawn 2 more workers
+            partition_count = master._partition_count
+            for _ in range(2):
+                await master._worker_manager.spawn_worker(partition_count=partition_count)
 
-            assert len(master._workers) == 6
+            assert len(master._workers) == 3
 
-            # Partition count should remain at max_workers (8)
+            # Partition count should remain at max_workers (4)
             # Workers will rebalance via consumer group protocol
-            assert master._compute_partition_count() == 8
+            assert master._partition_count == 4
         finally:
             await master.stop()

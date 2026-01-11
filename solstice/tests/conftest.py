@@ -445,6 +445,7 @@ def ray_cluster():
     # Shutdown any existing cluster first
     if ray.is_initialized():
         ray.shutdown()
+        time.sleep(1.0)  # Wait for cleanup
 
     # Try to get raydp jars if available
     jars_paths = []
@@ -466,6 +467,18 @@ def ray_cluster():
 
     yield
 
+    # Kill all actors before shutdown
+    try:
+        for actor_info in ray.state.actors().values():
+            if actor_info.get("State") == "ALIVE":
+                try:
+                    actor = ray.get_actor(actor_info.get("Name", ""))
+                    ray.kill(actor)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # Cleanup Spark if running
     try:
         import raydp
@@ -473,10 +486,12 @@ def ray_cluster():
         raydp.stop_spark()
     except Exception:
         pass
+
     ray.shutdown()
+
     # Wait for Ray to fully shutdown before next test
-    import time
-    time.sleep(0.5)
+    # aiokafka background threads may still be reconnecting
+    time.sleep(3.0)
 
 
 @pytest_asyncio.fixture
