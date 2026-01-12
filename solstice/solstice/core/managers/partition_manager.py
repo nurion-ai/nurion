@@ -115,7 +115,7 @@ class PartitionManager:
             return 1
 
         try:
-            offsets = await queue.get_all_partition_offsets(self._upstream_topic)
+            offsets = queue.get_all_partition_offsets(self._upstream_topic)
             self._upstream_partition_count = max(1, len(offsets))
             self._logger.debug(
                 f"Upstream topic {self._upstream_topic} has "
@@ -137,7 +137,7 @@ class PartitionManager:
         if self._upstream_queue is None:
             broker_url = f"{self._upstream_endpoint.host}:{self._upstream_endpoint.port}"
             self._upstream_queue = TansuQueueClient(broker_url)
-            await self._upstream_queue.start()
+            self._upstream_queue.start()
 
         return self._upstream_queue
 
@@ -293,11 +293,11 @@ class PartitionManager:
                 seen[p] = worker_id
         return True
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Clean up resources."""
         if self._upstream_queue:
             try:
-                await self._upstream_queue.stop()
+                self._upstream_queue.stop()
             except Exception as e:
                 self._logger.warning(f"Error stopping upstream queue: {e}")
             self._upstream_queue = None

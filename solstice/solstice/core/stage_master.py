@@ -149,7 +149,7 @@ class StageMaster:
         self._upstream_finished = False
 
         # Downstream stage refs for backpressure (backward compatibility)
-        self._downstream_stage_refs: Dict[str, Any] = {}
+        self._downstream_stage_refs: Dict[str, "StageMaster"] = {}
 
         # State producer for WebUI metrics
         self._state_producer = None
@@ -182,7 +182,7 @@ class StageMaster:
 
             broker_url = f"{endpoint.host}:{endpoint.port}"
             queue = TansuQueueClient(broker_url)
-            await queue.start()
+            queue.start()
 
             self._output_endpoint = QueueEndpoint(
                 queue_type=self.config.queue_type,
@@ -201,10 +201,10 @@ class StageMaster:
                 partition_count = 1
 
             self._output_broker = MemoryBroker()
-            await self._output_broker.start()
+            self._output_broker.start()
 
             queue = MemoryClient(self._output_broker)
-            await queue.start()
+            queue.start()
 
             self._output_endpoint = QueueEndpoint(
                 queue_type=self.config.queue_type,
@@ -213,7 +213,7 @@ class StageMaster:
                 storage_url=self._output_broker.get_broker_url(),
             )
 
-        await queue.create_topic(self._output_topic, partitions=partition_count)
+        queue.create_topic(self._output_topic, partitions=partition_count)
         self.logger.info(f"Created topic {self._output_topic} with {partition_count} partition(s)")
         return queue
 
@@ -374,13 +374,13 @@ class StageMaster:
 
         # Stop backpressure monitor
         if self._backpressure_monitor:
-            await self._backpressure_monitor.stop()
+            self._backpressure_monitor.stop()
 
         # Stop partition manager (closes upstream queue)
         if self._partition_manager:
-            await self._partition_manager.stop()
+            self._partition_manager.stop()
 
-        # Stop state producer
+        # Stop state producer (async - has background tasks)
         if self._state_producer:
             try:
                 await self._state_producer.stop()
@@ -400,7 +400,7 @@ class StageMaster:
         for partition in range(partition_count):
             try:
                 eof_message = QueueMessage.create_eof(partition)
-                await self._output_queue.produce(
+                self._output_queue.produce(
                     self._output_topic,
                     eof_message.to_bytes(),
                     partition=partition,
@@ -442,7 +442,7 @@ class StageMaster:
             queue = TansuQueueClient(broker_url)
         else:
             queue = MemoryClient(endpoint.storage_url)
-        await queue.start()
+        queue.start()
         return queue
 
     async def _emit_stage_started(self) -> None:
@@ -523,26 +523,11 @@ class StageMaster:
         return self._output_topic
 
     def get_status(self) -> StageStatus:
-        """Get current stage status (synchronous)."""
-        return StageStatus(
-            stage_id=self.stage_id,
-            worker_count=self._worker_manager.worker_count if self._worker_manager else 0,
-            output_queue_size=0,
-            is_running=self._running,
-            is_finished=self._finished,
-            failed=self._failed,
-            failure_message=self._failure_message,
-            backpressure_active=self._backpressure_monitor.is_backpressure_active
-            if self._backpressure_monitor
-            else False,
-        )
-
-    async def get_status_async(self) -> StageStatus:
         """Get current stage status with queue metrics."""
         output_size = 0
         if self._output_queue:
             try:
-                output_size = await self._output_queue.get_latest_offset(self._output_topic)
+                output_size = self._output_queue.get_latest_offset(self._output_topic)
             except Exception:
                 pass
 
@@ -559,13 +544,13 @@ class StageMaster:
             else False,
         )
 
-    async def get_input_queue_lag(self) -> int:
+    def get_input_queue_lag(self) -> int:
         """Get input queue lag (for autoscaler)."""
         if self._backpressure_monitor:
-            return await self._backpressure_monitor.get_input_lag()
-            return 0
+            return self._backpressure_monitor.get_input_lag()
+        return 0
 
-    def set_downstream_stage_refs(self, downstream_refs: Dict[str, Any]) -> None:
+    def set_downstream_stage_refs(self, downstream_refs: Dict[str, "StageMaster"]) -> None:
         """Set downstream stage references for backpressure propagation."""
         self._downstream_stage_refs = downstream_refs
         if self._backpressure_monitor:
@@ -580,10 +565,10 @@ class StageMaster:
     async def cleanup_queue(self) -> None:
         """Clean up output queue (called by runner after all consumers done)."""
         if self._output_queue:
-            await self._output_queue.stop()
+            self._output_queue.stop()
             self._output_queue = None
         if self._output_broker:
-            await self._output_broker.stop()
+            self._output_broker.stop()
             self._output_broker = None
 
     # =========================================================================

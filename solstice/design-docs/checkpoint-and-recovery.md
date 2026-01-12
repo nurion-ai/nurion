@@ -208,7 +208,7 @@ Worker(N-1) → Master(N-1).output_queue ← Worker(N) directly pulls
 
 ```
 1. Worker(N) requests batch from Master(N-1).queue
-   - Uses Kafka client (aiokafka) to fetch from Tansu
+   - Uses Kafka client (confluent-kafka) to fetch from Tansu
    - Offset tracked per consumer group
 
 2. Worker(N) processes data
@@ -331,7 +331,7 @@ class TansuBackend(QueueBackend):
         self.port = port
         self.data_dir = data_dir
         self._process: Optional[subprocess.Popen] = None
-        self._client = None  # aiokafka client
+        self._client = None  # confluent-kafka client
     
     async def start(self) -> None:
         """Start Tansu broker subprocess"""
@@ -353,26 +353,30 @@ class TansuBackend(QueueBackend):
         await self._wait_for_ready()
         
         # Initialize Kafka client
-        from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
-        self._producer = AIOKafkaProducer(
-            bootstrap_servers=f"localhost:{self.port}"
-        )
-        await self._producer.start()
+        from confluent_kafka import Producer
+        self._producer = Producer({
+            "bootstrap.servers": f"localhost:{self.port}"
+        })
     
     async def stop(self) -> None:
         """Stop Tansu broker"""
         if self._producer:
-            await self._producer.stop()
+            self._producer.flush()
         if self._process:
             self._process.terminate()
             self._process.wait()
     
     async def produce(self, topic: str, value: bytes, key: Optional[bytes] = None) -> int:
         """Produce message via Kafka protocol"""
-        result = await self._producer.send_and_wait(topic, value, key=key)
-        return result.offset
+        result_offset = [-1]
+        def delivery_cb(err, msg):
+            if not err:
+                result_offset[0] = msg.offset()
+        self._producer.produce(topic, value, key=key, callback=delivery_cb)
+        self._producer.flush()
+        return result_offset[0]
     
-    # ... other methods using aiokafka
+    # ... other methods using confluent-kafka
 ```
 
 ### Future Extension Options
@@ -528,7 +532,7 @@ async def worker_loop(self):
 ## Implementation Roadmap
 
 ### Phase 1: Tansu Subprocess Integration
-1. Create `TansuBackend` class wrapping subprocess + aiokafka
+1. Create `TansuBackend` class wrapping subprocess + confluent-kafka
 2. Implement `QueueBackend` interface
 3. Add lifecycle management (start/stop with master)
 

@@ -109,7 +109,7 @@ backend = TansuBackend(
 
 await backend.start()
 
-# Use Kafka protocol via aiokafka
+# Use Kafka protocol via confluent-kafka
 await backend.create_topic("my-topic")
 offset = await backend.produce("my-topic", b"hello world")
 records = await backend.fetch("my-topic", offset=0)

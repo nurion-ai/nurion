@@ -146,14 +146,19 @@ class RecoveryManager:
         spawned = 0
         failed_to_spawn = 0
 
-        for _ in range(failure_count):
+        # Pre-distribute orphaned partitions evenly across replacement workers
+        # Example: 6 partitions [0,1,2,3,4,5] with 3 workers -> [[0,3], [1,4], [2,5]]
+        partition_assignments: List[List[int]] = [[] for _ in range(failure_count)]
+        for i, partition in enumerate(orphaned_partitions):
+            partition_assignments[i % failure_count].append(partition)
+        orphaned_partitions.clear()
+
+        for worker_idx in range(failure_count):
             try:
-                # If we have orphaned partitions, pass them directly to spawn_worker
-                # This ensures the replacement worker gets the exact partitions the failed worker had
-                partitions_for_worker = None
-                if orphaned_partitions:
-                    partitions_for_worker = list(orphaned_partitions)
-                    orphaned_partitions.clear()
+                # Assign pre-distributed partitions to this replacement worker
+                # Note: Use the list as-is, even if empty. Don't convert [] to None,
+                # as None would trigger assign_worker() which computes conflicting partitions.
+                partitions_for_worker = partition_assignments[worker_idx]
 
                 worker_id = await self._worker_manager.spawn_worker(
                     partition_count=partition_count,
@@ -161,7 +166,7 @@ class RecoveryManager:
                     assigned_partitions=partitions_for_worker,
                 )
                 if worker_id is None:
-                    # Restore orphaned partitions if spawn failed
+                    # Restore this worker's partitions to orphaned list if spawn failed
                     if partitions_for_worker:
                         orphaned_partitions.extend(partitions_for_worker)
                     failed_to_spawn += 1
@@ -179,6 +184,9 @@ class RecoveryManager:
 
             except Exception as e:
                 self._logger.warning(f"Failed to spawn replacement worker: {e}")
+                # Restore this worker's partitions to orphaned list
+                if partitions_for_worker:
+                    orphaned_partitions.extend(partitions_for_worker)
                 failed_to_spawn += 1
 
         if spawned > 0:

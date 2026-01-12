@@ -19,6 +19,8 @@ This module provides Tansu-based queue components:
 - TansuBrokerManager: Manages embedded Tansu broker lifecycle (QueueBroker)
 - TansuQueueClient: Kafka client for produce/consume (QueueClient)
 
+All methods are synchronous for simplicity (confluent-kafka is inherently sync).
+
 Architecture:
     StageMaster uses TansuBrokerManager to start broker, then creates
     TansuQueueClient for local operations. Workers only use TansuQueueClient
@@ -27,30 +29,30 @@ Architecture:
 Example:
     # On Master
     broker = TansuBrokerManager(storage_url="memory://tansu/")
-    await broker.start()
+    broker.start()
 
     client = TansuQueueClient(broker.get_broker_url())
-    await client.start()
-    await client.create_topic("my-topic")
-    await client.produce("my-topic", b"hello")
+    client.start()
+    client.create_topic("my-topic")
+    client.produce("my-topic", b"hello")
 
     # On Worker (only needs broker_url)
     client = TansuQueueClient("master-host:9092")
-    await client.start()
-    await client.produce("my-topic", b"from worker")
-    records = await client.fetch("my-topic", offset=0)
+    client.start()
+    client.produce("my-topic", b"from worker")
+    records = client.fetch("my-topic", offset=0)
 """
 
 from __future__ import annotations
 
-import asyncio
 import socket
+import threading
 import time
 from typing import Dict, List, Optional
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
-from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from aiokafka.structs import OffsetAndMetadata
+from confluent_kafka import Consumer, KafkaError, KafkaException, Producer, TopicPartition
+from confluent_kafka._model import ConsumerGroupTopicPartitions
+from confluent_kafka.admin import AdminClient, NewTopic
 
 from tansu_py import BrokerConfig, BrokerError, BrokerEventHandler, TansuBroker
 
@@ -77,19 +79,17 @@ class _BrokerEventHandler(BrokerEventHandler):
     def __init__(
         self,
         manager: "TansuBrokerManager",
-        loop: asyncio.AbstractEventLoop,
-        ready_event: asyncio.Event,
+        ready_event: threading.Event,
     ):
         self.manager = manager
         self.logger = manager.logger
-        self._loop = loop
         self._ready_event = ready_event
 
     def on_started(self, port: int) -> None:
         self.logger.info(f"Tansu broker started on port {port}")
         self.manager._actual_port = port
         self.manager._running = True
-        self._loop.call_soon_threadsafe(self._ready_event.set)
+        self._ready_event.set()
 
     def on_stopped(self) -> None:
         self.logger.info("Tansu broker stopped")
@@ -101,7 +101,7 @@ class _BrokerEventHandler(BrokerEventHandler):
     def on_fatal(self, error: BrokerError) -> None:
         self.logger.error(f"Tansu broker fatal error: {error.message}")
         self.manager._running = False
-        self._loop.call_soon_threadsafe(self._ready_event.set)
+        self._ready_event.set()
 
 
 class TansuBrokerManager:
@@ -113,17 +113,17 @@ class TansuBrokerManager:
 
     Example:
         broker = TansuBrokerManager(storage_url="memory://tansu/")
-        await broker.start()
-        broker_url = broker.get_broker_url()  # "localhost:9092"
+        broker.start()
+        broker_url = broker.get_broker_url()  # "127.0.0.1:9092"
         # ... workers connect using broker_url ...
-        await broker.stop()
+        broker.stop()
     """
 
     def __init__(
         self,
         storage_url: str = "memory://tansu/",
         port: Optional[int] = None,
-        host: str = "localhost",
+        host: str = "127.0.0.1",
         startup_timeout: float = 30.0,
     ):
         """
@@ -132,7 +132,7 @@ class TansuBrokerManager:
         Args:
             storage_url: Storage backend URL (memory://tansu/, s3://bucket/)
             port: Port for Kafka protocol. None = auto-select free port.
-            host: Host to advertise to clients.
+            host: Host to advertise to clients. Use 127.0.0.1 to avoid IPv6 issues.
             startup_timeout: Timeout for broker startup in seconds.
         """
         self.storage_url = storage_url
@@ -146,7 +146,7 @@ class TansuBrokerManager:
 
         self.logger = create_ray_logger(f"TansuBroker:{self.port}")
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the embedded Tansu broker."""
         if self._running:
             return
@@ -157,16 +157,14 @@ class TansuBrokerManager:
             advertised_host=self.host,
         )
 
-        # Create event and pass to handler with current loop for cross-thread signaling
-        loop = asyncio.get_running_loop()
-        ready_event = asyncio.Event()
-        handler = _BrokerEventHandler(self, loop, ready_event)
+        # Create event for cross-thread signaling
+        ready_event = threading.Event()
+        handler = _BrokerEventHandler(self, ready_event)
         self._broker = TansuBroker(config, event_handler=handler)
         self._broker.start()
 
-        try:
-            await asyncio.wait_for(ready_event.wait(), timeout=self.startup_timeout)
-        except asyncio.TimeoutError:
+        # Wait for broker to be ready
+        if not ready_event.wait(timeout=self.startup_timeout):
             raise RuntimeError(f"Tansu broker failed to start within {self.startup_timeout}s")
 
         if not self._running:
@@ -174,7 +172,7 @@ class TansuBrokerManager:
 
         self.logger.info(f"Broker ready at {self.get_broker_url()}")
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the embedded Tansu broker."""
         if self._broker:
             try:
@@ -201,20 +199,21 @@ class TansuBrokerManager:
 
 class TansuQueueClient:
     """
-    Kafka client for Tansu broker.
+    Kafka client for Tansu broker using confluent-kafka.
 
     Implements QueueClient protocol (Producer + Consumer + Admin).
     Can run on any node - only needs broker_url to connect.
+    All methods are synchronous (confluent-kafka is inherently sync).
 
     Example:
         client = TansuQueueClient(broker_url="master-host:9092")
-        await client.start()
+        client.start()
 
-        await client.create_topic("my-topic")
-        offset = await client.produce("my-topic", b"hello")
-        records = await client.fetch("my-topic", offset=0)
+        client.create_topic("my-topic")
+        offset = client.produce("my-topic", b"hello")
+        records = client.fetch("my-topic", offset=0)
 
-        await client.stop()
+        client.stop()
     """
 
     def __init__(self, broker_url: str):
@@ -226,10 +225,9 @@ class TansuQueueClient:
         """
         self.broker_url = broker_url
 
-        self._producer: Optional[AIOKafkaProducer] = None
-        self._admin_client: Optional[AIOKafkaAdminClient] = None
-        self._consumers: Dict[tuple, AIOKafkaConsumer] = {}
-        self._committed_offsets: Dict[tuple, int] = {}  # (group, topic, partition) -> offset
+        self._producer: Optional[Producer] = None
+        self._admin_client: Optional[AdminClient] = None
+        self._consumers: Dict[tuple, Consumer] = {}
         self._running = False
 
         self.logger = create_ray_logger(f"TansuClient:{broker_url}")
@@ -238,55 +236,52 @@ class TansuQueueClient:
     # Lifecycle
     # -------------------------------------------------------------------------
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the client and connect to broker."""
         if self._running:
             return
 
-        # Initialize producer
-        self._producer = AIOKafkaProducer(
-            bootstrap_servers=self.broker_url,
-            acks="all",
-            request_timeout_ms=10000,
+        self._producer = Producer(
+            {
+                "bootstrap.servers": self.broker_url,
+                "acks": "all",
+                "request.timeout.ms": 10000,
+                "socket.timeout.ms": 10000,
+                "message.timeout.ms": 10000,
+            }
         )
-        await asyncio.wait_for(self._producer.start(), timeout=10.0)
 
-        # Initialize admin client
-        self._admin_client = AIOKafkaAdminClient(
-            bootstrap_servers=self.broker_url,
+        self._admin_client = AdminClient(
+            {
+                "bootstrap.servers": self.broker_url,
+            }
         )
-        await asyncio.wait_for(self._admin_client.start(), timeout=10.0)
 
         self._running = True
         self.logger.info(f"Client connected to {self.broker_url}")
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the client and disconnect from broker."""
         self._running = False
 
         # Stop consumers
         for consumer in self._consumers.values():
             try:
-                await asyncio.wait_for(consumer.stop(), timeout=5.0)
+                consumer.close()
             except Exception:
                 pass
         self._consumers.clear()
 
-        # Stop producer
+        # Flush and cleanup producer
         if self._producer:
             try:
-                await asyncio.wait_for(self._producer.stop(), timeout=5.0)
+                self._producer.flush(timeout=5.0)
             except Exception:
                 pass
             self._producer = None
 
-        # Stop admin client
-        if self._admin_client:
-            try:
-                await asyncio.wait_for(self._admin_client.close(), timeout=5.0)
-            except Exception:
-                pass
-            self._admin_client = None
+        # Admin client doesn't need explicit cleanup in confluent-kafka
+        self._admin_client = None
 
         self.logger.info("Client disconnected")
 
@@ -298,42 +293,46 @@ class TansuQueueClient:
     # QueueAdmin Implementation
     # -------------------------------------------------------------------------
 
-    async def create_topic(self, topic: str, partitions: int = 1) -> None:
+    def create_topic(self, topic: str, partitions: int = 1) -> None:
         """Create a topic."""
-        if not self._admin_client:
+        if self._admin_client is None:
             raise RuntimeError("Client not started")
 
-        try:
-            await self._admin_client.create_topics(
-                [NewTopic(topic, num_partitions=partitions, replication_factor=1)]
-            )
-            self.logger.info(f"Created topic: {topic}")
-        except Exception as e:
-            if "TopicAlreadyExistsError" in str(type(e).__name__):
-                pass  # Topic already exists, that's fine
-            else:
-                raise
+        new_topic = NewTopic(topic, num_partitions=partitions, replication_factor=1)
+        futures = self._admin_client.create_topics([new_topic])
+        for topic_name, future in futures.items():
+            try:
+                future.result(timeout=10.0)
+                self.logger.info(f"Created topic: {topic}")
+            except KafkaException as e:
+                # Topic already exists is OK
+                if "TOPIC_ALREADY_EXISTS" in str(e):
+                    pass
+                else:
+                    raise
 
-    async def delete_topic(self, topic: str) -> None:
+    def delete_topic(self, topic: str) -> None:
         """Delete a topic."""
-        if not self._admin_client:
+        if self._admin_client is None:
             raise RuntimeError("Client not started")
 
-        try:
-            await self._admin_client.delete_topics([topic])
-            self.logger.info(f"Deleted topic: {topic}")
-        except Exception:
-            pass  # Topic may not exist
+        futures = self._admin_client.delete_topics([topic])
+        for topic_name, future in futures.items():
+            try:
+                future.result(timeout=10.0)
+                self.logger.info(f"Deleted topic: {topic}")
+            except Exception:
+                pass  # Topic may not exist
 
-    async def health_check(self) -> bool:
+    def health_check(self) -> bool:
         """Check if client is healthy."""
-        return self._running and self._producer is not None
+        return self._running and self._producer is not None and self._admin_client is not None
 
     # -------------------------------------------------------------------------
     # QueueProducer Implementation
     # -------------------------------------------------------------------------
 
-    async def produce(
+    def produce(
         self,
         topic: str,
         value: bytes,
@@ -341,19 +340,46 @@ class TansuQueueClient:
         partition: Optional[int] = None,
     ) -> int:
         """Produce a message to a topic."""
-        if not self._producer:
+        if self._producer is None:
             raise RuntimeError("Client not started")
 
-        result = await self._producer.send_and_wait(
-            topic, value=value, key=key, partition=partition
-        )
-        return result.offset
+        # Use a holder to capture callback result
+        result_holder = {"offset": -1, "error": None}
+
+        def delivery_callback(err, msg):
+            if err:
+                result_holder["error"] = err
+            else:
+                result_holder["offset"] = msg.offset()
+
+        kwargs = {"value": value, "callback": delivery_callback}
+        if key is not None:
+            kwargs["key"] = key
+        if partition is not None:
+            kwargs["partition"] = partition
+
+        self._producer.produce(topic, **kwargs)
+        # Flush to ensure message is sent and callback is called
+        remaining = self._producer.flush(timeout=10.0)
+
+        # Check if flush timed out (messages still in queue)
+        if remaining > 0:
+            raise KafkaException(
+                KafkaError(
+                    KafkaError._MSG_TIMED_OUT,
+                    f"Produce timed out: {remaining} message(s) still in queue after flush",
+                )
+            )
+
+        if result_holder["error"]:
+            raise KafkaException(result_holder["error"])
+        return result_holder["offset"]
 
     # -------------------------------------------------------------------------
     # QueueConsumer Implementation
     # -------------------------------------------------------------------------
 
-    async def fetch(
+    def fetch(
         self,
         topic: str,
         offset: Optional[int] = None,
@@ -373,37 +399,36 @@ class TansuQueueClient:
             partition: Partition to fetch from
             group_id: Consumer group ID (should match commit_offset calls)
         """
-        consumer = await self._get_consumer(topic, partition=partition, group_id=group_id)
-        tp = TopicPartition(topic, partition)
+        consumer = self._get_consumer(topic, partition=partition, group_id=group_id)
+
         # Only seek if offset is explicitly specified
         if offset is not None:
-            consumer.seek(tp, offset)
-        records = []
-        try:
-            fetch_timeout = (timeout_ms / 1000) + 2.0  # Reduced buffer from 5s to 2s
-            batch = await asyncio.wait_for(
-                consumer.getmany(timeout_ms=timeout_ms, max_records=max_records),
-                timeout=fetch_timeout,
-            )
+            consumer.seek(TopicPartition(topic, partition, offset))
 
-            for tp_key, tp_records in batch.items():
-                for record in tp_records:
-                    records.append(
-                        Record(
-                            offset=record.offset,
-                            value=record.value,
-                            key=record.key,
-                            timestamp=record.timestamp or int(time.time() * 1000),
-                        )
-                    )
-        except asyncio.TimeoutError:
-            self.logger.warning(f"Fetch timed out after {timeout_ms}ms")
-        except Exception as e:
-            self.logger.warning(f"Fetch error: {e}")
+        records = []
+        remaining_timeout = timeout_ms / 1000.0
+        start_time = time.time()
+
+        while len(records) < max_records and remaining_timeout > 0:
+            msg = consumer.poll(timeout=min(remaining_timeout, 1.0))
+            if msg is None:
+                break
+            if msg.error():
+                self.logger.warning(f"Consumer error: {msg.error()}")
+                break
+            records.append(
+                Record(
+                    offset=msg.offset(),
+                    value=msg.value(),
+                    key=msg.key(),
+                    timestamp=msg.timestamp()[1] if msg.timestamp()[0] else int(time.time() * 1000),
+                )
+            )
+            remaining_timeout = (timeout_ms / 1000.0) - (time.time() - start_time)
 
         return records
 
-    async def commit_offset(
+    def commit_offset(
         self,
         group: str,
         topic: str,
@@ -411,71 +436,81 @@ class TansuQueueClient:
         partition: int = 0,
     ) -> None:
         """Commit the consumer offset for a consumer group."""
-        # Get or create a consumer for this group
-        consumer = await self._get_consumer(topic, partition=partition, group_id=group)
-
-        tp = TopicPartition(topic, partition)
-        offsets = {tp: OffsetAndMetadata(offset, "")}
+        consumer = self._get_consumer(topic, partition=partition, group_id=group)
+        tp = TopicPartition(topic, partition, offset)
 
         try:
-            await asyncio.wait_for(consumer.commit(offsets), timeout=10.0)
-            self._committed_offsets[(group, topic, partition)] = offset
+            consumer.commit(offsets=[tp], asynchronous=False)
             self.logger.debug(f"Committed offset {offset} for {group}/{topic}/{partition}")
-        except asyncio.TimeoutError:
-            self.logger.warning("Timeout committing offset")
-            raise
         except Exception as e:
             self.logger.warning(f"Failed to commit offset: {e}")
             raise
 
-    async def get_committed_offset(
+    def get_committed_offset(
         self,
         group: str,
         topic: str,
         partition: int = 0,
     ) -> Optional[int]:
-        """Get the committed offset for a consumer group."""
-        # Try local cache first
-        cached = self._committed_offsets.get((group, topic, partition))
-        if cached is not None:
-            return cached
+        """Get the committed offset for a consumer group using AdminClient."""
+        offsets = self.get_all_committed_offsets(group, topic)
+        return offsets.get(partition)
 
-        # Query from broker
+    def get_all_committed_offsets(
+        self,
+        group: str,
+        topic: str,
+    ) -> Dict[int, int]:
+        """Get committed offsets for all partitions using AdminClient.
+
+        More efficient than calling get_committed_offset for each partition.
+        """
+        if self._admin_client is None:
+            raise RuntimeError("Client not started")
+
         try:
-            consumer = await self._get_consumer(topic, partition=partition, group_id=group)
-            tp = TopicPartition(topic, partition)
-            result = await asyncio.wait_for(consumer.committed(tp), timeout=10.0)
-            if result is not None:
-                self._committed_offsets[(group, topic, partition)] = result
-            return result
-        except asyncio.TimeoutError:
-            self.logger.warning("Timeout getting committed offset")
-            return None
-        except Exception as e:
-            self.logger.warning(f"Failed to get committed offset: {e}")
-            return None
+            # First get all partitions for the topic
+            consumer = self._get_consumer(topic, partition=0)
+            metadata = consumer.list_topics(topic, timeout=10.0)
+            if topic not in metadata.topics:
+                return {}
 
-    async def get_latest_offset(
+            partition_ids = list(metadata.topics[topic].partitions.keys())
+            topic_partitions = [TopicPartition(topic, p) for p in partition_ids]
+
+            # Query committed offsets for all partitions at once
+            cgtp = ConsumerGroupTopicPartitions(group, topic_partitions)
+            futures = self._admin_client.list_consumer_group_offsets([cgtp])
+            result: Dict[int, int] = {}
+
+            for group_name, future in futures.items():
+                group_result = future.result(timeout=10.0)
+                for part in group_result.topic_partitions:
+                    if part.topic == topic and part.offset >= 0:
+                        result[part.partition] = part.offset
+
+            return result
+        except Exception as e:
+            self.logger.warning(f"Failed to get committed offsets: {e}")
+            return {}
+
+    def get_latest_offset(
         self,
         topic: str,
         partition: int = 0,
     ) -> int:
         """Get the latest offset in the topic."""
-        consumer = await self._get_consumer(topic, partition=partition)
+        consumer = self._get_consumer(topic, partition=partition)
         tp = TopicPartition(topic, partition)
 
         try:
-            # Get end offsets with timeout
-            end_offsets = await asyncio.wait_for(consumer.end_offsets([tp]), timeout=10.0)
-            return end_offsets.get(tp, 0)
-        except asyncio.TimeoutError:
-            self.logger.warning("Timeout getting latest offset")
-            return 0
+            low, high = consumer.get_watermark_offsets(tp, timeout=10.0)
+            return high
         except Exception as e:
-            self.logger.warning(f"Failed to get latest offset: {e}")
+            self.logger.warning(f"Failed to get watermarks: {e}")
             return 0
 
-    async def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
+    def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
         """Get latest offsets for all partitions of a topic.
 
         Returns:
@@ -484,25 +519,24 @@ class TansuQueueClient:
         result: Dict[int, int] = {}
 
         try:
-            # Get a consumer to query partition info
-            consumer = await self._get_consumer(topic, partition=0)
+            consumer = self._get_consumer(topic, partition=0)
 
-            # Get partitions for the topic
-            partitions = consumer.partitions_for_topic(topic)
-            if not partitions:
-                # Topic might not exist or no partitions yet
+            # Get cluster metadata to find partitions
+            metadata = consumer.list_topics(topic, timeout=10.0)
+            if topic not in metadata.topics:
                 return {0: 0}
 
-            # Get end offsets for all partitions
-            tps = [TopicPartition(topic, p) for p in partitions]
-            end_offsets = await asyncio.wait_for(consumer.end_offsets(tps), timeout=10.0)
+            topic_metadata = metadata.topics[topic]
+            partition_ids = list(topic_metadata.partitions.keys())
 
-            for tp, offset in end_offsets.items():
-                result[tp.partition] = offset
+            for p in partition_ids:
+                tp = TopicPartition(topic, p)
+                try:
+                    low, high = consumer.get_watermark_offsets(tp, timeout=10.0)
+                    result[p] = high
+                except Exception:
+                    result[p] = 0
 
-        except asyncio.TimeoutError:
-            self.logger.warning("Timeout getting partition offsets")
-            return {0: 0}
         except Exception as e:
             self.logger.warning(f"Failed to get partition offsets: {e}")
             return {0: 0}
@@ -513,56 +547,51 @@ class TansuQueueClient:
     # Internal Methods
     # -------------------------------------------------------------------------
 
-    async def _get_consumer(
+    def _get_consumer(
         self,
         topic: str,
         partition: int = 0,
         group_id: Optional[str] = None,
-    ) -> AIOKafkaConsumer:
-        """Get or create a consumer for the topic/partition."""
+    ) -> Consumer:
+        """Get or create a consumer for the topic/partition.
+
+        For consumers with a group_id, automatically seeks to the committed offset
+        to support resumption after crashes (exactly-once semantics).
+        """
         consumer_key = (topic, partition, group_id)
 
         if consumer_key not in self._consumers:
-            consumer = AIOKafkaConsumer(
-                bootstrap_servers=self.broker_url,
-                enable_auto_commit=False,
-                auto_offset_reset="earliest",
-                request_timeout_ms=5000,
-                fetch_max_wait_ms=500,
-                group_id=group_id,
-            )
-            await asyncio.wait_for(consumer.start(), timeout=10.0)
+            config = {
+                "bootstrap.servers": self.broker_url,
+                "enable.auto.commit": False,
+                "auto.offset.reset": "earliest",
+                "fetch.wait.max.ms": 500,
+                "group.id": group_id or f"_temp_{topic}_{partition}_{id(self)}",
+            }
 
-            # Always use manual partition assignment for predictability
-            # (group_id is still set for offset commit tracking)
-            tp = TopicPartition(topic, partition)
-            consumer.assign([tp])
+            consumer = Consumer(config)
+            consumer.assign([TopicPartition(topic, partition)])
+            consumer.poll(timeout=0.1)  # Required for initialization before seek
 
-            # Check if there's a committed offset for this group
-            # If not, seek to beginning to ensure we start from offset 0
+            # For consumers with a group_id, seek to committed offset for crash recovery
             if group_id:
-                committed = await consumer.committed(tp)
-                if committed is None:
-                    # No committed offset, explicitly seek to offset 0
-                    # Use seek() instead of seek_to_beginning() for more control
-                    consumer.seek(tp, 0)
+                tp = TopicPartition(topic, partition)
+                committed = consumer.committed([tp], timeout=10.0)
+                if committed and committed[0] and committed[0].offset >= 0:
+                    consumer.seek(TopicPartition(topic, partition, committed[0].offset))
+                    self.logger.debug(
+                        f"Consumer for {topic}:{partition} (group={group_id}) "
+                        f"resuming from committed offset {committed[0].offset}"
+                    )
+                else:
+                    # No committed offset, start from beginning
+                    consumer.seek(TopicPartition(topic, partition, 0))
                     self.logger.debug(
                         f"Consumer for {topic}:{partition} (group={group_id}) "
                         f"starting from offset 0 (no committed offset)"
                     )
-                else:
-                    # Resume from committed offset
-                    consumer.seek(tp, committed)
-                    self.logger.debug(
-                        f"Consumer for {topic}:{partition} (group={group_id}) "
-                        f"resuming from committed offset {committed}"
-                    )
-            else:
-                # No group_id means no offset tracking, always start from offset 0
-                consumer.seek(tp, 0)
 
             self.logger.debug(f"Created consumer for {topic}:{partition} (group={group_id})")
-
             self._consumers[consumer_key] = consumer
 
         return self._consumers[consumer_key]

@@ -3,6 +3,8 @@
 This module provides abstractions for message queue backends used for
 communication between pipeline stages.
 
+All queue methods are synchronous for simplicity (confluent-kafka is inherently sync).
+
 Types:
 - QueueType: Enum for queue backend types (MEMORY, TANSU)
 
@@ -23,18 +25,18 @@ Example:
 
     # On StageMaster - start broker
     broker = TansuBrokerManager(storage_url="memory://tansu/")
-    await broker.start()
+    broker.start()
 
     # Create client
     client = TansuQueueClient(broker.get_broker_url())
-    await client.start()
+    client.start()
 
-    await client.create_topic("my-topic")
-    offset = await client.produce("my-topic", b"message data")
-    records = await client.fetch("my-topic", offset=0)
+    client.create_topic("my-topic")
+    offset = client.produce("my-topic", b"message data")
+    records = client.fetch("my-topic", offset=0)
 
-    await client.stop()
-    await broker.stop()
+    client.stop()
+    broker.stop()
     ```
 """
 

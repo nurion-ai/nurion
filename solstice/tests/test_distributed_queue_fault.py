@@ -110,9 +110,9 @@ class TestQueueFaultRecovery:
             # Restart the broker (using runner's internal shared broker)
             try:
                 if runner._shared_broker is not None:
-                    await runner._shared_broker.stop()
+                    runner._shared_broker.stop()
                     await asyncio.sleep(1)
-                    await runner._shared_broker.start()
+                    runner._shared_broker.start()
                     broker_restarted = True
                 else:
                     pytest.skip("No shared broker available (using memory queue)")

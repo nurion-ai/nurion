@@ -135,7 +135,7 @@ class StageWorker:
         else:
             # Memory: Use broker URL to look up the broker instance
             queue = MemoryClient(endpoint.storage_url)
-        await queue.start()
+        queue.start()
         return queue
 
     async def run(self) -> Dict[str, Any]:
@@ -203,9 +203,9 @@ class StageWorker:
 
             # Cleanup queue connections
             if self.upstream_queue:
-                await self.upstream_queue.stop()
+                self.upstream_queue.stop()
             if self.output_queue:
-                await self.output_queue.stop()
+                self.output_queue.stop()
 
     async def _init_state_producer(self) -> None:
         """Initialize state producer for metrics push."""
@@ -375,7 +375,7 @@ class StageWorker:
                 for p in removed:
                     if p in last_committed_offsets:
                         try:
-                            await self.upstream_queue.commit_offset(
+                            self.upstream_queue.commit_offset(
                                 self.consumer_group,
                                 self.upstream_topic,
                                 last_committed_offsets[p],
@@ -421,7 +421,7 @@ class StageWorker:
 
             # Fetch batch from current partition
             # IMPORTANT: Must use consumer_group to share offset state with commit_offset
-            records = await self.upstream_queue.fetch(
+            records = self.upstream_queue.fetch(
                 self.upstream_topic,
                 max_records=self.config.batch_size,
                 timeout_ms=1000,
@@ -481,7 +481,7 @@ class StageWorker:
                         )
                         # Commit offset for EOF marker immediately
                         eof_offset = record.offset + 1
-                        await self.upstream_queue.commit_offset(
+                        self.upstream_queue.commit_offset(
                             self.consumer_group,
                             self.upstream_topic,
                             eof_offset,
@@ -510,7 +510,7 @@ class StageWorker:
 
                 # Commit frequently to minimize duplicate window
                 if messages_since_commit >= commit_batch_size:
-                    await self.upstream_queue.commit_offset(
+                    self.upstream_queue.commit_offset(
                         self.consumer_group,
                         self.upstream_topic,
                         current_offset,
@@ -521,7 +521,7 @@ class StageWorker:
             # Final commit for any remaining messages in this batch
             if messages_since_commit > 0:
                 for p, offset in last_committed_offsets.items():
-                    await self.upstream_queue.commit_offset(
+                    self.upstream_queue.commit_offset(
                         self.consumer_group,
                         self.upstream_topic,
                         offset,
@@ -532,7 +532,7 @@ class StageWorker:
         # Final commit for all assigned partitions
         if self.upstream_queue and last_committed_offsets:
             for p, offset in last_committed_offsets.items():
-                await self.upstream_queue.commit_offset(
+                self.upstream_queue.commit_offset(
                     self.consumer_group,
                     self.upstream_topic,
                     offset,
@@ -619,7 +619,7 @@ class StageWorker:
             )
 
             # Produce to output queue
-            offset = await self.output_queue.produce(self.output_topic, output_message.to_bytes())
+            offset = self.output_queue.produce(self.output_topic, output_message.to_bytes())
             self.logger.debug(f"Produced output for {message.split_id} at offset {offset}")
         else:
             self.logger.debug(f"Operator returned None for {message.split_id}, no output produced")

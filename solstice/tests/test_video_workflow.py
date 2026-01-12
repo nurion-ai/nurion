@@ -35,7 +35,6 @@ from pathlib import Path
 import lance
 import pyarrow as pa
 import pytest
-import requests
 
 logger = logging.getLogger("test")
 

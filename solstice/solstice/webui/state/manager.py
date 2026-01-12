@@ -333,7 +333,7 @@ class JobStateManager:
         """Main consumption loop."""
         while self._running:
             try:
-                records = await self.queue_client.fetch(
+                records = self.queue_client.fetch(
                     self.state_topic,
                     max_records=100,
                     timeout_ms=100,

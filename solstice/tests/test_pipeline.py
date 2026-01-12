@@ -286,15 +286,15 @@ class TestExactlyOnce:
         """Test that offsets are tracked correctly."""
         from solstice.queue import MemoryBroker, MemoryClient
 
-        # Create a shared queue
+        # Create a shared queue (queue methods are now synchronous)
         broker = MemoryBroker()
-        await broker.start()
+        broker.start()
         client = MemoryClient(broker)
-        await client.start()
+        client.start()
 
         topic = "test_topic"
         group = "test_group"
-        await client.create_topic(topic)
+        client.create_topic(topic)
 
         # Produce messages
         from solstice.core.stage_master import QueueMessage
@@ -305,24 +305,24 @@ class TestExactlyOnce:
                 split_id=f"split_{i}",
                 payload_key=f"ref_{i}",
             )
-            await client.produce(topic, msg.to_bytes())
+            client.produce(topic, msg.to_bytes())
 
         # Consume and commit
-        records = await client.fetch(topic, offset=0, max_records=5)
+        records = client.fetch(topic, offset=0, max_records=5)
         assert len(records) == 5
 
-        await client.commit_offset(group, topic, 5)
+        client.commit_offset(group, topic, 5)
 
         # Verify committed offset
-        committed = await client.get_committed_offset(group, topic)
+        committed = client.get_committed_offset(group, topic)
         assert committed == 5
 
         # Resume from committed
-        remaining = await client.fetch(topic, offset=committed)
+        remaining = client.fetch(topic, offset=committed)
         assert len(remaining) == 5
 
-        await client.stop()
-        await broker.stop()
+        client.stop()
+        broker.stop()
 
 
 # ============================================================================

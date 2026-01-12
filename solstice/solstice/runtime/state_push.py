@@ -120,7 +120,7 @@ class StatePushManager:
 
             # Create and start broker
             self._broker = TansuBrokerManager(storage_url=self.config.storage_url)
-            await self._broker.start()
+            self._broker.start()
 
             broker_url = self._broker.get_broker_url()
             host, port_str = broker_url.split(":")
@@ -134,10 +134,10 @@ class StatePushManager:
 
             # Create queue client
             self._queue = TansuQueueClient(broker_url)
-            await self._queue.start()
+            self._queue.start()
 
             # Create state topic
-            await self._queue.create_topic(self.topic, partitions=1)
+            self._queue.create_topic(self.topic, partitions=1)
             self.logger.info(f"Created state topic {self.topic}")
 
             # Create state producer
@@ -193,14 +193,14 @@ class StatePushManager:
 
         if self._queue:
             try:
-                await self._queue.stop()
+                self._queue.stop()
             except Exception as e:
                 self.logger.warning(f"Error stopping state queue: {e}")
             self._queue = None
 
         if self._broker:
             try:
-                await self._broker.stop()
+                self._broker.stop()
             except Exception as e:
                 self.logger.warning(f"Error stopping state broker: {e}")
             self._broker = None

@@ -126,30 +126,30 @@ async def tansu_backend():
     """Start a Tansu broker and client wrapped for easy testing."""
     port = _find_free_port()
     broker = TansuBrokerManager(storage_url="memory://tansu/", port=port, startup_timeout=5.0)
-    await broker.start()
+    broker.start()
     client = TansuQueueClient(broker.get_broker_url())
-    await client.start()
+    client.start()
     backend = TansuTestBackend(broker, client)
     try:
         yield backend
     finally:
-        await client.stop()
-        await broker.stop()
-        await asyncio.sleep(0.1)  # Reduced from 0.5s
+        client.stop()
+        broker.stop()
+        await asyncio.sleep(0.1)  # Brief pause for cleanup
 
 
 @pytest_asyncio.fixture
 async def memory_client():
     """Start a MemoryBroker and MemoryClient, yield the client."""
     broker = MemoryBroker()
-    await broker.start()
+    broker.start()
     client = MemoryClient(broker)
-    await client.start()
+    client.start()
     try:
         yield client
     finally:
-        await client.stop()
-        await broker.stop()
+        client.stop()
+        broker.stop()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -490,7 +490,7 @@ def ray_cluster():
     ray.shutdown()
 
     # Wait for Ray to fully shutdown before next test
-    # aiokafka background threads may still be reconnecting
+    # confluent-kafka background threads may still be active
     time.sleep(3.0)
 
 

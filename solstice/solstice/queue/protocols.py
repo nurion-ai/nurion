@@ -21,10 +21,11 @@ This module defines small, focused protocols for queue operations:
 - QueueAdmin: For topic management
 - QueueBroker: For broker lifecycle management
 
+All methods are synchronous for simplicity (confluent-kafka is sync).
 Classes can implement only the protocols they need.
 """
 
-from typing import List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Optional, Protocol, runtime_checkable
 
 from solstice.queue.backend import Record
 
@@ -38,7 +39,7 @@ from solstice.queue.backend import Record
 class QueueProducer(Protocol):
     """Protocol for message production."""
 
-    async def produce(
+    def produce(
         self,
         topic: str,
         value: bytes,
@@ -68,7 +69,7 @@ class QueueProducer(Protocol):
 class QueueConsumer(Protocol):
     """Protocol for message consumption."""
 
-    async def fetch(
+    def fetch(
         self,
         topic: str,
         offset: Optional[int] = None,
@@ -92,7 +93,7 @@ class QueueConsumer(Protocol):
         """
         ...
 
-    async def commit_offset(
+    def commit_offset(
         self,
         group: str,
         topic: str,
@@ -109,7 +110,7 @@ class QueueConsumer(Protocol):
         """
         ...
 
-    async def get_committed_offset(
+    def get_committed_offset(
         self,
         group: str,
         topic: str,
@@ -127,7 +128,25 @@ class QueueConsumer(Protocol):
         """
         ...
 
-    async def get_latest_offset(
+    def get_all_committed_offsets(
+        self,
+        group: str,
+        topic: str,
+    ) -> Dict[int, int]:
+        """Get committed offsets for all partitions of a topic.
+
+        More efficient than calling get_committed_offset for each partition.
+
+        Args:
+            group: Consumer group ID.
+            topic: Name of the topic.
+
+        Returns:
+            Dict mapping partition_id to committed offset. Missing partitions have no commit.
+        """
+        ...
+
+    def get_latest_offset(
         self,
         topic: str,
         partition: int = 0,
@@ -153,7 +172,7 @@ class QueueConsumer(Protocol):
 class QueueAdmin(Protocol):
     """Protocol for topic administration."""
 
-    async def create_topic(self, topic: str, partitions: int = 1) -> None:
+    def create_topic(self, topic: str, partitions: int = 1) -> None:
         """Create a topic.
 
         Args:
@@ -162,7 +181,7 @@ class QueueAdmin(Protocol):
         """
         ...
 
-    async def delete_topic(self, topic: str) -> None:
+    def delete_topic(self, topic: str) -> None:
         """Delete a topic.
 
         Args:
@@ -170,7 +189,7 @@ class QueueAdmin(Protocol):
         """
         ...
 
-    async def health_check(self) -> bool:
+    def health_check(self) -> bool:
         """Check if the backend is healthy.
 
         Returns:
@@ -188,11 +207,11 @@ class QueueAdmin(Protocol):
 class QueueBroker(Protocol):
     """Protocol for broker lifecycle management."""
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the broker."""
         ...
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the broker."""
         ...
 
@@ -225,10 +244,10 @@ class QueueClient(QueueProducer, QueueConsumer, QueueAdmin, Protocol):
     Implements Producer + Consumer + Admin capabilities.
     """
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the client."""
         ...
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the client."""
         ...

@@ -130,15 +130,15 @@ class TestSparkSourceV2Integration:
             # Verify output_queue was created and has messages
             output_queue = master.get_output_queue()
             assert output_queue is not None
-            assert await output_queue.health_check()
+            assert output_queue.health_check()
 
             # Check that messages were written
-            latest_offset = await output_queue.get_latest_offset(master._output_topic)
+            latest_offset = output_queue.get_latest_offset(master._output_topic)
             assert latest_offset > 0
             print(f"V2 wrote {latest_offset} messages to output_queue")
 
             # Verify we can consume and get data via payload_store
-            messages = await output_queue.fetch(master._output_topic, offset=0, max_records=10)
+            messages = output_queue.fetch(master._output_topic, offset=0, max_records=10)
             assert len(messages) > 0
 
             # Check message format (messages are Record objects with .value attribute)
@@ -198,7 +198,7 @@ class TestSparkSourceV2Integration:
 
             # Should have 4 messages due to parallelism setting
             output_queue = master.get_output_queue()
-            latest_offset = await output_queue.get_latest_offset(master._output_topic)
+            latest_offset = output_queue.get_latest_offset(master._output_topic)
             assert latest_offset == 4
             print(f"V2 with parallelism=4 wrote {latest_offset} messages")
 

@@ -220,10 +220,10 @@ class TestLancePipeline:
         # Verify source queue was created and splits were produced
         source_queue = master.get_source_client()
         assert source_queue is not None
-        assert await source_queue.health_check()
+        assert source_queue.health_check()
 
         # Check splits were produced to source queue
-        status = await master.get_status_async()
+        status = master.get_status()
         splits_produced = status.metrics.get("splits_produced", 0)
         assert splits_produced > 0
         print(f"Produced {splits_produced} splits to source queue")
@@ -239,7 +239,7 @@ class TestLancePipeline:
         start_time = asyncio.get_event_loop().time()
 
         while asyncio.get_event_loop().time() - start_time < max_wait:
-            status = await master.get_status_async()
+            status = master.get_status()
             if status.is_finished:
                 break
             await asyncio.sleep(0.5)
@@ -298,7 +298,7 @@ class TestLancePipeline:
         await master.start()
 
         # Verify splits were produced
-        status = await master.get_status_async()
+        status = master.get_status()
         splits_produced = status.metrics.get("splits_produced", 0)
         assert splits_produced > 0
 

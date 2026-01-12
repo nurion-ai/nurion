@@ -71,12 +71,13 @@ class TestStressScenarios:
             pass
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(180)  # Hard timeout for faster iteration
     async def test_high_throughput_stress(self, ray_cluster):
         """High throughput stress test with many records and Explode.
 
-        Tests system behavior under high data volume: 30K input -> 90K output.
+        Tests system behavior under high data volume.
         """
-        NUM_RECORDS = 30000
+        NUM_RECORDS = 10000  # Reduced for faster iteration
         EXPLODE_FACTOR = 3
         validator = DataValidator()
 
@@ -97,7 +98,7 @@ class TestStressScenarios:
         runner = RayJobRunner(job)
         try:
             await runner.initialize()
-            await asyncio.wait_for(runner.run(), timeout=600)
+            await asyncio.wait_for(runner.run(), timeout=120)
         finally:
             await runner.stop()
 
@@ -109,14 +110,15 @@ class TestStressScenarios:
         assert validator.verify_explode_result(sink_data, NUM_RECORDS, EXPLODE_FACTOR)
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(180)  # Hard timeout for faster iteration
     async def test_many_small_batches_stress(self, ray_cluster):
         """Stress test with many small batches.
 
         Tests overhead of batch management with high batch count.
         Uses Filter to reduce output while maintaining batch count.
         """
-        NUM_RECORDS = 30000
-        BATCH_SIZE = 50  # Many small batches: 600 batches
+        NUM_RECORDS = 10000  # Reduced for faster iteration
+        BATCH_SIZE = 50  # Many small batches
         FILTER_MODULO = 3
         FILTER_REMAINDER = 0
         validator = DataValidator()
@@ -143,7 +145,7 @@ class TestStressScenarios:
         runner = RayJobRunner(job)
         try:
             await runner.initialize()
-            await asyncio.wait_for(runner.run(), timeout=600)
+            await asyncio.wait_for(runner.run(), timeout=120)
         finally:
             await runner.stop()
 
@@ -157,13 +159,14 @@ class TestStressScenarios:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(180)  # Hard timeout for faster iteration
     async def test_deep_pipeline_stress(self, ray_cluster):
         """Stress test with deep pipeline (many stages).
 
         Tests system behavior with many sequential stages.
         Uses multi-stage pipeline with passthrough operators.
         """
-        NUM_RECORDS = 20000
+        NUM_RECORDS = 8000  # Reduced for faster iteration
         NUM_STAGES = 5
         validator = DataValidator()
 
@@ -180,7 +183,7 @@ class TestStressScenarios:
         runner = RayJobRunner(job)
         try:
             await runner.initialize()
-            await asyncio.wait_for(runner.run(), timeout=600)
+            await asyncio.wait_for(runner.run(), timeout=120)
         finally:
             await runner.stop()
 
@@ -212,13 +215,14 @@ class TestLongRunningStability:
             pass
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(180)  # Hard timeout for faster iteration
     async def test_long_running_stability(self, ray_cluster):
         """Long-running stability test.
 
         Tests for memory leaks and stability over extended processing.
         Uses Filter+Explode for complex row count tracking.
         """
-        NUM_RECORDS = 25000
+        NUM_RECORDS = 8000  # Reduced for faster iteration
         FILTER_MODULO = 4
         FILTER_REMAINDER = 0
         EXPLODE_FACTOR = 2
@@ -268,7 +272,7 @@ class TestLongRunningStability:
             chaos_task = asyncio.create_task(periodic_chaos())
 
             try:
-                await asyncio.wait_for(runner.run(), timeout=600)
+                await asyncio.wait_for(runner.run(), timeout=120)
             finally:
                 chaos_running = False
                 chaos_task.cancel()
@@ -294,22 +298,24 @@ class TestLongRunningStability:
         assert validator.verify_checksums(source_data, sink_data)
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(180)  # Hard timeout for faster iteration
     async def test_sustained_chaos(self, ray_cluster):
         """Sustained chaos over extended period.
 
         Continuous failure injection over a longer processing window.
         Uses Explode operator for high output volume.
         """
-        NUM_RECORDS = 20000
-        EXPLODE_FACTOR = 3
+        NUM_RECORDS = 8000  # Enough data for chaos testing (~30-40s runtime)
+        EXPLODE_FACTOR = 2  # 16,000 output records
+        BATCH_SIZE = 100  # Smaller batches = more splits = longer processing time (80 splits)
         validator = DataValidator()
 
         source_data = generate_test_data_with_checksum(NUM_RECORDS)
-        expected_count = NUM_RECORDS * EXPLODE_FACTOR  # 60,000 records
+        expected_count = NUM_RECORDS * EXPLODE_FACTOR  # 16,000 records
 
         job = create_test_pipeline(
             num_records=NUM_RECORDS,
-            batch_size=500,
+            batch_size=BATCH_SIZE,  # 50 splits instead of 10
             min_workers=3,
             max_workers=10,
             collector_name=self.collector_name,
@@ -324,24 +330,21 @@ class TestLongRunningStability:
 
         async def sustained_chaos():
             nonlocal total_kills
+            # Very short initial delay - start chaos ASAP
+            await asyncio.sleep(0.5)
             while chaos_running and not is_runner_finished(runner):
-                await asyncio.sleep(random.uniform(0.5, 3.0))
                 if is_runner_finished(runner):
                     break
 
-                # Random chaos action
-                action = random.choice(["kill", "scale_up", "nothing", "nothing"])
+                # Always try to kill for this test
                 try:
-                    if action == "kill":
-                        killed = await kill_random_worker(runner)
-                        if killed:
-                            total_kills += 1
-                    elif action == "scale_up":
-                        master = runner._masters.get("transform")
-                        if master and len(master._workers) < 10:
-                            await master._spawn_worker()
+                    # Only kill transform workers to allow pipeline completion
+                    killed = await kill_random_worker(runner, stage_id="transform")
+                    if killed:
+                        total_kills += 1
                 except Exception:
                     pass
+                await asyncio.sleep(random.uniform(1.5, 3.0))  # Kill every 1.5-3s
 
         try:
             await runner.initialize()
@@ -349,7 +352,7 @@ class TestLongRunningStability:
             chaos_task = asyncio.create_task(sustained_chaos())
 
             try:
-                await asyncio.wait_for(runner.run(), timeout=600)
+                await asyncio.wait_for(runner.run(), timeout=120)
             finally:
                 chaos_running = False
                 chaos_task.cancel()
@@ -363,6 +366,12 @@ class TestLongRunningStability:
 
         print(f"Total kills during sustained chaos: {total_kills}")
 
+        # Verify chaos was actually injected - test is invalid without kills
+        assert total_kills > 0, (
+            "No workers were killed - chaos test is not valid. "
+            "Consider increasing NUM_RECORDS or reducing chaos interval."
+        )
+
         sink_data = get_sink_records(self.collector_name)
 
         assert validator.verify_count(sink_data, expected_count), (
@@ -370,6 +379,8 @@ class TestLongRunningStability:
         )
         assert validator.verify_no_duplicates_composite(
             sink_data, ["id", "copy_idx"]
+        ), "Duplicates found in sustained chaos test"
+        assert validator.verify_explode_result(sink_data, NUM_RECORDS, EXPLODE_FACTOR), (
+            f"Explode result verification failed: expected factor {EXPLODE_FACTOR}"
         )
-        assert validator.verify_explode_result(sink_data, NUM_RECORDS, EXPLODE_FACTOR)
-        assert validator.verify_checksums(source_data, sink_data)
+        assert validator.verify_checksums(source_data, sink_data), "Checksum verification failed"

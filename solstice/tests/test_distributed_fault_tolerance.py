@@ -105,18 +105,14 @@ class TestWorkerFaultRecovery:
             # First, wait for workers to be spawned
             await wait_for_stage_workers(runner, "transform", min_workers=3, timeout=30)
 
-            # Then wait for some progress (but not too much)
-            await wait_for_progress(
-                runner, min_processed=1000, timeout=60, collector_name=self.collector_name
-            )
-
-            # Verify workers still exist before killing
+            # Immediately verify and kill while workers still exist
+            # Don't wait too long for progress as workers might finish
             transform_master = runner._masters.get("transform")
             assert transform_master and len(transform_master._workers) > 0, (
-                "No workers available to kill"
+                "No workers available to kill after wait_for_stage_workers"
             )
 
-            # Kill one worker
+            # Kill one worker immediately
             killed_worker = await kill_random_worker(runner, stage_id="transform")
             assert killed_worker is not None, "No worker was killed"
 

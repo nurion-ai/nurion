@@ -237,7 +237,7 @@ class TestIcebergPipeline:
         # Verify queue was created
         output_queue = master.get_output_queue()
         assert output_queue is not None
-        assert await output_queue.health_check()
+        assert output_queue.health_check()
 
         # Wait briefly for processing
         import asyncio

@@ -134,7 +134,7 @@ class StateProducer:
 
                 # Send to Tansu
                 try:
-                    await self.queue_client.produce(
+                    self.queue_client.produce(
                         self.state_topic,
                         message.to_bytes(),
                     )
@@ -154,7 +154,7 @@ class StateProducer:
         while not self._pending_produces.empty():
             try:
                 message = self._pending_produces.get_nowait()
-                await self.queue_client.produce(
+                self.queue_client.produce(
                     self.state_topic,
                     message.to_bytes(),
                 )

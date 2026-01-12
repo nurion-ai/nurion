@@ -98,12 +98,12 @@ class MockStage:
 async def memory_client():
     """Provide a fresh memory broker and client."""
     broker = MemoryBroker()
-    await broker.start()
+    broker.start()
     client = MemoryClient(broker)
-    await client.start()
+    client.start()
     yield client
-    await client.stop()
-    await broker.stop()
+    client.stop()
+    broker.stop()
 
 
 @pytest.fixture
@@ -318,7 +318,7 @@ class TestExactlyOnce:
         topic = "test_topic"
         group = "test_group"
 
-        await memory_client.create_topic(topic)
+        memory_client.create_topic(topic)
 
         # Produce messages
         for i in range(10):
@@ -327,25 +327,25 @@ class TestExactlyOnce:
                 split_id=f"split_{i}",
                 payload_key=f"ref_{i}",
             )
-            await memory_client.produce(topic, msg.to_bytes())
+            memory_client.produce(topic, msg.to_bytes())
 
         # Simulate processing and committing
-        offset = await memory_client.get_committed_offset(group, topic)
+        offset = memory_client.get_committed_offset(group, topic)
         assert offset is None
 
-        records = await memory_client.fetch(topic, offset=0, max_records=5)
+        records = memory_client.fetch(topic, offset=0, max_records=5)
         assert len(records) == 5
 
         # Commit after processing
         new_offset = records[-1].offset + 1
-        await memory_client.commit_offset(group, topic, new_offset)
+        memory_client.commit_offset(group, topic, new_offset)
 
         # Verify committed offset
-        committed = await memory_client.get_committed_offset(group, topic)
+        committed = memory_client.get_committed_offset(group, topic)
         assert committed == new_offset
 
         # Resume from committed offset
-        remaining = await memory_client.fetch(topic, offset=committed)
+        remaining = memory_client.fetch(topic, offset=committed)
         assert len(remaining) == 5
         assert remaining[0].offset == new_offset
 
@@ -355,7 +355,7 @@ class TestExactlyOnce:
         topic = "test_topic"
         group = "test_group"
 
-        await memory_client.create_topic(topic)
+        memory_client.create_topic(topic)
 
         # Produce messages
         for i in range(10):
@@ -364,22 +364,22 @@ class TestExactlyOnce:
                 split_id=f"split_{i}",
                 payload_key=f"ref_{i}",
             )
-            await memory_client.produce(topic, msg.to_bytes())
+            memory_client.produce(topic, msg.to_bytes())
 
         # First "worker" processes some messages
         offset = 0
-        records = await memory_client.fetch(topic, offset=offset, max_records=3)
+        records = memory_client.fetch(topic, offset=offset, max_records=3)
         processed_ids = [QueueMessage.from_bytes(r.value).message_id for r in records]
 
         # Commit offset
-        await memory_client.commit_offset(group, topic, records[-1].offset + 1)
+        memory_client.commit_offset(group, topic, records[-1].offset + 1)
 
         # "Crash" - lose in-memory state
         del records, processed_ids
 
         # "Restart" - resume from committed offset
-        committed = await memory_client.get_committed_offset(group, topic)
-        remaining = await memory_client.fetch(topic, offset=committed)
+        committed = memory_client.get_committed_offset(group, topic)
+        remaining = memory_client.fetch(topic, offset=committed)
 
         # Should get remaining 7 messages
         assert len(remaining) == 7

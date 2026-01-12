@@ -21,32 +21,34 @@ Components:
 - MemoryBroker: Manages in-memory topic storage (implements QueueBroker)
 - MemoryClient: Producer/consumer operations (implements QueueClient)
 
+All methods are synchronous for consistency with TansuQueueClient.
+
 Example:
     ```python
     # Create broker (on master)
     broker = MemoryBroker()
-    await broker.start()
+    broker.start()
 
     # Create client
     client = MemoryClient(broker)
-    await client.start()
+    client.start()
 
-    await client.create_topic("my-topic")
-    offset = await client.produce("my-topic", b"hello")
-    records = await client.fetch("my-topic", offset=0)
+    client.create_topic("my-topic")
+    offset = client.produce("my-topic", b"hello")
+    records = client.fetch("my-topic", offset=0)
 
-    await client.stop()
-    await broker.stop()
+    client.stop()
+    broker.stop()
     ```
 """
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
 
 from solstice.queue.backend import Record
 
@@ -82,11 +84,11 @@ class MemoryBroker:
 
     Example:
         broker = MemoryBroker()
-        await broker.start()
+        broker.start()
         client = MemoryClient(broker)
-        await client.start()
+        client.start()
         # ...
-        await broker.stop()
+        broker.stop()
     """
 
     # Class-level registry for broker instances (for URL-based lookup)
@@ -106,16 +108,18 @@ class MemoryBroker:
         ] = {}  # (group, topic, partition) -> offset
         self._global_lock = threading.Lock()
         self._gc_interval = gc_interval_seconds
-        self._gc_task: Optional[asyncio.Task] = None
+        self._gc_thread: Optional[threading.Thread] = None
+        self._gc_stop_event = threading.Event()
         self._running = False
         self._broker_id: Optional[str] = None
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the memory broker."""
         if self._running:
             return
 
         self._running = True
+        self._gc_stop_event.clear()
 
         # Register this instance
         with MemoryBroker._registry_lock:
@@ -123,20 +127,19 @@ class MemoryBroker:
             self._broker_id = f"memory://{MemoryBroker._instance_counter}"
             MemoryBroker._instances[self._broker_id] = self
 
-        # Start background GC task
-        self._gc_task = asyncio.create_task(self._gc_loop())
+        # Start background GC thread
+        self._gc_thread = threading.Thread(target=self._gc_loop, daemon=True)
+        self._gc_thread.start()
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the memory broker."""
         self._running = False
 
-        if self._gc_task:
-            self._gc_task.cancel()
-            try:
-                await self._gc_task
-            except asyncio.CancelledError:
-                pass
-            self._gc_task = None
+        # Stop GC thread
+        self._gc_stop_event.set()
+        if self._gc_thread and self._gc_thread.is_alive():
+            self._gc_thread.join(timeout=2.0)
+        self._gc_thread = None
 
         # Unregister this instance
         if self._broker_id:
@@ -190,10 +193,11 @@ class MemoryBroker:
     # Internal: GC
     # -------------------------------------------------------------------------
 
-    async def _gc_loop(self) -> None:
-        """Background task for garbage collection."""
-        while self._running:
-            await asyncio.sleep(self._gc_interval)
+    def _gc_loop(self) -> None:
+        """Background thread for garbage collection."""
+        while not self._gc_stop_event.wait(timeout=self._gc_interval):
+            if not self._running:
+                break
             self._gc_all_topics()
 
     def _gc_all_topics(self) -> None:
@@ -228,19 +232,20 @@ class MemoryClient:
     Provides producer, consumer, and admin operations against a MemoryBroker.
 
     Implements QueueClient protocol (QueueProducer + QueueConsumer + QueueAdmin).
+    All methods are synchronous.
 
     Example:
         broker = MemoryBroker()
-        await broker.start()
+        broker.start()
 
         client = MemoryClient(broker)
-        await client.start()
+        client.start()
 
-        await client.create_topic("my-topic")
-        offset = await client.produce("my-topic", b"hello")
-        records = await client.fetch("my-topic", offset=0)
+        client.create_topic("my-topic")
+        offset = client.produce("my-topic", b"hello")
+        records = client.fetch("my-topic", offset=0)
 
-        await client.stop()
+        client.stop()
     """
 
     def __init__(self, broker: MemoryBroker | str):
@@ -261,14 +266,14 @@ class MemoryClient:
             self._broker_url = broker.get_broker_url()
 
         self._running = False
-        # Track consumer positions per (topic, partition) for auto-position fetch
-        self._consumer_positions: dict[tuple[str, int], int] = {}
+        # Track consumer positions per (topic, partition, group_id) for auto-position fetch
+        self._consumer_positions: dict[tuple[str, int, Optional[str]], int] = {}
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the client."""
         self._running = True
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the client."""
         self._running = False
 
@@ -280,15 +285,15 @@ class MemoryClient:
     # QueueAdmin Implementation
     # -------------------------------------------------------------------------
 
-    async def create_topic(self, topic: str, partitions: int = 1) -> None:
+    def create_topic(self, topic: str, partitions: int = 1) -> None:
         """Create a topic."""
         self._broker._get_or_create_topic(topic)
 
-    async def delete_topic(self, topic: str) -> None:
+    def delete_topic(self, topic: str) -> None:
         """Delete a topic."""
         self._broker._delete_topic(topic)
 
-    async def health_check(self) -> bool:
+    def health_check(self) -> bool:
         """Check if the client is healthy."""
         return self._running and self._broker.is_running()
 
@@ -296,7 +301,7 @@ class MemoryClient:
     # QueueProducer Implementation
     # -------------------------------------------------------------------------
 
-    async def produce(
+    def produce(
         self,
         topic: str,
         value: bytes,
@@ -317,7 +322,7 @@ class MemoryClient:
     # QueueConsumer Implementation
     # -------------------------------------------------------------------------
 
-    async def fetch(
+    def fetch(
         self,
         topic: str,
         offset: Optional[int] = None,
@@ -368,7 +373,7 @@ class MemoryClient:
 
         return result
 
-    async def commit_offset(
+    def commit_offset(
         self,
         group: str,
         topic: str,
@@ -379,7 +384,7 @@ class MemoryClient:
         with self._broker._global_lock:
             self._broker._committed_offsets[(group, topic, partition)] = offset
 
-    async def get_committed_offset(
+    def get_committed_offset(
         self,
         group: str,
         topic: str,
@@ -389,7 +394,20 @@ class MemoryClient:
         with self._broker._global_lock:
             return self._broker._committed_offsets.get((group, topic, partition))
 
-    async def get_latest_offset(
+    def get_all_committed_offsets(
+        self,
+        group: str,
+        topic: str,
+    ) -> Dict[int, int]:
+        """Get committed offsets for all partitions of a topic."""
+        result: Dict[int, int] = {}
+        with self._broker._global_lock:
+            for (g, t, p), offset in self._broker._committed_offsets.items():
+                if g == group and t == topic:
+                    result[p] = offset
+        return result
+
+    def get_latest_offset(
         self,
         topic: str,
         partition: int = 0,
@@ -402,12 +420,12 @@ class MemoryClient:
         with topic_data.lock:
             return topic_data.next_offset
 
-    async def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
+    def get_all_partition_offsets(self, topic: str) -> Dict[int, int]:
         """Get latest offsets for all partitions (memory only has partition 0)."""
-        latest = await self.get_latest_offset(topic, partition=0)
+        latest = self.get_latest_offset(topic, partition=0)
         return {0: latest}
 
-    async def truncate_before(self, topic: str, offset: int) -> int:
+    def truncate_before(self, topic: str, offset: int) -> int:
         """Truncate (garbage collect) records before the given offset.
 
         Returns:
@@ -423,7 +441,7 @@ class MemoryClient:
             deleted = original_count - len(topic_data.records)
             return deleted
 
-    async def get_min_committed_offset(self, topic: str) -> Optional[int]:
+    def get_min_committed_offset(self, topic: str) -> Optional[int]:
         """Get the minimum committed offset across all consumer groups.
 
         Returns:

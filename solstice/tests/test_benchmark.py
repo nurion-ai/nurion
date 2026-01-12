@@ -32,7 +32,6 @@ from solstice.core.stage_master import QueueMessage
 
 # Mark all tests in this module as benchmark (skipped in CI by default)
 pytestmark = [
-    pytest.mark.asyncio(loop_scope="function"),
     pytest.mark.benchmark,
 ]
 
@@ -111,16 +110,15 @@ class BenchmarkMetrics:
 class TestMemoryClientBenchmark:
     """Benchmark tests for MemoryClient."""
 
-    @pytest.mark.asyncio
-    async def test_produce_throughput_1kb(self):
+    def test_produce_throughput_1kb(self):
         """Measure produce throughput with 1KB messages."""
         broker = MemoryBroker()
-        await broker.start()
+        broker.start()
         client = MemoryClient(broker)
-        await client.start()
+        client.start()
 
         topic = "bench-produce"
-        await client.create_topic(topic)
+        client.create_topic(topic)
 
         num_messages = 10_000
         message_size = 1024  # 1KB
@@ -139,7 +137,7 @@ class TestMemoryClientBenchmark:
 
         for i in range(num_messages):
             start = time.time()
-            await client.produce(topic, msg_bytes)
+            client.produce(topic, msg_bytes)
             latency_ms = (time.time() - start) * 1000
             metrics.record_latency(latency_ms)
 
@@ -150,19 +148,18 @@ class TestMemoryClientBenchmark:
         assert metrics.throughput >= 5000, f"Throughput {metrics.throughput:.0f} < 5000 msg/s"
         assert metrics.p99_latency < 50, f"P99 latency {metrics.p99_latency:.2f}ms > 50ms"
 
-        await client.stop()
-        await broker.stop()
+        client.stop()
+        broker.stop()
 
-    @pytest.mark.asyncio
-    async def test_fetch_throughput(self):
+    def test_fetch_throughput(self):
         """Measure fetch throughput."""
         broker = MemoryBroker()
-        await broker.start()
+        broker.start()
         client = MemoryClient(broker)
-        await client.start()
+        client.start()
 
         topic = "bench-fetch"
-        await client.create_topic(topic)
+        client.create_topic(topic)
 
         # Pre-populate
         num_messages = 10_000
@@ -175,7 +172,7 @@ class TestMemoryClientBenchmark:
         msg_bytes = msg.to_bytes()
 
         for i in range(num_messages):
-            await client.produce(topic, msg_bytes)
+            client.produce(topic, msg_bytes)
 
         # Benchmark fetch
         metrics = BenchmarkMetrics("MemoryClient Fetch")
@@ -185,7 +182,7 @@ class TestMemoryClientBenchmark:
         fetched = 0
         while fetched < num_messages:
             start = time.time()
-            records = await client.fetch(topic, offset=offset, max_records=100)
+            records = client.fetch(topic, offset=offset, max_records=100)
             latency_ms = (time.time() - start) * 1000
             metrics.record_latency(latency_ms)
 
@@ -200,19 +197,18 @@ class TestMemoryClientBenchmark:
 
         assert metrics.throughput >= 10000, f"Throughput {metrics.throughput:.0f} < 10000 msg/s"
 
-        await client.stop()
-        await broker.stop()
+        client.stop()
+        broker.stop()
 
-    @pytest.mark.asyncio
-    async def test_end_to_end_latency(self):
+    def test_end_to_end_latency(self):
         """Measure end-to-end latency (produce + fetch)."""
         broker = MemoryBroker()
-        await broker.start()
+        broker.start()
         client = MemoryClient(broker)
-        await client.start()
+        client.start()
 
         topic = "bench-e2e"
-        await client.create_topic(topic)
+        client.create_topic(topic)
 
         num_messages = 1000
         msg = QueueMessage(
@@ -230,10 +226,10 @@ class TestMemoryClientBenchmark:
 
             # Produce
             msg.message_id = str(i)
-            offset = await client.produce(topic, msg.to_bytes())
+            offset = client.produce(topic, msg.to_bytes())
 
             # Fetch
-            await client.fetch(topic, offset=offset, max_records=1)
+            client.fetch(topic, offset=offset, max_records=1)
 
             latency_ms = (time.time() - start) * 1000
             metrics.record_latency(latency_ms)
@@ -244,8 +240,8 @@ class TestMemoryClientBenchmark:
         assert metrics.p50_latency < 10, f"P50 latency {metrics.p50_latency:.2f}ms > 10ms"
         assert metrics.p99_latency < 50, f"P99 latency {metrics.p99_latency:.2f}ms > 50ms"
 
-        await client.stop()
-        await broker.stop()
+        client.stop()
+        broker.stop()
 
 
 if __name__ == "__main__":

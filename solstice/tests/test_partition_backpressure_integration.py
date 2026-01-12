@@ -120,7 +120,7 @@ class TestPartitionSkewScenario:
         """Test skew detection in a multi-partition setup."""
         import math
         import asyncio
-        from aiokafka import AIOKafkaProducer, AIOKafkaConsumer, TopicPartition
+        from confluent_kafka import Producer, Consumer, TopicPartition
 
         config = StageConfig(
             queue_type=QueueType.TANSU,
@@ -128,7 +128,7 @@ class TestPartitionSkewScenario:
             partition_count=3,
             shared_broker_endpoint=QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                host="localhost",
+                host="127.0.0.1",
                 port=tansu_backend.port,
                 storage_url="memory://tansu/",
             ),
@@ -146,46 +146,47 @@ class TestPartitionSkewScenario:
         )
 
         topic = "test_topic"
-        await tansu_backend.create_topic(topic, partitions=3)
+        tansu_backend.create_topic(topic, partitions=3)
 
         # Produce controlled skew: partitions [10, 200, 20] messages respectively
-        producer = AIOKafkaProducer(bootstrap_servers=f"localhost:{tansu_backend.port}")
-        await producer.start()
-        try:
+        def _produce_messages():
+            producer = Producer({"bootstrap.servers": f"127.0.0.1:{tansu_backend.port}"})
             for i in range(10):
                 msg = QueueMessage(message_id=f"p0_{i}", split_id=f"s0_{i}", payload_key=f"k0_{i}")
-                await producer.send_and_wait(topic, msg.to_bytes(), partition=0)
+                producer.produce(topic, msg.to_bytes(), partition=0)
             for i in range(200):
                 msg = QueueMessage(message_id=f"p1_{i}", split_id=f"s1_{i}", payload_key=f"k1_{i}")
-                await producer.send_and_wait(topic, msg.to_bytes(), partition=1)
+                producer.produce(topic, msg.to_bytes(), partition=1)
             for i in range(20):
                 msg = QueueMessage(message_id=f"p2_{i}", split_id=f"s2_{i}", payload_key=f"k2_{i}")
-                await producer.send_and_wait(topic, msg.to_bytes(), partition=2)
-        finally:
-            await producer.stop()
+                producer.produce(topic, msg.to_bytes(), partition=2)
+            producer.flush(timeout=10.0)
+
+        await asyncio.to_thread(_produce_messages)
 
         # Commit offsets: p0->0 (none consumed), p1->0, p2->20 (fully consumed)
         consumer_group = "test_job_test_stage"
-        for partition, offset in [(0, 0), (1, 0), (2, 20)]:
-            commit_consumer = AIOKafkaConsumer(
-                bootstrap_servers=f"localhost:{tansu_backend.port}",
-                enable_auto_commit=False,
-                auto_offset_reset="earliest",
-                request_timeout_ms=5000,
-                group_id=consumer_group,
-            )
-            try:
-                await commit_consumer.start()
-                await asyncio.sleep(0.2)
-                commit_consumer.assign([TopicPartition(topic, partition)])
-                await asyncio.sleep(0.1)
-                await commit_consumer.commit({TopicPartition(topic, partition): offset})
-            finally:
-                await commit_consumer.stop()
+
+        def _commit_offsets():
+            for partition, offset in [(0, 0), (1, 0), (2, 20)]:
+                consumer = Consumer(
+                    {
+                        "bootstrap.servers": f"127.0.0.1:{tansu_backend.port}",
+                        "enable.auto.commit": False,
+                        "auto.offset.reset": "earliest",
+                        "group.id": consumer_group,
+                    }
+                )
+                tp = TopicPartition(topic, partition, offset)
+                consumer.assign([tp])
+                consumer.commit(offsets=[tp], asynchronous=False)
+                consumer.close()
+
+        await asyncio.to_thread(_commit_offsets)
 
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
-            host="localhost",
+            host="127.0.0.1",
             port=tansu_backend.port,
             storage_url="memory://tansu/",
         )
@@ -196,8 +197,8 @@ class TestPartitionSkewScenario:
         await master.start()
 
         try:
-            partition_metrics = await master._backpressure_monitor.get_partition_metrics()
-            skew_info = await master._backpressure_monitor.detect_skew()
+            partition_metrics = master._backpressure_monitor.get_partition_metrics()
+            skew_info = master._backpressure_monitor.detect_skew()
 
             # Expect skew: partition1 lags most (200), avg lag ~70 -> ratio > 2
             assert set(partition_metrics.keys()) == {0, 1, 2}
@@ -310,7 +311,7 @@ class TestBackpressureEndToEnd:
             backpressure_threshold_lag=5000,
             shared_broker_endpoint=QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                host="localhost",
+                host="127.0.0.1",
                 port=tansu_backend.port,
                 storage_url="memory://tansu/",
             ),
@@ -329,11 +330,11 @@ class TestBackpressureEndToEnd:
 
         # Create upstream topic
         topic = "upstream_topic"
-        await tansu_backend.create_topic(topic, partitions=1)
+        tansu_backend.create_topic(topic, partitions=1)
 
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
-            host="localhost",
+            host="127.0.0.1",
             port=tansu_backend.port,
             storage_url="memory://tansu/",
         )
@@ -349,10 +350,10 @@ class TestBackpressureEndToEnd:
                     split_id=f"split_{i}",
                     payload_key=f"key_{i}",
                 )
-                await tansu_backend.produce(topic, msg.to_bytes())
+                tansu_backend.produce(topic, msg.to_bytes())
 
             # Check backpressure - should be active
-            result1 = await master._backpressure_monitor.check_backpressure(
+            result1 = master._backpressure_monitor.check_backpressure(
                 master._output_queue, master._output_topic
             )
             assert isinstance(result1, bool)
@@ -361,26 +362,26 @@ class TestBackpressureEndToEnd:
             consumer_group = master._consumer_group
             # Commit offset for partition 0
             import asyncio
-            from aiokafka import AIOKafkaConsumer, TopicPartition
+            from confluent_kafka import Consumer, TopicPartition
 
-            commit_consumer = AIOKafkaConsumer(
-                bootstrap_servers=f"localhost:{tansu_backend.port}",
-                enable_auto_commit=False,
-                auto_offset_reset="earliest",
-                request_timeout_ms=5000,
-                group_id=consumer_group,
-            )
-            try:
-                await commit_consumer.start()
-                await asyncio.sleep(0.2)
-                commit_consumer.assign([TopicPartition(topic, 0)])
-                await asyncio.sleep(0.1)
-                await commit_consumer.commit({TopicPartition(topic, 0): 3000})
-            finally:
-                await commit_consumer.stop()
+            def _commit_offset():
+                consumer = Consumer(
+                    {
+                        "bootstrap.servers": f"127.0.0.1:{tansu_backend.port}",
+                        "enable.auto.commit": False,
+                        "auto.offset.reset": "earliest",
+                        "group.id": consumer_group,
+                    }
+                )
+                tp = TopicPartition(topic, 0, 3000)
+                consumer.assign([tp])
+                consumer.commit(offsets=[tp], asynchronous=False)
+                consumer.close()
+
+            await asyncio.to_thread(_commit_offset)
 
             # Check backpressure again - should clear with hysteresis
-            result2 = await master._backpressure_monitor.check_backpressure(
+            result2 = master._backpressure_monitor.check_backpressure(
                 master._output_queue, master._output_topic
             )
             assert isinstance(result2, bool)
@@ -400,7 +401,7 @@ class TestCombinedScenarios:
             partition_count=4,
             shared_broker_endpoint=QueueEndpoint(
                 queue_type=QueueType.TANSU,
-                host="localhost",
+                host="127.0.0.1",
                 port=tansu_backend.port,
                 storage_url="memory://tansu/",
             ),
@@ -419,7 +420,7 @@ class TestCombinedScenarios:
 
         # Create upstream topic
         topic = "test_topic"
-        await tansu_backend.create_topic(topic, partitions=4)
+        tansu_backend.create_topic(topic, partitions=4)
 
         # Produce many messages to create both skew and high lag
         for i in range(10000):
@@ -428,12 +429,12 @@ class TestCombinedScenarios:
                 split_id=f"split_{i}",
                 payload_key=f"key_{i}",
             )
-            await tansu_backend.produce(topic, msg.to_bytes())
+            tansu_backend.produce(topic, msg.to_bytes())
 
         consumer_group = "test_job_test_stage"
         master.upstream_endpoint = QueueEndpoint(
             queue_type=QueueType.TANSU,
-            host="localhost",
+            host="127.0.0.1",
             port=tansu_backend.port,
             storage_url="memory://tansu/",
         )
@@ -444,13 +445,13 @@ class TestCombinedScenarios:
 
         try:
             # Check backpressure via backpressure monitor
-            backpressure_active = await master._backpressure_monitor.check_backpressure(
+            backpressure_active = master._backpressure_monitor.check_backpressure(
                 master._output_queue, master._output_topic
             )
             assert isinstance(backpressure_active, bool)
 
             # Check skew detection via backpressure monitor
-            skew_info = await master._backpressure_monitor.detect_skew()
+            skew_info = master._backpressure_monitor.detect_skew()
             assert isinstance(skew_info.is_skewed, bool)
             assert isinstance(skew_info.skew_ratio, float)
             assert isinstance(master._backpressure_monitor.is_backpressure_active, bool)
@@ -498,3 +499,150 @@ class TestCombinedScenarios:
             assert master._partition_count == 4
         finally:
             await master.stop()
+
+
+class TestDownstreamBackpressurePropagation:
+    """Tests for backpressure propagation between upstream and downstream stages."""
+
+    @pytest.mark.asyncio
+    async def test_check_downstream_backpressure_with_stage_refs(self, payload_store, ray_cluster):
+        """Test that check_downstream_backpressure correctly calls get_status on downstream stages.
+
+        This test verifies the fix for the TypeError that occurred when awaiting
+        the synchronous get_status() method.
+        """
+        # Create upstream stage config
+        upstream_config = StageConfig(
+            queue_type=QueueType.MEMORY,
+            max_workers=2,
+            min_workers=1,
+            partition_count=2,
+            num_cpus=0.25,
+        )
+        upstream_stage = Stage(
+            stage_id="upstream_stage",
+            operator_config=_TestOperatorConfig(),
+            parallelism=2,
+        )
+        upstream_master = StageMaster(
+            job_id="test_job",
+            stage=upstream_stage,
+            config=upstream_config,
+            payload_store=payload_store,
+        )
+
+        # Create downstream stage config
+        downstream_config = StageConfig(
+            queue_type=QueueType.MEMORY,
+            max_workers=2,
+            min_workers=1,
+            partition_count=2,
+            num_cpus=0.25,
+        )
+        downstream_stage = Stage(
+            stage_id="downstream_stage",
+            operator_config=_TestOperatorConfig(),
+            parallelism=2,
+        )
+        downstream_master = StageMaster(
+            job_id="test_job",
+            stage=downstream_stage,
+            config=downstream_config,
+            payload_store=payload_store,
+        )
+
+        await upstream_master.start()
+        await downstream_master.start()
+
+        try:
+            # Wire downstream refs (simulating what RayJobRunner._wire_downstream_refs does)
+            upstream_master.set_downstream_stage_refs({"downstream_stage": downstream_master})
+
+            # Verify the downstream refs are set
+            assert upstream_master._downstream_stage_refs == {"downstream_stage": downstream_master}
+
+            # Call check_downstream_backpressure - this should NOT raise TypeError
+            # (Previously would fail with "object StageStatus can't be used in 'await' expression")
+            assert upstream_master._backpressure_monitor is not None, (
+                "BackpressureMonitor should be created for this config"
+            )
+            result = await upstream_master._backpressure_monitor.check_downstream_backpressure()
+            # No backpressure expected - downstream has empty queue
+            assert result is False, "Expected no backpressure with empty downstream queue"
+
+            # Also verify get_status works directly (sync method)
+            status = downstream_master.get_status()
+            assert status.stage_id == "downstream_stage"
+            assert status.backpressure_active is False, "No backpressure should be active initially"
+            assert status.output_queue_size == 0, "Queue should be empty initially"
+            assert status.is_running is True, "Stage should be running"
+            assert status.is_finished is False, "Stage should not be finished"
+
+        finally:
+            await upstream_master.stop()
+            await downstream_master.stop()
+
+    @pytest.mark.asyncio
+    async def test_backpressure_propagates_when_downstream_active(self, payload_store, ray_cluster):
+        """Test that backpressure from downstream stage is detected by upstream."""
+        # Create upstream stage
+        upstream_config = StageConfig(
+            queue_type=QueueType.MEMORY,
+            max_workers=2,
+            min_workers=1,
+            partition_count=2,
+            num_cpus=0.25,
+            backpressure_threshold_queue_size=10,  # Low threshold for testing
+        )
+        upstream_stage = Stage(
+            stage_id="upstream",
+            operator_config=_TestOperatorConfig(),
+            parallelism=2,
+        )
+        upstream_master = StageMaster(
+            job_id="test_job",
+            stage=upstream_stage,
+            config=upstream_config,
+            payload_store=payload_store,
+        )
+
+        # Create downstream stage
+        downstream_config = StageConfig(
+            queue_type=QueueType.MEMORY,
+            max_workers=2,
+            min_workers=1,
+            partition_count=2,
+            num_cpus=0.25,
+        )
+        downstream_stage = Stage(
+            stage_id="downstream",
+            operator_config=_TestOperatorConfig(),
+            parallelism=2,
+        )
+        downstream_master = StageMaster(
+            job_id="test_job",
+            stage=downstream_stage,
+            config=downstream_config,
+            payload_store=payload_store,
+        )
+
+        await upstream_master.start()
+        await downstream_master.start()
+
+        try:
+            # Wire downstream refs
+            upstream_master.set_downstream_stage_refs({"downstream": downstream_master})
+
+            # Initially no backpressure - downstream queue is empty
+            assert upstream_master._backpressure_monitor is not None
+            result = await upstream_master._backpressure_monitor.check_downstream_backpressure()
+            assert result is False, "No backpressure expected with empty downstream queue"
+
+            # Verify downstream status shows no backpressure
+            downstream_status = downstream_master.get_status()
+            assert downstream_status.backpressure_active is False
+            assert downstream_status.output_queue_size == 0
+
+        finally:
+            await upstream_master.stop()
+            await downstream_master.stop()

@@ -44,7 +44,7 @@ async def stream_metrics(job_id: str, request: Request) -> EventSourceResponse:
 
         while runner.is_running:
             # Get current status
-            status = await runner.get_status_async()
+            status = runner.get_status()
 
             # Send metrics
             yield {
