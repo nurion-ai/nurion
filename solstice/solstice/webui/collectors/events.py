@@ -130,7 +130,6 @@ class EventCollector:
             List of event data
         """
         return self.storage.list_ray_events(
-            self.job_id,
             event_types=event_types,
             limit=limit,
             offset=offset,

@@ -71,8 +71,9 @@ async def get_configuration(job_id: str, request: Request) -> Dict[str, Any]:
 
     # History mode: get from storage
     if request.app.state.storage:
-        job_data = request.app.state.storage.get_job_archive(job_id)
+        job_data: Dict[str, Any] | None = request.app.state.storage.get_job_archive(job_id)
         if job_data:
-            return job_data.get("config", {})
+            config: Dict[str, Any] = job_data.get("config", {})
+            return config
 
     raise HTTPException(status_code=404, detail=f"Job {job_id} not found")

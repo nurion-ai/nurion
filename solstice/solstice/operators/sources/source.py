@@ -189,9 +189,9 @@ class SourceMaster(StageMaster):
                 )
 
             broker_url = f"{endpoint.host}:{endpoint.port}"
-            client = TansuQueueClient(broker_url)
-            client.start()
-            self._source_client = client
+            tansu_client: QueueClient = TansuQueueClient(broker_url)
+            tansu_client.start()
+            self._source_client = tansu_client
 
             self._source_endpoint = QueueEndpoint(
                 queue_type=QueueType.TANSU,
@@ -200,11 +200,11 @@ class SourceMaster(StageMaster):
                 storage_url=endpoint.storage_url,
             )
 
-            client.create_topic(self._source_topic)
+            tansu_client.create_topic(self._source_topic)
             self.logger.info(
                 f"Connected to shared broker at {broker_url} for source {self.stage_id}"
             )
-            return client
+            return tansu_client
 
     async def start(self) -> None:
         """Start the source master.
@@ -240,6 +240,9 @@ class SourceMaster(StageMaster):
 
         # Initialize managers (must be called after output queue is created)
         self._init_managers()
+
+        # Assert managers are initialized (for type checker)
+        assert self._worker_manager is not None
 
         # Update worker manager with source queue info (workers consume from source queue)
         self._worker_manager.set_target_worker_count(self.config.min_workers)
@@ -374,15 +377,14 @@ class SourceMaster(StageMaster):
         """Notify workers that all splits have been produced.
 
         This allows workers to exit once they've consumed all splits.
+        Also sets the upstream_finished flag so recovered workers get notified.
         """
-        import ray
-
         self.logger.info(f"Notifying {len(self._workers)} workers: all splits produced")
-        for worker_id, worker in self._workers.items():
-            try:
-                ray.get(worker.notify_upstream_finished.remote(), timeout=5)
-            except Exception as e:
-                self.logger.warning(f"Failed to notify worker {worker_id}: {e}")
+
+        # Use WorkerManager's method to notify workers AND set the flag
+        # This ensures recovered workers will also be notified
+        if self._worker_manager:
+            self._worker_manager.notify_upstream_finished()
 
     async def _produce_split(self, split: Split) -> None:
         """Produce a split to the source queue.
@@ -403,6 +405,7 @@ class SourceMaster(StageMaster):
         )
 
         # Produce to source queue
+        assert self._source_client is not None, "Source client not initialized"
         offset = self._source_client.produce(self._source_topic, message.to_bytes())
         self.logger.debug(f"Produced split {split.split_id} at offset {offset}")
 

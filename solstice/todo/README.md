@@ -65,3 +65,4 @@ Sync periodically. When implementation diverges from design:
 | File | Description | Last Updated |
 |------|-------------|--------------|
 | [webui.md](./webui.md) | WebUI feature tracking | 2025-01-07 |
+| [dedup-and-fault-tolerance.md](./dedup-and-fault-tolerance.md) | Dedup operators & checkpoint recovery | 2026-01-12 |

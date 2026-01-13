@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Optional, Protocol
+from typing import TYPE_CHECKING, Dict, Mapping, Optional, Protocol
 
 from solstice.queue import QueueType, QueueClient, TansuQueueClient
 from solstice.core.stage_config import StageConfig, QueueEndpoint
@@ -119,9 +119,9 @@ class BackpressureMonitor:
         """Check if backpressure is currently active."""
         return self._backpressure_active
 
-    def set_downstream_refs(self, refs: Dict[str, StageStatusProvider]) -> None:
+    def set_downstream_refs(self, refs: Mapping[str, StageStatusProvider]) -> None:
         """Set references to downstream stages for backpressure propagation."""
-        self._downstream_refs = refs
+        self._downstream_refs = dict(refs)
 
     def _get_metrics_queue(self) -> Optional[TansuQueueClient]:
         """Get or create a client for upstream metrics."""

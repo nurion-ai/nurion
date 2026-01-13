@@ -193,7 +193,7 @@ class RaySplitPayloadStore(SplitPayloadStore):
         if not name:
             raise ValueError("RaySplitPayloadStore requires a non-empty name")
         self._actor_name = name
-        self._actor = _RaySplitPayloadStoreActor.options(name=name).remote()
+        self._actor = _RaySplitPayloadStoreActor.options(name=name).remote()  # type: ignore[attr-defined]
 
     @property
     def actor_name(self) -> str:

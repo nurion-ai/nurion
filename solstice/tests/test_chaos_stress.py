@@ -265,6 +265,7 @@ class TestLongRunningStability:
                     if is_runner_finished(runner):
                         break
                     try:
+                        # Kill any worker (including source/sink) to test recovery
                         await kill_random_worker(runner)
                     except Exception:
                         pass

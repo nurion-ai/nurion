@@ -23,7 +23,7 @@ from solstice.queue import QueueType
 
 if TYPE_CHECKING:
     from solstice.runtime.ray_runner import RayJobRunner
-    from solstice.core.stage_master import AutoscaleConfig
+    from solstice.runtime.autoscaler import AutoscaleConfig
 
 
 @dataclass
@@ -61,6 +61,8 @@ class JobConfig:
         ray_init_kwargs: Arguments to pass to ray.init()
         autoscale_config: Configuration for autoscaling (None to disable)
         webui: WebUI debugging interface configuration
+        checkpoint_path: Path for checkpoint storage (local or s3://)
+        recover_from_checkpoint: Whether to recover from existing checkpoint on startup
     """
 
     queue_type: QueueType = QueueType.TANSU
@@ -68,6 +70,8 @@ class JobConfig:
     ray_init_kwargs: Dict[str, Any] = field(default_factory=dict)
     autoscale_config: Optional["AutoscaleConfig"] = None
     webui: WebUIConfig = field(default_factory=WebUIConfig)
+    checkpoint_path: str = "/tmp/solstice-checkpoints/"
+    recover_from_checkpoint: bool = True
 
 
 class Job:
@@ -142,7 +146,7 @@ class Job:
 
     def build_reverse_dag(self) -> dict[str, list[str]]:
         """Build reverse DAG mapping (downstream -> upstream)."""
-        reverse_dag = {stage_id: [] for stage_id in self.stages.keys()}
+        reverse_dag: dict[str, list[str]] = {stage_id: [] for stage_id in self.stages.keys()}
 
         for upstream_id, downstream_ids in self.dag_edges.items():
             for downstream_id in downstream_ids:

@@ -47,6 +47,14 @@ def pytest_configure(config):
     """Configure pytest markers."""
     config.addinivalue_line(
         "markers",
+        "integration: mark test as integration test (requires external services)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "workflow: mark test as workflow test (end-to-end pipeline test)",
+    )
+    config.addinivalue_line(
+        "markers",
         "chaos: mark test as chaos engineering test (unstable, not in CI)",
     )
     config.addinivalue_line(

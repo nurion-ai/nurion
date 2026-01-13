@@ -39,6 +39,9 @@ async def list_exceptions(
         List of exception information
     """
     if request.app.state.storage:
-        return request.app.state.storage.list_exceptions(job_id, limit=limit, offset=offset)
+        result: List[Dict[str, Any]] = request.app.state.storage.list_exceptions(
+            job_id, limit=limit, offset=offset
+        )
+        return result
 
     return []

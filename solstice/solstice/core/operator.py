@@ -46,10 +46,14 @@ class OperatorConfig(ABC):
         # Usage:
         config = MyOperatorConfig(param1="value")
         operator = config.setup(worker_id="worker_0")
+
+    Class Variables:
+        operator_class: The operator class to instantiate
+        master_class: The master class to use (None = use default StageMaster)
     """
 
     operator_class: ClassVar[Type["Operator"]]
-    master_class: ClassVar[Type["StageMaster"]]
+    master_class: ClassVar[Optional[Type["StageMaster"]]] = None  # Default: use StageMaster
 
     def setup(self, worker_id: Optional[str] = None) -> "Operator":
         """Create and return an operator instance with this configuration.

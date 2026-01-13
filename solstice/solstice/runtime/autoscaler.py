@@ -300,11 +300,11 @@ class SimpleAutoscaler:
 
             try:
                 if target > current:
-                    # Scale up
-                    to_add = target - current
-                    for _ in range(to_add):
+                    # Scale up by spawning new workers
+                    to_spawn = target - current
+                    for _ in range(to_spawn):
                         await master._spawn_worker()
-                    # Rebalance partitions after adding workers to avoid overlapping assignments
+                    # Rebalance partitions after scaling
                     master._rebalance_partitions()
                     await master._notify_workers_partition_update()
                     self._last_scale_time[stage_id] = now

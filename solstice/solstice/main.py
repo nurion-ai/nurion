@@ -259,6 +259,7 @@ def history_server_cmd(storage_path: str, host: str, port: int, reload: bool):
     if reload:
         sys.argv.append("--reload")
 
+    assert hs_func.callback is not None
     hs_func.callback(storage_path, host, port, reload)
 
 

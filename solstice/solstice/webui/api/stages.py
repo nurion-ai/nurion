@@ -51,12 +51,12 @@ async def get_stage_detail(
 ) -> Dict[str, Any]:
     """Get detailed stage information."""
     storage = request.app.state.storage
-    job_data = storage.get_job(job_id)
+    job_data: Dict[str, Any] | None = storage.get_job(job_id)
     if job_data:
         stages = job_data.get("stages", [])
         for stage in stages:
             if stage.get("stage_id") == stage_id:
-                return stage
+                return dict(stage)
         raise HTTPException(status_code=404, detail=f"Stage {stage_id} not found")
     raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
@@ -87,7 +87,10 @@ async def get_stage_metrics_history(
         start_time = end_time - 300
 
     storage = request.app.state.storage
-    return storage.get_metrics_history(job_id, stage_id, start_time, end_time)
+    result: List[Dict[str, Any]] = storage.get_metrics_history(
+        job_id, stage_id, start_time, end_time
+    )
+    return result
 
 
 @router.get("/jobs/{job_id}/stages/{stage_id}/workers")
@@ -106,10 +109,14 @@ async def list_stage_workers(
         List of worker info
     """
     storage = request.app.state.storage
-    worker_events = storage.list_worker_events(job_id, stage_id=stage_id, limit=500)
-    # Deduplicate by worker_id, keeping latest
+    # Fetch all worker events and filter by stage_id client-side
+    # (storage.list_worker_events doesn't support stage_id filtering)
+    worker_events = storage.list_worker_events(job_id, limit=500)
+    # Deduplicate by worker_id, keeping latest, filtered by stage
     workers_dict: Dict[str, Any] = {}
     for event in worker_events:
+        if event.get("stage_id") != stage_id:
+            continue
         worker_id = event.get("worker_id")
         if worker_id not in workers_dict:
             workers_dict[worker_id] = event

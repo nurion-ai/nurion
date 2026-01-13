@@ -221,3 +221,13 @@ class JobStorageReader(Protocol):
     ) -> List[Dict[str, Any]]:
         """List workers for a job."""
         ...
+
+    def list_worker_events(
+        self,
+        job_id: str,
+        worker_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List worker events for a job."""
+        ...

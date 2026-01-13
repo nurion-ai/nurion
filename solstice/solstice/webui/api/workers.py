@@ -55,7 +55,7 @@ async def get_worker_detail(
 ) -> Dict[str, Any]:
     """Get detailed worker information."""
     storage = request.app.state.storage
-    events = storage.list_worker_events(job_id, worker_id=worker_id, limit=1)
+    events: List[Dict[str, Any]] = storage.list_worker_events(job_id, worker_id=worker_id, limit=1)
     if events:
         return events[0]
     raise HTTPException(status_code=404, detail=f"Worker {worker_id} not found")

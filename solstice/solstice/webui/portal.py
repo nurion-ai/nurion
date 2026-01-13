@@ -117,7 +117,7 @@ def start_portal(storage_path: str, port: int = 8000) -> str:
         logger.info(f"Ray Serve already running: {e}")
 
     # Deploy portal
-    handle = SolsticePortal.bind(storage_path)
+    handle = SolsticePortal.bind(storage_path)  # type: ignore[attr-defined]
     serve.run(handle, name="solstice-portal", route_prefix="/solstice")
     logger.info(f"Deployed Solstice Portal at /solstice with storage: {storage_path}")
 

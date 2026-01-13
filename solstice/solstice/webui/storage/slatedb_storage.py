@@ -94,7 +94,8 @@ class JobStorage:
         key = "config"
         data = self.db.get(key.encode())
         if data:
-            return json.loads(data.decode())
+            result: Dict[str, Any] = json.loads(data.decode())
+            return result
         return None
 
     # === Job Archive ===
@@ -116,7 +117,8 @@ class JobStorage:
         key = "job"
         data = self.db.get(key.encode())
         if data:
-            return json.loads(data.decode())
+            result: Dict[str, Any] = json.loads(data.decode())
+            return result
         return None
 
     def _scan_prefix(self, prefix: bytes, limit: int = 1000) -> List[tuple]:
@@ -280,7 +282,8 @@ class JobStorage:
         key = f"lineage:{split_id}"
         data = self.db.get(key.encode())
         if data:
-            return json.loads(data.decode())
+            result: Dict[str, Any] = json.loads(data.decode())
+            return result
         return None
 
     def get_lineage_graph(self) -> Dict[str, Any]:
@@ -353,7 +356,8 @@ class JobStorage:
         key = f"worker:{worker_id}"
         data = self.db.get(key.encode())
         if data:
-            return json.loads(data.decode())
+            result: Dict[str, Any] = json.loads(data.decode())
+            return result
         return None
 
     def list_workers(

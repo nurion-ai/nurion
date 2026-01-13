@@ -287,6 +287,13 @@ def is_runner_finished(runner: RayJobRunner) -> bool:
         True if finished, False otherwise
     """
     try:
-        return runner._finished
+        # Runner is finished if:
+        # 1. It's not running (completed or stopped), or
+        # 2. It's been initialized and all master tasks are done
+        if not runner._running:
+            return True
+        if runner._initialized and len(runner._master_tasks) == 0:
+            return True
+        return False
     except Exception:
         return False

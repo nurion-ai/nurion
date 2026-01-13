@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import ray
 
 from solstice.queue import QueueType, QueueClient, MemoryClient, TansuQueueClient
+from solstice.webui.state.producer import StateProducer
 from solstice.utils.logging import create_ray_logger
 from solstice.core.stage_config import (
     StageConfig,
@@ -101,7 +102,7 @@ class StageWorker:
         # State push configuration (optional, for WebUI)
         self.state_endpoint = state_endpoint
         self.state_topic = state_topic
-        self._state_producer = None  # Created in run() if configured
+        self._state_producer: Optional[StateProducer] = None  # Created in run() if configured
 
         # Lineage tracking configuration (from WebUIConfig via runner)
         self._lineage_sample_rate = lineage_sample_rate
@@ -127,8 +128,9 @@ class StageWorker:
         self._upstream_finished = False
         self._partitions_updated = False  # Flag to signal partition rebalance
 
-    async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint):
+    async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> QueueClient:
         """Create a queue connection from endpoint info."""
+        queue: QueueClient
         if endpoint.queue_type == QueueType.TANSU:
             broker_url = f"{endpoint.host}:{endpoint.port}"
             queue = TansuQueueClient(broker_url)
@@ -344,6 +346,11 @@ class StageWorker:
         2. No need for offset queries - just track EOF receipt
         3. Faster completion - no need for multiple empty polls
         """
+        # These must be initialized by run() before calling this method
+        assert self.upstream_queue is not None, "upstream_queue not initialized"
+        assert self.output_queue is not None, "output_queue not initialized"
+        assert self.upstream_topic is not None, "upstream_topic not set"
+
         last_committed_offsets: Dict[int, int] = {}  # Track offsets per partition
         eof_received: set = set()  # Track which partitions have received EOF
         current_partition_idx = 0  # Round-robin index for partition polling
@@ -549,6 +556,9 @@ class StageWorker:
            - Get payload from store and call operator.process_split(split, payload)
         """
         from solstice.core.models import Split, SplitPayload
+
+        # Must be initialized by run() before this is called
+        assert self.output_queue is not None, "output_queue not initialized"
 
         payload: Optional[SplitPayload] = None
         is_source_message = not message.payload_key

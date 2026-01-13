@@ -75,6 +75,7 @@ from solstice.core.managers import (
 
 if TYPE_CHECKING:
     from solstice.core.stage import Stage
+    from solstice.webui.state.producer import StateProducer
 
 # Re-export for backward compatibility
 __all__ = [
@@ -152,7 +153,7 @@ class StageMaster:
         self._downstream_stage_refs: Dict[str, "StageMaster"] = {}
 
         # State producer for WebUI metrics
-        self._state_producer = None
+        self._state_producer: Optional["StateProducer"] = None
         self._last_metrics_emit_time = 0.0
 
         # Initialize managers (will be fully configured in start())
@@ -171,6 +172,7 @@ class StageMaster:
     async def _create_queue(self) -> QueueClient:
         """Connect to shared broker and create output topic."""
         partition_count = self._partition_manager.partition_count
+        queue: QueueClient
 
         if self.config.queue_type == QueueType.TANSU:
             endpoint = self.config.shared_broker_endpoint
@@ -265,6 +267,10 @@ class StageMaster:
         # Initialize managers now that we have the output endpoint
         self._init_managers()
 
+        # Assert managers are initialized (for type checker)
+        assert self._worker_manager is not None
+        assert self._recovery_manager is not None
+
         # Set target worker count for correct partition assignment
         self._worker_manager.set_target_worker_count(self.config.min_workers)
 
@@ -307,6 +313,10 @@ class StageMaster:
         """
         if not self._running:
             await self.start()
+
+        # Assert managers are initialized (for type checker)
+        assert self._worker_manager is not None
+        assert self._recovery_manager is not None
 
         try:
             while self._running and not self._finished:
@@ -435,8 +445,9 @@ class StageMaster:
             self.logger.warning(f"Failed to init state producer: {e}")
             self._state_producer = None
 
-    async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> "QueueClient":
+    async def _create_queue_from_endpoint(self, endpoint: QueueEndpoint) -> QueueClient:
         """Create a queue client from an endpoint."""
+        queue: QueueClient
         if endpoint.queue_type == QueueType.TANSU:
             broker_url = f"{endpoint.host}:{endpoint.port}"
             queue = TansuQueueClient(broker_url)
@@ -453,10 +464,12 @@ class StageMaster:
         try:
             from solstice.webui.state.messages import stage_started_message
 
+            operator_class = self.stage.operator_config.operator_class
+            operator_name = operator_class.__name__ if operator_class else "Unknown"
             msg = stage_started_message(
                 job_id=self.job_id,
                 stage_id=self.stage_id,
-                operator_type=self.stage.operator_class.__name__,
+                operator_type=operator_name,
                 min_parallelism=self.config.min_workers,
                 max_parallelism=self.config.max_workers,
             )
@@ -560,7 +573,7 @@ class StageMaster:
         """Gracefully remove workers."""
         if self._backpressure_monitor:
             return await self._backpressure_monitor.scale_down(count)
-            return 0
+        return 0
 
     async def cleanup_queue(self) -> None:
         """Clean up output queue (called by runner after all consumers done)."""

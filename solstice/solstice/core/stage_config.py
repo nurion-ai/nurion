@@ -160,7 +160,7 @@ class FailureTracker:
     - Sustained failures: High failure rate indicating systemic issues
     """
 
-    def __init__(self, policy: FailurePolicy, logger):
+    def __init__(self, policy: FailurePolicy, logger: Any) -> None:
         self.policy = policy
         self.logger = logger
         self._failure_timestamps: List[float] = []
@@ -226,7 +226,7 @@ class FailureTracker:
     def get_recovery_delay(self) -> float:
         """Get delay before next recovery attempt (exponential backoff)."""
         delay = self.policy.base_recovery_delay * (2**self._recovery_attempt)
-        delay = min(delay, self.policy.max_recovery_delay)
+        delay = float(min(delay, self.policy.max_recovery_delay))
         self._recovery_attempt += 1
         return delay
 

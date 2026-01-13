@@ -43,6 +43,8 @@ class MapOperator(Operator):
         self, split: Split, batch: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
         """Apply map function to record"""
+        if batch is None:
+            return None
         try:
             # Apply transformation
             new_data = []
@@ -90,6 +92,8 @@ class MapBatchesOperator(Operator):
         self, split: Split, batch: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
         """Apply map function to entire batch"""
+        if batch is None:
+            return None
         try:
             # Apply transformation
             new_data = self.map_batches_fn(batch.to_table())
@@ -132,6 +136,8 @@ class FlatMapOperator(Operator):
         self, split: Split, batch: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
         """Apply flatmap function to record"""
+        if batch is None:
+            return None
         try:
             # Apply transformation - should return iterable
             new_data = self.flatmap_fn(batch.to_table())

@@ -21,7 +21,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, TextIO
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -65,7 +65,7 @@ class FileSink(SinkOperator):
 
         self.logger = logging.getLogger(self.__class__.__name__)
         self.buffer: List[Dict[str, Any]] = []
-        self.file_handle = None
+        self.file_handle: Optional[TextIO] = None
         self._initialized = False
         self.output_file_path: Optional[Path] = None
         self._staging_file_path: Optional[Path] = None
@@ -212,9 +212,9 @@ class FileSink(SinkOperator):
         table = pa.Table.from_pylist(
             [
                 {
-                    "key": record.key,
-                    "value": record.value,
-                    "timestamp": record.timestamp,
+                    "key": record.get("key"),
+                    "value": record.get("value"),
+                    "timestamp": record.get("timestamp"),
                 }
                 for record in self.buffer
             ]
@@ -231,7 +231,7 @@ class FileSink(SinkOperator):
 
         import csv
 
-        first_value = self.buffer[0].value
+        first_value = self.buffer[0].get("value")
         if isinstance(first_value, dict):
             fieldnames = ["key"] + list(first_value.keys())
         else:
@@ -244,11 +244,12 @@ class FileSink(SinkOperator):
             if not file_exists:
                 writer.writeheader()
             for record in self.buffer:
-                row = {"key": record.key}
-                if isinstance(record.value, dict):
-                    row.update(record.value)
+                row = {"key": record.get("key")}
+                record_value = record.get("value")
+                if isinstance(record_value, dict):
+                    row.update(record_value)
                 else:
-                    row["value"] = record.value
+                    row["value"] = record_value
                 writer.writerow(row)
 
 

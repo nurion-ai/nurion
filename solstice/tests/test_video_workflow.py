@@ -81,7 +81,7 @@ def create_test_lance_table(table_path: str) -> None:
     logger.info(f"Created test Lance table at {table_path} with {len(records)} videos")
 
 
-@pytest.mark.integration
+@pytest.mark.workflow
 @pytest.mark.timeout(900)  # 15 minutes for video processing
 def test_video_slice_workflow_with_ray(ray_cluster):
     """Verify scene detection, slicing, filtering, and hashing on public videos.

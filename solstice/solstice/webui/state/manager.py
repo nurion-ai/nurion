@@ -312,7 +312,7 @@ class JobStateManager:
 
     def list_workers(self, stage_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List workers, optionally filtered by stage."""
-        workers = self._worker_states.values()
+        workers: list[WorkerState] = list(self._worker_states.values())
         if stage_id:
             workers = [w for w in workers if w.stage_id == stage_id]
         return [w.to_dict() for w in workers]
@@ -447,17 +447,21 @@ class JobStateManager:
                 worker_id = msg.source_id
                 stage_id = msg.payload.get("stage_id", "")
                 if worker_id in self._worker_states:
-                    state = self._worker_states[worker_id]
-                    state.status = "STOPPED"
-                    state.end_time = msg.timestamp
-                    state.processed_count = msg.payload.get("processed_count", 0)
+                    worker_state = self._worker_states[worker_id]
+                    worker_state.status = "STOPPED"
+                    worker_state.end_time = msg.timestamp
+                    worker_state.processed_count = msg.payload.get("processed_count", 0)
                     # Use final metrics from WORKER_STOPPED (more accurate than rate-limited WORKER_METRICS)
-                    state.input_records = msg.payload.get("input_records", state.input_records)
-                    state.output_records = msg.payload.get("output_records", state.output_records)
-                    state.processing_time = msg.payload.get(
-                        "processing_time", state.processing_time
+                    worker_state.input_records = msg.payload.get(
+                        "input_records", worker_state.input_records
                     )
-                    state.last_update = now
+                    worker_state.output_records = msg.payload.get(
+                        "output_records", worker_state.output_records
+                    )
+                    worker_state.processing_time = msg.payload.get(
+                        "processing_time", worker_state.processing_time
+                    )
+                    worker_state.last_update = now
 
                     # Update stage metrics with final worker values
                     if stage_id:
@@ -473,15 +477,15 @@ class JobStateManager:
                         stage_id=stage_id,
                     )
 
-                state = self._worker_states[worker_id]
-                state.input_records = msg.payload.get("input_records", 0)
-                state.output_records = msg.payload.get("output_records", 0)
-                state.processing_time = msg.payload.get("processing_time", 0.0)
-                state.processed_count = msg.payload.get("processed_count", 0)
-                state.assigned_partitions = msg.payload.get("assigned_partitions", [])
+                worker_state = self._worker_states[worker_id]
+                worker_state.input_records = msg.payload.get("input_records", 0)
+                worker_state.output_records = msg.payload.get("output_records", 0)
+                worker_state.processing_time = msg.payload.get("processing_time", 0.0)
+                worker_state.processed_count = msg.payload.get("processed_count", 0)
+                worker_state.assigned_partitions = msg.payload.get("assigned_partitions", [])
                 if msg.payload.get("is_running", True):
-                    state.status = "RUNNING"
-                state.last_update = now
+                    worker_state.status = "RUNNING"
+                worker_state.last_update = now
 
                 # Immediately update stage metrics (aggregate all workers for this stage)
                 self._update_stage_metrics_from_workers(stage_id)
@@ -649,16 +653,16 @@ class JobStateManager:
             self.storage.store_job_archive(job_archive)
 
             # Store metrics snapshot for each stage
-            for stage_id, state in self._stage_states.items():
+            for stage_id, stage_state in self._stage_states.items():
                 self.storage.store_metrics_snapshot(
                     stage_id,
                     now,
-                    state.to_dict(),
+                    stage_state.to_dict(),
                 )
 
             # Store worker history
-            for worker_id, state in self._worker_states.items():
-                self.storage.store_worker_history(worker_id, state.to_dict())
+            for worker_id, worker_state in self._worker_states.items():
+                self.storage.store_worker_history(worker_id, worker_state.to_dict())
 
             self.logger.debug(f"Snapshot stored at {now}")
 

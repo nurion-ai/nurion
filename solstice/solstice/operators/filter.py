@@ -43,6 +43,8 @@ class FilterOperator(Operator):
         self, split: Split, batch: Optional[SplitPayload] = None
     ) -> Optional[SplitPayload]:
         """Filter record based on predicate"""
+        if batch is None:
+            return None
         try:
             # Apply filter
             new_data = []

@@ -29,6 +29,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from solstice.queue import TansuBrokerManager, TansuQueueClient
+    from solstice.core.stage_config import QueueEndpoint
+    from solstice.webui.state.producer import StateProducer
+    from solstice.webui.state.manager import JobStateManager
+    from solstice.webui.storage import JobStorage
+
+if TYPE_CHECKING:
     from solstice.core.stage_master import QueueEndpoint
     from solstice.webui.storage.slatedb_storage import JobStorage
 
@@ -74,11 +81,12 @@ class StatePushManager:
         self.logger = create_ray_logger(f"StatePush-{job_id}")
 
         # Infrastructure (created in start())
-        self._broker = None
-        self._queue = None
-        self._producer = None
-        self._state_manager = None
+        self._broker: Optional["TansuBrokerManager"] = None
+        self._queue: Optional["TansuQueueClient"] = None
+        self._producer: Optional["StateProducer"] = None
+        self._state_manager: Optional["JobStateManager"] = None
         self._endpoint: Optional["QueueEndpoint"] = None
+        self._storage: Optional["JobStorage"] = None
 
         self._started = False
 

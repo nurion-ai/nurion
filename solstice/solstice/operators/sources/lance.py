@@ -97,7 +97,7 @@ class LanceTableSource(SourceOperator):
         )
 
     def close(self) -> None:
-        self.dataset_uri = None
+        self.dataset_uri = None  # type: ignore[assignment]
 
 
 # Set operator_class after class definition

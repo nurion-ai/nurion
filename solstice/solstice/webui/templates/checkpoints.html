@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Checkpoints - {{ job_id }}{% endblock %}
+{% block title %}Checkpoint - {{ job_id }}{% endblock %}
 
 {% block content %}
 <article>
@@ -8,33 +8,98 @@
         <nav aria-label="breadcrumb">
             <ul>
                 <li><a href="{{ base_path }}/jobs/{{ job_id }}/">{{ job_id }}</a></li>
-                <li>Checkpoints</li>
+                <li>Checkpoint</li>
             </ul>
         </nav>
-        <h1>Checkpoints</h1>
+        <h1>Checkpoint</h1>
     </header>
     
-    <p><em>Checkpoint history coming soon</em></p>
-    
-    <div class="table-container">
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Trigger Time</th>
-                    <th>Duration</th>
-                    <th>State Size</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                <!-- Placeholder -->
-                <tr>
-                    <td colspan="5" class="text-center">No checkpoints available</td>
-                </tr>
-            </tbody>
-        </table>
+    {% if checkpoint %}
+    <div class="grid">
+        <div>
+            <h3>Checkpoint Info</h3>
+            <table>
+                <tbody>
+                    <tr>
+                        <th>ID</th>
+                        <td><code>{{ checkpoint.checkpoint_id }}</code></td>
+                    </tr>
+                    <tr>
+                        <th>Status</th>
+                        <td>
+                            {% if checkpoint.status == 'COMPLETED' %}
+                            <span class="badge success">✓ Completed</span>
+                            {% elif checkpoint.status == 'IN_PROGRESS' %}
+                            <span class="badge warning">⏳ In Progress</span>
+                            {% elif checkpoint.status == 'FAILED' %}
+                            <span class="badge error">✗ Failed</span>
+                            {% else %}
+                            <span class="badge">{{ checkpoint.status }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Created</th>
+                        <td>{{ checkpoint.timestamp | format_datetime if checkpoint.timestamp else '-' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Stages</th>
+                        <td>{{ checkpoint.stages | length if checkpoint.stages else 0 }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        {% if checkpoint.stages %}
+        <div>
+            <h3>Stage Offsets</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Stage</th>
+                        <th>Partitions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stage_id, stage_data in checkpoint.stages.items() %}
+                    <tr>
+                        <td><code>{{ stage_id }}</code></td>
+                        <td>{{ stage_data.partitions | length if stage_data.partitions else 0 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
     </div>
+    {% else %}
+    <p class="text-muted">No checkpoint available for this job.</p>
+    <p>Checkpoints are created during job execution for fault tolerance.</p>
+    {% endif %}
 </article>
-{% endblock %}
 
+<style>
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+.badge.success {
+    background-color: #d4edda;
+    color: #155724;
+}
+.badge.warning {
+    background-color: #fff3cd;
+    color: #856404;
+}
+.badge.error {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+.text-muted {
+    color: #6c757d;
+}
+</style>
+{% endblock %}

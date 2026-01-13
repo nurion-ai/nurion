@@ -149,12 +149,12 @@ async def list_cluster_events(
         tasks = list_tasks(limit=limit)
 
         # Count by state
-        actor_states = {}
+        actor_states: dict[str, int] = {}
         for a in actors:
             state = a.get("state", "UNKNOWN")
             actor_states[state] = actor_states.get(state, 0) + 1
 
-        task_states = {}
+        task_states: dict[str, int] = {}
         for t in tasks:
             state = t.get("state", "UNKNOWN")
             task_states[state] = task_states.get(state, 0) + 1
@@ -213,4 +213,5 @@ async def ingest_ray_event(event: Dict[str, Any], request: Request) -> Dict[str,
     )
     collector.ingest_event(event)
 
-    return {"status": "ok", "event_id": event.get("eventId")}
+    event_id = event.get("eventId")
+    return {"status": "ok", "event_id": event_id if event_id else ""}

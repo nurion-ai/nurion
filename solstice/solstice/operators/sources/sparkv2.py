@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Iterator, Optional, TYPE_CHECKING
 
 from solstice.core.models import Split
 from solstice.core.operator import OperatorConfig
@@ -162,7 +162,7 @@ class SparkSourceV2Master(StageMaster):
         )
 
         self._config = operator_cfg
-        self._spark = None
+        self._spark: Any = None  # SparkSession, typed as Any due to raydp dynamic API
         self._spark_initialized = False
         self._splits_produced = 0
 
@@ -250,6 +250,7 @@ class SparkSourceV2Master(StageMaster):
                 df = df.repartition(self._config.parallelism)
 
         # Output queue connection info
+        assert self._output_endpoint is not None, "output_endpoint not set"
         queue_bootstrap = f"{self._output_endpoint.host}:{self._output_endpoint.port}"
         queue_topic = self._output_topic
 
@@ -259,7 +260,7 @@ class SparkSourceV2Master(StageMaster):
         # TODO: For true backpressure support, this should be a streaming write
         # that periodically checks backpressure and pauses/resumes accordingly.
         # This requires JVM-side changes to support incremental writes.
-        jvm = df.sql_ctx.sparkSession.sparkContext._jvm
+        jvm: Any = df.sql_ctx.sparkSession.sparkContext._jvm
         writer = jvm.org.apache.spark.sql.raydp.ObjectStoreWriter(df._jdf)
 
         count = writer.saveToStoreAndQueue(

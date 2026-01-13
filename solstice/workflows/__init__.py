@@ -1,1 +1,1 @@
-"""Solstice workflows"""
+"""Solstice workflow definitions."""

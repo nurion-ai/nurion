@@ -70,7 +70,7 @@ class LanceSink(SinkOperator):
             bucket = self.table_path[5:].split("/")[0]
             self.storage_options = get_lance_storage_options(bucket)
         else:
-            self.storage_options = None
+            self.storage_options = None  # type: ignore[assignment]
 
         self.logger = logging.getLogger(self.__class__.__name__)
         self.buffer: List[Dict[str, Any]] = []

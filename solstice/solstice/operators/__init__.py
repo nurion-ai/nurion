@@ -31,6 +31,34 @@ from solstice.operators.video import (
     FFmpegSliceOperator,
     FFmpegSliceConfig,
 )
+from solstice.operators.shuffle import (
+    ShuffleOperator,
+    ShuffleOperatorConfig,
+    RepartitionOperator,
+    RepartitionConfig,
+    split_by_partition,
+    is_shuffle_operator,
+)
+from solstice.operators.dedupe import (
+    HashDedupeOperator,
+    HashDedupeConfig,
+)
+from solstice.operators.minhash import (
+    MinHashComputeConfig,
+    MinHashComputeOperator,
+    CandidatePairConfig,
+    CandidatePairOperator,
+)
+from solstice.operators.connected_components import (
+    CCInitConfig,
+    CCInitOperator,
+    CCIterateConfig,
+    CCIterateOperator,
+    CCMessageConfig,
+    CCMessageOperator,
+    DedupeByClusterConfig,
+    DedupeByClusterOperator,
+)
 
 __all__ = [
     # Source operators and configs
@@ -62,4 +90,28 @@ __all__ = [
     "FFmpegSceneDetectConfig",
     "FFmpegSliceOperator",
     "FFmpegSliceConfig",
+    # Shuffle operators and configs
+    "ShuffleOperator",
+    "ShuffleOperatorConfig",
+    "RepartitionOperator",
+    "RepartitionConfig",
+    "split_by_partition",
+    "is_shuffle_operator",
+    # Dedupe operators and configs
+    "HashDedupeOperator",
+    "HashDedupeConfig",
+    # MinHash operators and configs
+    "MinHashComputeConfig",
+    "MinHashComputeOperator",
+    "CandidatePairConfig",
+    "CandidatePairOperator",
+    # Connected Components operators and configs
+    "CCInitConfig",
+    "CCInitOperator",
+    "CCIterateConfig",
+    "CCIterateOperator",
+    "CCMessageConfig",
+    "CCMessageOperator",
+    "DedupeByClusterConfig",
+    "DedupeByClusterOperator",
 ]

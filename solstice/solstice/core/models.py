@@ -191,7 +191,7 @@ class SplitPayload:
     SOLSTICE_TS_COLUMN = "__solstice_timestamp"
 
     def __len__(self) -> int:
-        return self.data.num_rows
+        return int(self.data.num_rows)
 
     @property
     def schema(self) -> pa.Schema:
@@ -221,7 +221,7 @@ class SplitPayload:
 
     def to_pylist(self) -> List[Dict[str, Any]]:
         """Return the payload as a list of Python dictionaries."""
-        return self.data.to_pylist()
+        return list(self.data.to_pylist())
 
     def to_records(self) -> List[Record]:
         rows: List[Record] = []

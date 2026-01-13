@@ -200,7 +200,7 @@ class WorkerManager:
             resources["memory"] = self._config.memory_mb * 1024 * 1024
 
         # Create worker actor
-        worker = StageWorker.options(
+        worker = StageWorker.options(  # type: ignore[attr-defined]
             name=f"{self._stage_id}:{worker_id}",
             **resources,
         ).remote(

@@ -224,10 +224,18 @@ def create_webui_app(
 
     @app.get("/jobs/{job_id}/checkpoints", response_class=HTMLResponse)
     async def checkpoints_page(job_id: str, request: Request):
-        """Checkpoints page."""
+        """Checkpoints page.
+
+        Shows the current checkpoint info from job archive.
+        Since we only keep one checkpoint, this is simplified.
+        """
+        job_archive = storage.get_job_archive(job_id)
+        checkpoint = None
+        if job_archive:
+            checkpoint = job_archive.get("checkpoint")
         return templates.TemplateResponse(
             "checkpoints.html",
-            {"request": request, "job_id": job_id, "checkpoints": []},
+            {"request": request, "job_id": job_id, "checkpoint": checkpoint},
         )
 
     @app.get("/jobs/{job_id}/lineage", response_class=HTMLResponse)
@@ -255,7 +263,7 @@ def create_webui_app(
     # API Routes
     # =========================================================================
 
-    # Include lineage API router
+    # Include API routers
     from solstice.webui.api.lineage import router as lineage_router
 
     app.include_router(lineage_router, prefix="/api")
@@ -389,11 +397,12 @@ def format_bytes(bytes_value: int) -> str:
     Returns:
         Formatted string (e.g., "1.2GB", "45MB")
     """
+    value: float = float(bytes_value)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if bytes_value < 1024.0:
-            return f"{bytes_value:.1f}{unit}"
-        bytes_value /= 1024.0
-    return f"{bytes_value:.1f}PB"
+        if value < 1024.0:
+            return f"{value:.1f}{unit}"
+        value /= 1024.0
+    return f"{value:.1f}PB"
 
 
 def format_number(num: int) -> str:

@@ -75,7 +75,7 @@ class IcebergSource(SourceOperator):
 
         snapshot_id = split.data_range.get("snapshot_id") or self.snapshot_id
         if snapshot_id:
-            scan = scan.use_snapshot(snapshot_id)
+            scan = scan.use_snapshot(snapshot_id)  # type: ignore[attr-defined]
 
         arrow_table = scan.to_arrow()
         if arrow_table.num_rows == 0:

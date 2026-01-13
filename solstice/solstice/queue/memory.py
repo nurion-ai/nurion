@@ -351,7 +351,7 @@ class MemoryClient:
         if offset is None:
             offset = self._consumer_positions.get(position_key, 0)
 
-        result = []
+        result: List[Record] = []
         with topic_data.lock:
             for rec_offset, value, key, timestamp in topic_data.records:
                 if rec_offset < offset:

@@ -65,7 +65,8 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 # =============================================================================
@@ -344,21 +345,25 @@ class TansuQueueClient:
             raise RuntimeError("Client not started")
 
         # Use a holder to capture callback result
-        result_holder = {"offset": -1, "error": None}
+        result_holder: dict[str, int | KafkaError | None] = {"offset": -1, "error": None}
 
-        def delivery_callback(err, msg):
+        def delivery_callback(err: KafkaError | None, msg: "Message") -> None:  # type: ignore[name-defined]  # noqa: F821
             if err:
                 result_holder["error"] = err
             else:
                 result_holder["offset"] = msg.offset()
 
-        kwargs = {"value": value, "callback": delivery_callback}
-        if key is not None:
-            kwargs["key"] = key
-        if partition is not None:
-            kwargs["partition"] = partition
+        # Build produce arguments
+        produce_key = key
+        produce_partition = partition if partition is not None else -1  # -1 means auto-assign
 
-        self._producer.produce(topic, **kwargs)
+        self._producer.produce(
+            topic,
+            value=value,
+            key=produce_key,
+            partition=produce_partition,
+            callback=delivery_callback,
+        )
         # Flush to ensure message is sent and callback is called
         remaining = self._producer.flush(timeout=10.0)
 
@@ -366,14 +371,16 @@ class TansuQueueClient:
         if remaining > 0:
             raise KafkaException(
                 KafkaError(
-                    KafkaError._MSG_TIMED_OUT,
+                    -192,  # ERR__MSG_TIMED_OUT
                     f"Produce timed out: {remaining} message(s) still in queue after flush",
                 )
             )
 
-        if result_holder["error"]:
-            raise KafkaException(result_holder["error"])
-        return result_holder["offset"]
+        error = result_holder["error"]
+        if error is not None and isinstance(error, KafkaError):
+            raise KafkaException(error)
+        offset = result_holder["offset"]
+        return int(offset) if isinstance(offset, int) else -1
 
     # -------------------------------------------------------------------------
     # QueueConsumer Implementation
@@ -405,7 +412,7 @@ class TansuQueueClient:
         if offset is not None:
             consumer.seek(TopicPartition(topic, partition, offset))
 
-        records = []
+        records: List[Record] = []
         remaining_timeout = timeout_ms / 1000.0
         start_time = time.time()
 
@@ -416,10 +423,12 @@ class TansuQueueClient:
             if msg.error():
                 self.logger.warning(f"Consumer error: {msg.error()}")
                 break
+            msg_offset = msg.offset()
+            msg_value = msg.value()
             records.append(
                 Record(
-                    offset=msg.offset(),
-                    value=msg.value(),
+                    offset=msg_offset if msg_offset is not None else -1,
+                    value=msg_value if msg_value is not None else b"",
                     key=msg.key(),
                     timestamp=msg.timestamp()[1] if msg.timestamp()[0] else int(time.time() * 1000),
                 )
@@ -561,7 +570,7 @@ class TansuQueueClient:
         consumer_key = (topic, partition, group_id)
 
         if consumer_key not in self._consumers:
-            config = {
+            config: dict[str, str | int | float | bool | None] = {
                 "bootstrap.servers": self.broker_url,
                 "enable.auto.commit": False,
                 "auto.offset.reset": "earliest",

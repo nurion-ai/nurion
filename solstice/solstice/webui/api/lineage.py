@@ -39,7 +39,8 @@ async def get_lineage_overview(job_id: str, request: Request) -> Dict[str, Any]:
         - dag_edges: original DAG structure
     """
     if request.app.state.storage:
-        return request.app.state.storage.get_lineage_overview(job_id)
+        result: Dict[str, Any] = request.app.state.storage.get_lineage_overview(job_id)
+        return result
 
     return {"stages": [], "edges": [], "dag_edges": {}}
 
@@ -50,15 +51,18 @@ async def list_stage_splits(
     stage_id: str,
     limit: int = Query(100, ge=10, le=1000),
     offset: int = Query(0, ge=0),
-    request: Request = None,
+    request: Request | None = None,
 ) -> List[Dict[str, Any]]:
     """List splits for a stage with pagination.
 
     Returns:
         List of split lineage records (sorted by timestamp, newest first)
     """
-    if request.app.state.storage:
-        return request.app.state.storage.list_splits_by_stage(job_id, stage_id, limit, offset)
+    if request and request.app.state.storage:
+        result: List[Dict[str, Any]] = request.app.state.storage.list_splits_by_stage(
+            job_id, stage_id, limit, offset
+        )
+        return result
 
     return []
 
@@ -67,7 +71,7 @@ async def list_stage_splits(
 async def get_split_trace(
     job_id: str,
     split_id: str,
-    request: Request = None,
+    request: Request | None = None,
 ) -> Dict[str, Any]:
     """Get complete lineage trace for a split (both upstream and downstream).
 
@@ -76,8 +80,9 @@ async def get_split_trace(
         - edges: list of {source, target} relationships
         - root_split_id: the starting split
     """
-    if request.app.state.storage:
-        return request.app.state.storage.get_split_trace(job_id, split_id)
+    if request and request.app.state.storage:
+        result: Dict[str, Any] = request.app.state.storage.get_split_trace(job_id, split_id)
+        return result
 
     return {"splits": [], "edges": [], "root_split_id": split_id}
 
@@ -94,7 +99,9 @@ async def get_split_lineage(
         Full lineage record including timing, sizes, parent IDs, etc.
     """
     if request.app.state.storage:
-        lineage = request.app.state.storage.get_split_lineage(job_id, split_id)
+        lineage: Dict[str, Any] | None = request.app.state.storage.get_split_lineage(
+            job_id, split_id
+        )
         if lineage:
             return lineage
 

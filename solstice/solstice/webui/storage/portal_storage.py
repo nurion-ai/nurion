@@ -174,7 +174,8 @@ class PortalStorage:
         with _open_slatedb(attempt_path) as db:
             data = db.get(b"job")
             if data:
-                return json.loads(data.decode())
+                result: Dict[str, Any] = json.loads(data.decode())
+                return result
             return None
 
     def get_job_archive(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -257,14 +258,15 @@ class PortalStorage:
             # Try dedicated config key first
             config_data = db.get(b"config")
             if config_data:
-                return json.loads(config_data.decode())
+                result: Dict[str, Any] = json.loads(config_data.decode())
+                return result
 
             # Fallback: extract from job archive
             job_data = db.get(b"job")
             if not job_data:
                 return None
 
-            job_archive = json.loads(job_data.decode())
+            job_archive: Dict[str, Any] = json.loads(job_data.decode())
             return self._extract_config_from_archive(job_archive)
 
     def _extract_config_from_archive(self, job_archive: Dict[str, Any]) -> Dict[str, Any]:
@@ -364,7 +366,8 @@ class PortalStorage:
         with _open_slatedb(str(latest_attempt)) as db:
             data = db.get(f"lineage:{split_id}".encode())
             if data:
-                return json.loads(data.decode())
+                result: Dict[str, Any] = json.loads(data.decode())
+                return result
             return None
 
     def list_splits_by_stage(
@@ -436,7 +439,8 @@ class PortalStorage:
         with _open_slatedb(str(latest_attempt)) as db:
             data = db.get(f"worker:{worker_id}".encode())
             if data:
-                return json.loads(data.decode())
+                result: Dict[str, Any] = json.loads(data.decode())
+                return result
             return None
 
     # -------------------------------------------------------------------------
@@ -564,7 +568,7 @@ class PortalStorage:
             splits: list = []
             edges: list = []
 
-            def collect_upstream(current_id: str):
+            def collect_upstream(current_id: str) -> None:
                 if current_id in visited:
                     return
                 visited.add(current_id)
@@ -580,7 +584,7 @@ class PortalStorage:
                     edges.append({"source": parent_id, "target": current_id})
                     collect_upstream(parent_id)
 
-            def collect_downstream(current_id: str):
+            def collect_downstream(current_id: str) -> None:
                 if current_id in visited:
                     return
                 visited.add(current_id)
@@ -616,3 +620,42 @@ class PortalStorage:
             splits.sort(key=lambda x: stage_order.get(x.get("stage_id"), 999))
 
             return {"splits": splits, "edges": edges, "root_split_id": split_id}
+
+    def list_worker_events(
+        self,
+        job_id: str,
+        worker_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List worker events for a job.
+
+        Args:
+            job_id: Job identifier
+            worker_id: Optional worker ID to filter by
+            limit: Maximum events to return
+            offset: Pagination offset
+
+        Returns:
+            List of worker events
+        """
+        if self._is_s3:
+            return []
+
+        latest_attempt = self._get_latest_attempt_path(job_id)
+        if not latest_attempt:
+            return []
+
+        events = []
+        with _open_slatedb(str(latest_attempt)) as db:
+            prefix = f"worker_event:{worker_id}:" if worker_id else "worker_event:"
+            for key, value in db.scan_prefix(prefix.encode()):
+                try:
+                    event = json.loads(value.decode())
+                    events.append(event)
+                except json.JSONDecodeError:
+                    continue
+
+        # Sort by timestamp descending
+        events.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+        return events[offset : offset + limit]
